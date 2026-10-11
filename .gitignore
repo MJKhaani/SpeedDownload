@@ -1,0 +1,9 @@
+.DS_Store
+.zig-cache/
+zig-out/
+zig-cache/
+*.o
+*.obj
+*.exe
+*.dSYM/
+coverage/
