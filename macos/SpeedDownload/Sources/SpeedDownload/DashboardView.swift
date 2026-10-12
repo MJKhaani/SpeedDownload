@@ -42,10 +42,10 @@ struct DashboardView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { Task { await engine.refreshJobs() } } label: {
+                Button { Task { await engine.maintainConnection() } } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .disabled(!isConnected)
+                .disabled(isConnecting)
             }
         }
         .sheet(isPresented: $showingAddDownload) {

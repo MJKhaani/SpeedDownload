@@ -14,7 +14,7 @@ struct SpeedDownloadApp: App {
                     while !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(2))
                         guard !Task.isCancelled else { break }
-                        await engine.refreshJobs()
+                        await engine.maintainConnection()
                     }
                 }
         }

@@ -51,7 +51,15 @@ final class EngineModel: ObservableObject {
             }.value
             actionError = nil
         } catch {
-            actionError = "Could not refresh downloads: \(error.localizedDescription)"
+            state = .disconnected(error.localizedDescription)
+        }
+    }
+
+    func maintainConnection() async {
+        if isConnected {
+            await refreshJobs()
+        } else {
+            await connect()
         }
     }
 
