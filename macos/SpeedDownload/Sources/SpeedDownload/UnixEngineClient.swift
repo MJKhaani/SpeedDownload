@@ -17,6 +17,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let errorMessage: String?
     let completedBytes: String?
     let totalBytes: String?
+    let requestedControl: String?
 
     var id: String { jobID }
 
@@ -26,6 +27,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         case errorMessage = "error_message"
         case completedBytes = "completed_bytes"
         case totalBytes = "total_bytes"
+        case requestedControl = "requested_control"
     }
 }
 

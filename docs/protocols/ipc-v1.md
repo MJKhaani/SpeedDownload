@@ -63,7 +63,7 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `jobs.list` | Pagination/safe filters | Authoritative job summaries + revision | Bounded page size |
 | `jobs.get` | `job_id` | Detailed state/segments | Redacted sensitive URL metadata |
 | `jobs.add` | URL, optional name/destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Require an absolute existing writable destination directory; validate URL and idempotent retries |
-| `jobs.control` | `job_id`, action (`start`, `pause`, `resume`, `cancel`), `expected_revision` | Updated job state/revision | Queue/paused/retry controls; start persists `downloading`; one worker; reject stale revisions and persist before response |
+| `jobs.control` | `job_id`, action (`start`, `pause`, `resume`, `cancel`), `expected_revision` | Updated job state/revision | Start persists `downloading`; active pause/cancel persists `requested_control` and returns the still-downloading job; the worker applies it at its next progress callback; reject stale revisions |
 | `jobs.start` / `jobs.pause` / `jobs.resume` / `jobs.retry` | `job_id`, key, optional `expected_revision` | Updated job state/revision | Valid state transitions, idempotent operations |
 | `jobs.cancel` | `job_id`, explicit partial-file policy | Final state | Never conflate pause with deleting partial data |
 | `jobs.subscribe` | Optional filters, refresh/coalescing hints | `subscription_id`, initial snapshot and cursor | Atomic snapshot-to-event boundary, bounded resources |

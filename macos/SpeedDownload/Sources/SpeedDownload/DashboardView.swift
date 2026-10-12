@@ -150,7 +150,16 @@ struct DashboardView: View {
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
                     .background((job.state == "completed" ? Color.green : job.state == "failed" ? Color.red : Color.blue).opacity(0.1), in: Capsule())
-                if job.state == "queued" || job.state == "scheduled" {
+                if let requestedControl = job.requestedControl {
+                    Label(requestedControl == "pause" ? "Pausing…" : "Canceling…", systemImage: "hourglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if job.state == "downloading" {
+                    Button("Pause") { Task { await engine.controlJob(job, action: "pause") } }
+                        .disabled(engine.isSubmitting)
+                    Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
+                        .disabled(engine.isSubmitting)
+                } else if job.state == "queued" || job.state == "scheduled" {
                     if job.state == "queued" {
                         Button("Start") { Task { await engine.controlJob(job, action: "start") } }
                             .buttonStyle(.borderedProminent)

@@ -2,8 +2,9 @@
 
 The core defines the state vocabulary and legal transitions. The engine
 persists queued jobs, runs one HTTP(S) transfer worker at a time, and supports
-queue pause/resume/cancel plus explicit start and retry. Controls do not
-interrupt an active network transfer yet.
+queue pause/resume/cancel plus explicit start and retry. Active pause/cancel
+requests are persisted and take effect at the next downloader progress check;
+a network read that has not returned data can delay that check.
 
 ```mermaid
 stateDiagram-v2
@@ -62,7 +63,13 @@ response. On startup, any persisted `resolving`, `connecting`, `downloading`,
 or `verifying` job is moved to `retry_wait` and persisted before the engine
 serves clients. The GUI displays it for an explicit user resume. Active-transfer
 controls remain unavailable until workers have explicit cancellation and
-ownership semantics. The current scheduler is a one-worker gate; the host-aware
+ownership semantics. Active control leaves the state `downloading` while its
+`requested_control` is pending; after the worker exits it becomes `paused` or
+`canceled`. Pause preserves a validator-backed `.part` file and journal.
+Unresumable partial data is discarded by the downloader. Cancel always removes
+the `.part` and journal after the worker closes them. A restart resolves a
+pending pause/cancel before serving clients and removes partial data for a
+pending cancel. The current scheduler is a one-worker gate; the host-aware
 multi-job policy remains unconnected. Progress snapshots are persisted at the
 downloader's durable checkpoints: data is synced, then the resume journal is
 atomically replaced, then the job byte count is atomically replaced. A crash

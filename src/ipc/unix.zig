@@ -40,6 +40,7 @@ const EngineContext = struct {
     io: std.Io,
     jobs: *job_store.Store,
     active_workers: std.atomic.Value(u32) = .init(0),
+    active_job_key: std.atomic.Value(u64) = .init(0),
 };
 
 pub const ServerIdentity = struct {
@@ -157,6 +158,16 @@ fn dispatchMethod(
         const control = parseJobControl(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         const id = request_id orelse return null;
         if (control.action == .start) return startDownload(allocator, id, control, engine);
+        if ((control.action == .pause or control.action == .cancel) and isActiveJob(engine, control.job_id)) {
+            const stop_action: job_store.StopAction = if (control.action == .pause) .pause else .cancel;
+            const response = jobs.requestStopJson(id, control.job_id, stop_action, control.expected_revision) catch |err| {
+                if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+                if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
+                if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
+                return dispatchError(allocator, request_id, -32020, "Could not save the download request");
+            };
+            return @as(?[]u8, response);
+        }
         const response = jobs.controlJson(id, control.job_id, control.action, control.expected_revision) catch |err| {
             if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
             if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
@@ -197,8 +208,10 @@ fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, contr
         allocator.free(response);
         return dispatchError(allocator, request_id, if (err == error.JobNotFound) -32012 else -32020, "Could not prepare the download");
     };
+    engine.active_job_key.store(jobKey(task.id), .release);
     var thread = std.Thread.spawn(.{}, runDownloadWorker, .{ engine, task }) catch {
         task.deinit(engine.allocator);
+        engine.active_job_key.store(0, .release);
         engine.active_workers.store(0, .release);
         engine.jobs.finishDownload(control.job_id, false, "Worker thread could not be started") catch {};
         allocator.free(response);
@@ -210,6 +223,7 @@ fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, contr
 
 fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) void {
     defer engine.active_workers.store(0, .release);
+    defer engine.active_job_key.store(0, .release);
     defer task.deinit(engine.allocator);
     const destination = buildDestination(engine.allocator, task) catch {
         engine.jobs.finishDownload(task.id, false, "Could not create a safe destination path") catch {};
@@ -220,6 +234,11 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     const download_module = @import("../protocols/http/download.zig");
     var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id };
     download_module.downloadWithProgress(engine.allocator, engine.io, task.url, destination, null, updateDownloadProgress, @ptrCast(&progress)) catch |err| {
+        if (engine.jobs.requestedControl(task.id)) |control| {
+            if (control == .cancel) deletePartial(engine, destination);
+            engine.jobs.finishStoppedDownload(task.id, if (control == .pause) .paused else .canceled) catch {};
+            return;
+        }
         const error_message = std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
         defer if (!std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
         engine.jobs.finishDownload(task.id, false, error_message) catch {};
@@ -228,10 +247,32 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     engine.jobs.finishDownload(task.id, true, null) catch {};
 }
 
+fn isActiveJob(engine: *EngineContext, job_id: []const u8) bool {
+    return engine.active_workers.load(.acquire) == 1 and engine.active_job_key.load(.acquire) == jobKey(job_id);
+}
+
+fn jobKey(job_id: []const u8) u64 {
+    const key = std.hash.Wyhash.hash(0, job_id);
+    return if (key == 0) 1 else key;
+}
+
+fn deletePartial(engine: *EngineContext, destination: []const u8) void {
+    const part_path = std.fmt.allocPrint(engine.allocator, "{s}.part", .{destination}) catch return;
+    defer engine.allocator.free(part_path);
+    const journal_path = std.fmt.allocPrint(engine.allocator, "{s}.odm", .{part_path}) catch return;
+    defer engine.allocator.free(journal_path);
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteFile(engine.io, part_path) catch {};
+    cwd.deleteFile(engine.io, journal_path) catch {};
+}
+
 const DownloadProgressContext = struct { engine: *EngineContext, job_id: []const u8 };
 
 fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64, durable: bool) anyerror!void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    if (progress.engine.jobs.requestedControl(progress.job_id)) |control| {
+        return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
+    }
     try progress.engine.jobs.updateProgress(progress.job_id, completed, total, durable);
 }
 

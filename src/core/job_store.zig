@@ -16,6 +16,7 @@ extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 extern "c" fn chmod(path: [*:0]const u8, mode: c.mode_t) c_int;
 
 pub const State = enum { queued, scheduled, resolving, connecting, downloading, paused, retry_wait, verifying, completed, failed, canceled };
+pub const StopAction = enum { pause, cancel };
 
 pub const Job = struct {
     id: []const u8,
@@ -28,6 +29,7 @@ pub const Job = struct {
     error_message: ?[]const u8 = null,
     completed_bytes: u64 = 0,
     total_bytes: ?u64 = null,
+    requested_control: ?StopAction = null,
 };
 
 pub const AddInput = struct {
@@ -122,6 +124,7 @@ pub const Store = struct {
             .error_message = job.error_message,
             .completed_bytes = decimalAlloc(allocator, job.completed_bytes) catch return error.OutOfMemory,
             .total_bytes = if (job.total_bytes) |total| decimalAlloc(allocator, total) catch return error.OutOfMemory else null,
+            .requested_control = job.requested_control,
         });
         defer for (summaries.items) |summary| allocator.free(summary.revision);
         defer for (summaries.items) |summary| {
@@ -218,6 +221,7 @@ pub const Store = struct {
                 job.error_message = null;
                 job.completed_bytes = 0;
                 job.total_bytes = null;
+                job.requested_control = null;
             }
             self.persist() catch |err| {
                 job.state = previous;
@@ -275,6 +279,7 @@ pub const Store = struct {
             const old_state = job.state;
             const old_revision = job.revision;
             const old_error = job.error_message;
+            const old_requested_control = job.requested_control;
             const next_revision = try std.math.add(u64, job.revision, 1);
             const owned_error = if (!succeeded and error_message != null)
                 try self.allocator.dupe(u8, error_message.?)
@@ -283,10 +288,12 @@ pub const Store = struct {
             job.state = if (succeeded) .completed else .failed;
             job.revision = next_revision;
             job.error_message = owned_error;
+            job.requested_control = null;
             self.persist() catch |err| {
                 job.state = old_state;
                 job.revision = old_revision;
                 job.error_message = old_error;
+                job.requested_control = old_requested_control;
                 if (owned_error) |value| self.allocator.free(value);
                 return err;
             };
@@ -296,7 +303,77 @@ pub const Store = struct {
         return error.JobNotFound;
     }
 
+    pub fn requestStopJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: StopAction, expected_revision: u64) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.revision != expected_revision) return error.StaleJobRevision;
+            if (job.state != .downloading or job.requested_control != null) return error.InvalidJobControl;
+            const previous_revision = job.revision;
+            const next_revision = try std.math.add(u64, job.revision, 1);
+            job.revision = next_revision;
+            job.requested_control = action;
+            self.persist() catch |err| {
+                job.revision = previous_revision;
+                job.requested_control = null;
+                return err;
+            };
+            const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
+            defer self.allocator.free(revision);
+            return std.json.Stringify.valueAlloc(self.allocator, .{
+                .jsonrpc = "2.0",
+                .id = request_id,
+                .result = .{ .job_id = job.id, .state = job.state, .revision = revision, .duplicate = false },
+            }, .{});
+        }
+        return error.JobNotFound;
+    }
+
+    pub fn requestedControl(self: *Store, job_id: []const u8) ?StopAction {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |job| {
+            if (std.mem.eql(u8, job.id, job_id) and job.state == .downloading) return job.requested_control;
+        }
+        return null;
+    }
+
+    pub fn finishStoppedDownload(self: *Store, job_id: []const u8, next_state: State) !void {
+        if (next_state != .paused and next_state != .canceled) return error.InvalidJobControl;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.state != .downloading or job.requested_control == null) return error.InvalidJobControl;
+            const old_state = job.state;
+            const old_revision = job.revision;
+            const old_requested = job.requested_control;
+            const old_completed = job.completed_bytes;
+            const old_total = job.total_bytes;
+            const next_revision = try std.math.add(u64, job.revision, 1);
+            job.state = next_state;
+            job.requested_control = null;
+            if (next_state == .canceled) {
+                job.completed_bytes = 0;
+                job.total_bytes = null;
+            }
+            job.revision = next_revision;
+            self.persist() catch |err| {
+                job.state = old_state;
+                job.revision = old_revision;
+                job.requested_control = old_requested;
+                job.completed_bytes = old_completed;
+                job.total_bytes = old_total;
+                return err;
+            };
+            return;
+        }
+        return error.JobNotFound;
+    }
+
     pub fn updateProgress(self: *Store, job_id: []const u8, completed_bytes: u64, total_bytes: ?u64, durable: bool) !void {
+        if (!durable) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         for (self.jobs.items) |*job| {
@@ -305,7 +382,7 @@ pub const Store = struct {
             const previous_total = job.total_bytes;
             job.completed_bytes = completed_bytes;
             job.total_bytes = total_bytes;
-            if (durable) self.persist() catch |err| {
+            self.persist() catch |err| {
                 job.completed_bytes = previous_completed;
                 job.total_bytes = previous_total;
                 return err;
@@ -358,6 +435,7 @@ pub const Store = struct {
         if (job.name) |name| self.allocator.free(name);
         self.allocator.free(job.destination);
         self.allocator.free(job.idempotency_key);
+        if (job.error_message) |message| self.allocator.free(message);
     }
 
     fn load(self: *Store) !void {
@@ -393,8 +471,18 @@ pub const Store = struct {
         for (self.jobs.items) |*job| {
             switch (job.state) {
                 .resolving, .connecting, .downloading, .verifying => {
-                    job.state = .retry_wait;
-                    job.revision += 1;
+                    const was_canceling = job.state == .downloading and job.requested_control == .cancel;
+                    job.state = if (job.state == .downloading and job.requested_control != null)
+                        if (job.requested_control.? == .pause) .paused else .canceled
+                    else
+                        .retry_wait;
+                    job.requested_control = null;
+                    if (was_canceling) {
+                        self.deletePartialFiles(job.*) catch {};
+                        job.completed_bytes = 0;
+                        job.total_bytes = null;
+                    }
+                    job.revision = try std.math.add(u64, job.revision, 1);
                     recovered = true;
                 },
                 else => {},
@@ -421,9 +509,18 @@ pub const Store = struct {
         const total_value = object.get("total_bytes") orelse .null;
         if (total_value != .null and (total_value != .integer or total_value.integer < 0)) return error.InvalidJobStore;
         const total_bytes = if (total_value == .integer and total_value.integer >= 0) @as(?u64, @intCast(total_value.integer)) else null;
+        const requested_value = object.get("requested_control") orelse .null;
+        const requested_control: ?StopAction = if (requested_value == .string)
+            std.meta.stringToEnum(StopAction, requested_value.string) orelse return error.InvalidJobStore
+        else if (requested_value == .null)
+            null
+        else
+            return error.InvalidJobStore;
         const revision_value = object.get("revision") orelse return error.InvalidJobStore;
         if (revision_value != .integer or revision_value.integer <= 0) return error.InvalidJobStore;
         const name_value = object.get("name") orelse .null;
+        if (name_value != .null and name_value != .string) return error.InvalidJobStore;
+        if (name_value == .string and !validName(name_value.string)) return error.InvalidJobStore;
         const name = if (name_value == .string) try self.allocator.dupe(u8, name_value.string) else null;
         try self.jobs.append(self.allocator, .{
             .id = try self.allocator.dupe(u8, id),
@@ -436,6 +533,7 @@ pub const Store = struct {
             .error_message = error_message,
             .completed_bytes = @intCast(completed_value.integer),
             .total_bytes = total_bytes,
+            .requested_control = requested_control,
         });
     }
 
@@ -454,6 +552,42 @@ pub const Store = struct {
         try atomic.file.writeStreamingAll(self.io, data);
         try atomic.replace(self.io);
     }
+
+    fn deletePartialFiles(self: *Store, job: Job) !void {
+        const destination = try self.destinationPath(job);
+        defer self.allocator.free(destination);
+        const part_path = try std.fmt.allocPrint(self.allocator, "{s}.part", .{destination});
+        defer self.allocator.free(part_path);
+        const journal_path = try std.fmt.allocPrint(self.allocator, "{s}.odm", .{part_path});
+        defer self.allocator.free(journal_path);
+        const cwd = std.Io.Dir.cwd();
+        cwd.deleteFile(self.io, part_path) catch {};
+        cwd.deleteFile(self.io, journal_path) catch {};
+    }
+
+    fn destinationPath(self: *Store, job: Job) ![]u8 {
+        var filename: []const u8 = undefined;
+        if (job.name) |name| {
+            filename = name;
+        } else {
+            const uri = try std.Uri.parse(job.url);
+            const raw_path = switch (uri.path) {
+                .raw => |value| value,
+                .percent_encoded => |value| value,
+            };
+            const last_slash = std.mem.lastIndexOfScalar(u8, raw_path, '/');
+            const candidate = if (last_slash) |index| raw_path[index + 1 ..] else raw_path;
+            if (candidate.len > 0 and !std.mem.eql(u8, candidate, ".") and !std.mem.eql(u8, candidate, "..") and
+                std.mem.indexOfAny(u8, candidate, "/\\\x00") == null)
+            {
+                filename = candidate;
+            } else {
+                var fallback: [48]u8 = undefined;
+                filename = try std.fmt.bufPrint(&fallback, "download-{s}.bin", .{job.id[0..8]});
+            }
+        }
+        return std.fs.path.join(self.allocator, &.{ job.destination, filename });
+    }
 };
 
 const Summary = struct {
@@ -466,6 +600,7 @@ const Summary = struct {
     error_message: ?[]const u8,
     completed_bytes: []const u8,
     total_bytes: ?[]const u8,
+    requested_control: ?StopAction,
 };
 
 fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
@@ -478,9 +613,7 @@ fn validateInput(input: AddInput) !void {
     if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null)
         return error.InvalidJob;
-    if (input.name) |name| if (name.len == 0 or name.len > 255 or
-        std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..") or
-        std.mem.indexOfAny(u8, name, "/\\\x00") != null) return error.InvalidJob;
+    if (input.name) |name| if (!validName(name)) return error.InvalidJob;
     if (input.destination.len == 0 or input.destination.len > 4096 or
         std.mem.indexOfScalar(u8, input.destination, 0) != null) return error.InvalidJob;
     if (!std.fs.path.isAbsolute(input.destination)) return error.InvalidDestination;
@@ -493,6 +626,11 @@ fn validateInput(input: AddInput) !void {
         return error.InvalidDestination;
     if (input.idempotency_key.len == 0 or input.idempotency_key.len > 128 or
         !std.unicode.utf8ValidateSlice(input.idempotency_key)) return error.InvalidJob;
+}
+
+fn validName(name: []const u8) bool {
+    return name.len > 0 and name.len <= 255 and !std.mem.eql(u8, name, ".") and
+        !std.mem.eql(u8, name, "..") and std.mem.indexOfAny(u8, name, "/\\\x00") == null;
 }
 
 fn sameInput(job: *const Job, input: AddInput) bool {
