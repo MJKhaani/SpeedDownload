@@ -95,7 +95,7 @@ struct UnixEngineClient: Sendable {
         )
     }
 
-    func controlJob(jobID: String, action: String) throws -> AddJobResult {
+    func controlJob(jobID: String, action: String, expectedRevision: String) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         _ = try negotiate(fd: fd)
@@ -103,8 +103,13 @@ struct UnixEngineClient: Sendable {
             fd: fd,
             id: "jobs-control-\(UUID().uuidString)",
             method: "jobs.control",
-            params: ["job_id": jobID, "action": action]
+            params: ["job_id": jobID, "action": action, "expected_revision": expectedRevision]
         )
+    }
+
+    static func isRevisionConflict(_ error: Error) -> Bool {
+        guard case ClientError.remote(_, let code, _) = error else { return false }
+        return code == -32015
     }
 
     private func openConnection() throws -> Int32 {
@@ -161,7 +166,7 @@ struct UnixEngineClient: Sendable {
         let data = try readExactly(fd: fd, count: Int(length))
         let envelope = try JSONDecoder().decode(RPCEnvelope<Result>.self, from: data)
         guard envelope.id == id else { throw ClientError.invalidResponse }
-        if let error = envelope.error { throw ClientError.remote(method: method, message: error.message) }
+        if let error = envelope.error { throw ClientError.remote(method: method, code: error.code, message: error.message) }
         return envelope
     }
 
@@ -225,7 +230,7 @@ struct UnixEngineClient: Sendable {
 }
 
 private struct RPCEnvelope<Result: Decodable & Sendable>: Decodable, Sendable {
-    struct RemoteError: Decodable, Sendable { let message: String }
+    struct RemoteError: Decodable, Sendable { let code: Int; let message: String }
     let id: String
     let result: Result?
     let error: RemoteError?
@@ -254,7 +259,7 @@ private enum ClientError: LocalizedError {
     case invalidResponse
     case connectionClosed
     case socketPathTooLong
-    case remote(method: String, message: String)
+    case remote(method: String, code: Int, message: String)
     case posix(String)
 
     var errorDescription: String? {
@@ -264,7 +269,7 @@ private enum ClientError: LocalizedError {
         case .invalidResponse: "The engine returned an invalid RPC response."
         case .connectionClosed: "The engine closed the connection."
         case .socketPathTooLong: "The engine socket path is too long for macOS."
-        case .remote(let method, let message): "The engine rejected \(method): \(message)"
+        case .remote(let method, _, let message): "The engine rejected \(method): \(message)"
         case .posix(let message): message
         }
     }

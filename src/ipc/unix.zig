@@ -147,9 +147,10 @@ fn dispatchMethod(
     if (std.mem.eql(u8, method, "jobs.control")) {
         const control = parseJobControl(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         const id = request_id orelse return null;
-        const response = jobs.controlJson(id, control.job_id, control.action) catch |err| {
+        const response = jobs.controlJson(id, control.job_id, control.action, control.expected_revision) catch |err| {
             if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
             if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
+            if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
             return dispatchError(allocator, request_id, -32020, "Could not save the download request");
         };
         return @as(?[]u8, response);
@@ -179,15 +180,17 @@ fn dispatchMethod(
     }, .{}));
 }
 
-const JobControl = struct { job_id: []const u8, action: job_store.Store.Action };
+const JobControl = struct { job_id: []const u8, action: job_store.Store.Action, expected_revision: u64 };
 
 fn parseJobControl(params: ?std.json.Value) !JobControl {
     const value = params orelse return error.InvalidParams;
     if (value != .object) return error.InvalidParams;
     const job_id = stringField(value.object, "job_id") orelse return error.InvalidParams;
     const action_text = stringField(value.object, "action") orelse return error.InvalidParams;
+    const revision_text = stringField(value.object, "expected_revision") orelse return error.InvalidParams;
     const action = std.meta.stringToEnum(job_store.Store.Action, action_text) orelse return error.InvalidParams;
-    return .{ .job_id = job_id, .action = action };
+    const expected_revision = try std.fmt.parseInt(u64, revision_text, 10);
+    return .{ .job_id = job_id, .action = action, .expected_revision = expected_revision };
 }
 
 const ListPage = struct { offset: usize = 0, limit: usize = 50 };

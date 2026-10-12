@@ -147,8 +147,8 @@ pub const Store = struct {
         }, .{});
     }
 
-    pub fn controlJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: Action) ![]u8 {
-        const job = self.control(job_id, action) catch |err| return err;
+    pub fn controlJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: Action, expected_revision: u64) ![]u8 {
+        const job = self.control(job_id, action, expected_revision) catch |err| return err;
         const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
         defer self.allocator.free(revision);
         return std.json.Stringify.valueAlloc(self.allocator, .{
@@ -165,9 +165,10 @@ pub const Store = struct {
 
     pub const Action = enum { pause, @"resume", cancel };
 
-    pub fn control(self: *Store, job_id: []const u8, action: Action) !*const Job {
+    pub fn control(self: *Store, job_id: []const u8, action: Action, expected_revision: u64) !*const Job {
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.revision != expected_revision) return error.StaleJobRevision;
             const next: State = switch (action) {
                 .pause => switch (job.state) {
                     .queued, .scheduled => .paused,
@@ -185,7 +186,10 @@ pub const Store = struct {
             const previous = job.state;
             const previous_revision = job.revision;
             job.state = next;
-            job.revision += 1;
+            job.revision = std.math.add(u64, job.revision, 1) catch {
+                job.state = previous;
+                return error.RevisionOverflow;
+            };
             self.persist() catch |err| {
                 job.state = previous;
                 job.revision = previous_revision;

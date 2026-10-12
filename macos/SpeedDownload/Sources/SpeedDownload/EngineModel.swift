@@ -77,13 +77,24 @@ final class EngineModel: ObservableObject {
         do {
             let client = UnixEngineClient()
             _ = try await Task.detached(priority: .userInitiated) {
-                try client.controlJob(jobID: job.jobID, action: action)
+                try client.controlJob(jobID: job.jobID, action: action, expectedRevision: job.revision)
             }.value
             jobs = try await Task.detached(priority: .userInitiated) {
                 try client.listJobs()
             }.value
         } catch {
-            actionError = error.localizedDescription
+            if UnixEngineClient.isRevisionConflict(error) {
+                do {
+                    jobs = try await Task.detached(priority: .userInitiated) {
+                        try UnixEngineClient().listJobs()
+                    }.value
+                    actionError = "This job changed elsewhere. The list has been refreshed; review its current state before trying again."
+                } catch {
+                    actionError = error.localizedDescription
+                }
+            } else {
+                actionError = error.localizedDescription
+            }
         }
     }
 }
