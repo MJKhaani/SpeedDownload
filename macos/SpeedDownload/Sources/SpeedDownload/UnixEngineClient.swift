@@ -59,13 +59,20 @@ struct UnixEngineClient: Sendable {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         _ = try negotiate(fd: fd)
-        let response: JobListResult = try request(
-            fd: fd,
-            id: "jobs-list-\(UUID().uuidString)",
-            method: "jobs.list",
-            params: ["offset": 0, "limit": 50]
-        )
-        return response.jobs
+        var jobs: [DownloadJob] = []
+        var offset = 0
+        while true {
+            let response: JobListResult = try request(
+                fd: fd,
+                id: "jobs-list-\(UUID().uuidString)",
+                method: "jobs.list",
+                params: ["offset": offset, "limit": 50]
+            )
+            jobs.append(contentsOf: response.jobs)
+            guard let nextOffset = response.nextOffset else { return jobs }
+            guard let next = Int(nextOffset), next > offset else { throw ClientError.invalidResponse }
+            offset = next
+        }
     }
 
     func addJob(url: String, name: String?, destination: String, idempotencyKey: String) throws -> AddJobResult {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DashboardView: View {
     @EnvironmentObject private var engine: EngineModel
@@ -110,7 +111,7 @@ struct DashboardView: View {
                 .foregroundStyle(job.state == "completed" ? .green : .blue)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 7) {
-                Text(job.name?.isEmpty == false ? job.name! : displayName(for: job.url))
+                Text(jobTitle(for: job))
                     .font(.headline)
                     .lineLimit(1)
                 Text(job.url)
@@ -139,6 +140,11 @@ struct DashboardView: View {
         guard let url = URL(string: rawURL) else { return rawURL }
         let lastComponent = url.lastPathComponent
         return lastComponent.isEmpty ? (url.host ?? rawURL) : lastComponent
+    }
+
+    private func jobTitle(for job: DownloadJob) -> String {
+        if let name = job.name, !name.isEmpty { return name }
+        return displayName(for: job.url)
     }
 
     private var connectionCard: some View {
@@ -267,8 +273,11 @@ private struct AddDownloadView: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("Name (optional)", text: $name)
                     .textFieldStyle(.roundedBorder)
-                TextField("Destination folder", text: $destination)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    TextField("Destination folder", text: $destination)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Choose…", action: chooseDestination)
+                }
             }
             if let validationError {
                 Text(validationError)
@@ -303,5 +312,18 @@ private struct AddDownloadView: View {
         }
         validationError = nil
         _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), destination.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func chooseDestination() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Download Folder"
+        panel.prompt = "Choose Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: destination, isDirectory: true)
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            destination = selectedURL.path
+        }
     }
 }
