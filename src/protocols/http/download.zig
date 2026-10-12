@@ -83,8 +83,8 @@ const checkpoint_interval = 1024 * 1024;
 /// when its versioned journal matches the URL fingerprint, strong ETag, total
 /// size, and durably synced byte prefix. If a server ignores `If-Range` and
 /// returns a full 200, the old partial is truncated before the new body is used.
-/// A concurrent process could still create the final path between the
-/// existence check and rename; callers should serialize operations by path.
+/// A concurrent process could still create the final path while this download
+/// runs; final publication uses an atomic no-replace rename to protect it.
 pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8) !void {
     const uri = try std.Uri.parse(url);
     if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
@@ -221,7 +221,7 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
             try file.sync(io);
             file.close(io);
             file_open = false;
-            try Io.Dir.rename(cwd, part_path, cwd, destination, io);
+            try publishNoReplace(cwd, io, part_path, destination);
             completed_successfully = true;
             cwd.deleteFile(io, journal_path) catch {};
             return;
@@ -304,7 +304,7 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
     try verifySha256(io, file, expected_sha256);
     file.close(io);
     file_open = false;
-    try Io.Dir.rename(cwd, part_path, cwd, destination, io);
+    try publishNoReplace(cwd, io, part_path, destination);
     completed_successfully = true;
     cwd.deleteFile(io, journal_path) catch {};
 }
@@ -324,6 +324,13 @@ fn verifySha256(io: Io, file: Io.File, expected: ?[32]u8) !void {
     var actual: [32]u8 = undefined;
     hasher.final(&actual);
     if (!std.mem.eql(u8, &actual, &wanted)) return DownloadError.ExpectedChecksumMismatch;
+}
+
+fn publishNoReplace(dir: Io.Dir, io: Io, part_path: []const u8, destination: []const u8) !void {
+    Io.Dir.renamePreserve(dir, part_path, dir, destination, io) catch |err| return switch (err) {
+        error.PathAlreadyExists => DownloadError.DestinationExists,
+        else => err,
+    };
 }
 
 fn resumeSafe(uri: std.Uri) bool {
