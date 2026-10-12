@@ -63,9 +63,14 @@ or `verifying` job is moved to `retry_wait` and persisted before the engine
 serves clients. The GUI displays it for an explicit user resume. Active-transfer
 controls remain unavailable until workers have explicit cancellation and
 ownership semantics. The current scheduler is a one-worker gate; the host-aware
-multi-job policy remains unconnected. Transfer byte progress is reported while
-the worker is running and becomes durable with the final job update; the
-downloader's separate checkpoint journal remains authoritative after a crash.
+multi-job policy remains unconnected. Progress snapshots are persisted at the
+downloader's durable checkpoints: data is synced, then the resume journal is
+atomically replaced, then the job byte count is atomically replaced. A crash
+between these writes can leave the job count behind the journal, which is safe;
+the next explicit retry reloads the journal offset and corrects the count. For
+transfers without a resumable journal, byte counts are persisted after the file
+is synced. The count represents durable downloaded bytes, not checksum-verified
+bytes; completion is not reported until final validation and publication pass.
 
 The separate queue policy selects only `queued` jobs, enforces global and
 per-host active limits, then ranks by priority, least-loaded eligible host, and

@@ -78,7 +78,7 @@ const max_etag_len = 1024;
 const checkpoint_interval = 1024 * 1024;
 const progress_interval = 256 * 1024;
 
-pub const ProgressCallback = *const fn (context: *anyopaque, completed: u64, total: ?u64) void;
+pub const ProgressCallback = *const fn (context: *anyopaque, completed: u64, total: ?u64, durable: bool) anyerror!void;
 
 /// Downloads `url` into a sibling `.part` file and safely resumes a prior run.
 ///
@@ -308,7 +308,7 @@ pub fn downloadWithProgress(
         .last_reported_bytes = offset,
         .writer = undefined,
     };
-    sink.reportProgress(true);
+    try sink.reportProgress(true, journal != null);
     sink.writer = .{ .vtable = &.{ .drain = CheckpointWriter.drain, .flush = CheckpointWriter.flush }, .buffer = &sink.buffer };
     _ = body_reader.streamRemaining(&sink.writer) catch |err| switch (err) {
         error.ReadFailed => return response.bodyErr().?,
@@ -318,6 +318,7 @@ pub fn downloadWithProgress(
     sink.writer.flush() catch return sink.last_error orelse error.WriteFailed;
     try file_writer.flush();
     try file.sync(io);
+    try sink.reportProgress(true, true);
     if (response_total) |total| {
         if (file_writer.pos != total) return DownloadError.ResponseLengthMismatch;
     }
@@ -482,7 +483,10 @@ const CheckpointWriter = struct {
         for (0..splat) |_| self.writeAll(data[data.len - 1]) catch return error.WriteFailed;
         const count = Io.Writer.countSplat(data, splat);
         self.pending_bytes += buffered.len + count;
-        self.reportProgress(false);
+        self.reportProgress(false, false) catch |err| {
+            self.last_error = err;
+            return error.WriteFailed;
+        };
         if (self.journal != null and self.pending_bytes >= checkpoint_interval) {
             self.checkpoint() catch |err| {
                 self.last_error = err;
@@ -512,15 +516,18 @@ const CheckpointWriter = struct {
             self.last_error = err;
             return error.WriteFailed;
         };
-        self.reportProgress(true);
+        self.reportProgress(true, false) catch |err| {
+            self.last_error = err;
+            return error.WriteFailed;
+        };
     }
 
-    fn reportProgress(self: *CheckpointWriter, force: bool) void {
+    fn reportProgress(self: *CheckpointWriter, force: bool, durable: bool) anyerror!void {
         const callback = self.progress_callback orelse return;
         const context = self.progress_context orelse return;
         const completed = self.file_writer.pos;
         if (!force and completed -| self.last_reported_bytes < progress_interval) return;
-        callback(context, completed, self.total_bytes);
+        try callback(context, completed, self.total_bytes, durable);
         self.last_reported_bytes = completed;
     }
 
@@ -530,6 +537,7 @@ const CheckpointWriter = struct {
         if (self.journal) |saved| {
             saved.completed = self.file_writer.pos;
             try saveJournal(self.allocator, self.io, self.journal_path, saved.*);
+            try self.reportProgress(true, true);
         }
         self.pending_bytes = 0;
     }

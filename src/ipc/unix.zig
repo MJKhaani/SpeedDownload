@@ -230,9 +230,9 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
 
 const DownloadProgressContext = struct { engine: *EngineContext, job_id: []const u8 };
 
-fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64) void {
+fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64, durable: bool) anyerror!void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
-    progress.engine.jobs.updateProgress(progress.job_id, completed, total);
+    try progress.engine.jobs.updateProgress(progress.job_id, completed, total, durable);
 }
 
 fn buildDestination(allocator: std.mem.Allocator, task: job_store.Store.DownloadTask) ![]u8 {

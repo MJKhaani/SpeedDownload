@@ -207,16 +207,24 @@ pub const Store = struct {
             const previous = job.state;
             const previous_revision = job.revision;
             const previous_error = job.error_message;
+            const previous_completed = job.completed_bytes;
+            const previous_total = job.total_bytes;
             job.state = next;
             job.revision = std.math.add(u64, job.revision, 1) catch {
                 job.state = previous;
                 return error.RevisionOverflow;
             };
-            if (action == .start) job.error_message = null;
+            if (action == .start) {
+                job.error_message = null;
+                job.completed_bytes = 0;
+                job.total_bytes = null;
+            }
             self.persist() catch |err| {
                 job.state = previous;
                 job.revision = previous_revision;
                 job.error_message = previous_error;
+                job.completed_bytes = previous_completed;
+                job.total_bytes = previous_total;
                 return err;
             };
             if (action == .start) if (previous_error) |value| self.allocator.free(value);
@@ -288,13 +296,20 @@ pub const Store = struct {
         return error.JobNotFound;
     }
 
-    pub fn updateProgress(self: *Store, job_id: []const u8, completed_bytes: u64, total_bytes: ?u64) void {
+    pub fn updateProgress(self: *Store, job_id: []const u8, completed_bytes: u64, total_bytes: ?u64, durable: bool) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.id, job_id) or job.state != .downloading) continue;
+            const previous_completed = job.completed_bytes;
+            const previous_total = job.total_bytes;
             job.completed_bytes = completed_bytes;
             job.total_bytes = total_bytes;
+            if (durable) self.persist() catch |err| {
+                job.completed_bytes = previous_completed;
+                job.total_bytes = previous_total;
+                return err;
+            };
             return;
         }
     }
