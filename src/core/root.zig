@@ -50,7 +50,8 @@ pub fn canTransition(from: State, to: State) bool {
         .paused => to == .queued or to == .canceled,
         .retry_wait => to == .queued or to == .resolving or to == .failed or to == .canceled,
         .verifying => to == .completed or to == .retry_wait or to == .failed or to == .canceled,
-        .completed, .failed, .canceled => false,
+        .failed => to == .queued,
+        .completed, .canceled => false,
     };
 }
 
@@ -62,7 +63,7 @@ pub fn transition(state: *State, next: State) TransitionError!void {
 
 /// Identifies states that cannot be resumed or otherwise changed in place.
 pub fn isTerminal(state: State) bool {
-    return state == .completed or state == .failed or state == .canceled;
+    return state == .completed or state == .canceled;
 }
 
 test "queued job can start or be scheduled, but not skip protocol phases" {
@@ -83,8 +84,8 @@ test "paused jobs re-enter queue before work resumes" {
     try @import("std").testing.expect(!canTransition(.paused, .downloading));
 }
 
-test "terminal states cannot transition" {
-    inline for (.{ State.completed, State.failed, State.canceled }) |terminal| {
+test "completed and canceled states cannot transition" {
+    inline for (.{ State.completed, State.canceled }) |terminal| {
         try @import("std").testing.expect(isTerminal(terminal));
         try @import("std").testing.expect(!canTransition(terminal, .queued));
     }

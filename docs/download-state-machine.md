@@ -39,16 +39,17 @@ stateDiagram-v2
     retry_wait --> resolving
     retry_wait --> failed
     retry_wait --> canceled
+    failed --> queued
     verifying --> completed
     verifying --> retry_wait
     verifying --> failed
     verifying --> canceled
 ```
 
-Repeated transitions and transitions out of `completed`, `failed`, or
-`canceled` are rejected. Restarting a terminal job requires a new job ID so
-that prior history and partial-file ownership remain unambiguous. A paused job
-returns through `queued` before it can resolve or connect again.
+Repeated transitions and transitions out of `completed` or `canceled` are
+rejected. A failed job can be explicitly retried into `queued`; a paused job
+also returns through `queued` before it can resolve or connect again. A
+canceled job is final and requires a new job ID to restart.
 
 `Progress` reports completed bytes and an optional total. Its fraction is
 unknown when the total is unknown, `1` for a known empty resource with zero
@@ -57,7 +58,8 @@ invalid counters from appearing as valid progress.
 
 The engine-owned job store permits `start` from `queued` or `retry_wait`,
 `pause` from `queued` or `scheduled`,
-`resume` from `paused` or `retry_wait` back to `queued`, and `cancel` from
+`resume` from `paused` or `retry_wait` back to `queued`, `retry` from `failed`
+to `queued`, and `cancel` from
 queued, scheduled, paused, or retry-wait states. Every accepted change
 increments the job revision and is atomically persisted before the RPC
 response. On startup, persisted `resolving`, `connecting`, `downloading`,

@@ -190,7 +190,7 @@ pub const Store = struct {
         }, .{});
     }
 
-    pub const Action = enum { pause, @"resume", cancel, start };
+    pub const Action = enum { pause, @"resume", cancel, start, retry };
 
     fn controlUnlocked(self: *Store, job_id: []const u8, action: Action, expected_revision: u64) !*const Job {
         for (self.jobs.items) |*job| {
@@ -214,6 +214,10 @@ pub const Store = struct {
                         if (self.activeForHost(job.url) >= max_parallel_downloads_per_host) return error.HostLimitReached;
                         break :blk .downloading;
                     },
+                    else => return error.InvalidJobControl,
+                },
+                .retry => switch (job.state) {
+                    .failed => .queued,
                     else => return error.InvalidJobControl,
                 },
             };

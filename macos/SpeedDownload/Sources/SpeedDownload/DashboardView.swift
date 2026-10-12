@@ -180,6 +180,10 @@ struct DashboardView: View {
                         .disabled(engine.isSubmitting)
                     Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
                         .disabled(engine.isSubmitting)
+                } else if job.state == "failed" {
+                    Button("Retry") { Task { await engine.controlJob(job, action: "retry") } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(engine.isSubmitting)
                 } else if job.state == "paused" {
                     Button("Resume") { Task { await engine.controlJob(job, action: "resume") } }
                         .disabled(engine.isSubmitting)

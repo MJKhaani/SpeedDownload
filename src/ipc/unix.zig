@@ -173,6 +173,7 @@ fn dispatchMethod(
             if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
             return dispatchError(allocator, request_id, -32020, "Could not save the download request");
         };
+        if (control.action == .retry) scheduleQueued(engine);
         return @as(?[]u8, response);
     }
     if (!std.mem.eql(u8, method, "jobs.add")) return null;
