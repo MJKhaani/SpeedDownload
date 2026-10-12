@@ -144,6 +144,16 @@ fn dispatchMethod(
         if (request_id) |id| return @as(?[]u8, try jobs.listJson(id, page.offset, page.limit));
         return null;
     }
+    if (std.mem.eql(u8, method, "jobs.control")) {
+        const control = parseJobControl(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const id = request_id orelse return null;
+        const response = jobs.controlJson(id, control.job_id, control.action) catch |err| {
+            if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+            if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
+            return dispatchError(allocator, request_id, -32020, "Could not save the download request");
+        };
+        return @as(?[]u8, response);
+    }
     if (!std.mem.eql(u8, method, "jobs.add")) return null;
 
     const input = parseAddInput(params orelse return dispatchError(allocator, request_id, -32602, "Invalid params")) catch {
@@ -166,6 +176,17 @@ fn dispatchMethod(
             .duplicate = added.duplicate,
         },
     }, .{}));
+}
+
+const JobControl = struct { job_id: []const u8, action: job_store.Store.Action };
+
+fn parseJobControl(params: ?std.json.Value) !JobControl {
+    const value = params orelse return error.InvalidParams;
+    if (value != .object) return error.InvalidParams;
+    const job_id = stringField(value.object, "job_id") orelse return error.InvalidParams;
+    const action_text = stringField(value.object, "action") orelse return error.InvalidParams;
+    const action = std.meta.stringToEnum(job_store.Store.Action, action_text) orelse return error.InvalidParams;
+    return .{ .job_id = job_id, .action = action };
 }
 
 const ListPage = struct { offset: usize = 0, limit: usize = 50 };

@@ -98,7 +98,7 @@ struct DashboardView: View {
 
     private var filteredJobs: [DownloadJob] {
         switch selection {
-        case "Queue": engine.jobs.filter { $0.state == "queued" || $0.state == "scheduled" }
+        case "Queue": engine.jobs.filter { $0.state == "queued" || $0.state == "scheduled" || $0.state == "paused" }
         case "Completed": engine.jobs.filter { $0.state == "completed" }
         default: engine.jobs
         }
@@ -124,12 +124,24 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Spacer(minLength: 12)
-            Text(job.state.capitalized)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background((job.state == "completed" ? Color.green : Color.blue).opacity(0.1), in: Capsule())
+            VStack(alignment: .trailing, spacing: 9) {
+                Text(job.state.capitalized)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background((job.state == "completed" ? Color.green : Color.blue).opacity(0.1), in: Capsule())
+                if job.state == "queued" || job.state == "scheduled" {
+                    Button("Pause") { Task { await engine.controlJob(job, action: "pause") } }
+                        .disabled(engine.isSubmitting)
+                    Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
+                        .disabled(engine.isSubmitting)
+                } else if job.state == "paused" {
+                    Button("Resume") { Task { await engine.controlJob(job, action: "resume") } }
+                        .disabled(engine.isSubmitting)
+                    Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
+                        .disabled(engine.isSubmitting)
+                }
+            }
         }
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: 14))

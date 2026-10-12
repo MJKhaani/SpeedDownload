@@ -95,6 +95,18 @@ struct UnixEngineClient: Sendable {
         )
     }
 
+    func controlJob(jobID: String, action: String) throws -> AddJobResult {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        return try request(
+            fd: fd,
+            id: "jobs-control-\(UUID().uuidString)",
+            method: "jobs.control",
+            params: ["job_id": jobID, "action": action]
+        )
+    }
+
     private func openConnection() throws -> Int32 {
         let runtime = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
         let socketPath = URL(fileURLWithPath: runtime)

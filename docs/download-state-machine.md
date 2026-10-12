@@ -1,17 +1,20 @@
 # Download State Machine
 
-The current core defines the state vocabulary and legal transitions. It is a
-policy module only; the CLI currently runs a synchronous one-shot HTTP transfer
-and does not yet persist queue jobs or expose pause/cancel commands.
+The core defines the state vocabulary and legal transitions. The engine
+persists queued jobs and currently supports pausing or canceling a queued job,
+and resuming a paused job through IPC. Transfer workers are not connected, so
+controls do not interrupt an active network transfer yet.
 
 ```mermaid
 stateDiagram-v2
     [*] --> queued
     queued --> scheduled
     queued --> resolving
+    queued --> paused
     queued --> canceled
     scheduled --> queued
     scheduled --> resolving
+    scheduled --> paused
     scheduled --> canceled
     resolving --> connecting
     resolving --> retry_wait
@@ -50,11 +53,17 @@ unknown when the total is unknown, `1` for a known empty resource with zero
 completed bytes, and unknown when completed bytes exceed the total. This keeps
 invalid counters from appearing as valid progress.
 
+The engine-owned job store permits `pause` from `queued` or `scheduled`,
+`resume` from `paused` back to `queued`, and `cancel` from queued, scheduled,
+paused, or retry-wait states. Every accepted change increments the job revision
+and is atomically persisted before the RPC response. Active-transfer controls
+remain unavailable until workers have explicit cancellation and ownership
+semantics.
+
 The separate queue policy selects only `queued` jobs, enforces global and
 per-host active limits, then ranks by priority, least-loaded eligible host, and
 FIFO sequence. It is a deterministic core primitive; no queue persistence,
 worker dispatch, or user controls are wired to it yet.
 
-Future queue/persistence work must preserve these rules and add explicit
-idempotency, cancellation, and worker ownership semantics before exposing
-concurrent control commands.
+Future worker integration must preserve these rules and add cancellation and
+worker ownership semantics before exposing controls for active transfers.

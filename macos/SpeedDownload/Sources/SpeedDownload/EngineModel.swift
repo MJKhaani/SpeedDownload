@@ -68,4 +68,22 @@ final class EngineModel: ObservableObject {
             return false
         }
     }
+
+    func controlJob(_ job: DownloadJob, action: String) async {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+        actionError = nil
+        defer { isSubmitting = false }
+        do {
+            let client = UnixEngineClient()
+            _ = try await Task.detached(priority: .userInitiated) {
+                try client.controlJob(jobID: job.jobID, action: action)
+            }.value
+            jobs = try await Task.detached(priority: .userInitiated) {
+                try client.listJobs()
+            }.value
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
 }

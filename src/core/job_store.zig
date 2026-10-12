@@ -1,7 +1,6 @@
 //! Per-user job catalogue with atomic JSON persistence.
 //!
-//! This is an engine-owned record store. It does not start transfer workers;
-//! only records that have been durably saved are acknowledged to IPC clients.
+//! Engine-owned download records with atomic persistence and queue controls.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -12,7 +11,7 @@ const lstat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
 });
 extern "c" fn chmod(path: [*:0]const u8, mode: c.mode_t) c_int;
 
-pub const State = enum { queued, scheduled, downloading, paused, completed, failed, canceled };
+pub const State = enum { queued, scheduled, resolving, connecting, downloading, paused, retry_wait, verifying, completed, failed, canceled };
 
 pub const Job = struct {
     id: []const u8,
@@ -142,6 +141,52 @@ pub const Store = struct {
                 .duplicate = result.duplicate,
             },
         }, .{});
+    }
+
+    pub fn controlJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: Action) ![]u8 {
+        const job = self.control(job_id, action) catch |err| return err;
+        const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
+        defer self.allocator.free(revision);
+        return std.json.Stringify.valueAlloc(self.allocator, .{
+            .jsonrpc = "2.0",
+            .id = request_id,
+            .result = .{
+                .job_id = job.id,
+                .state = job.state,
+                .revision = revision,
+                .duplicate = false,
+            },
+        }, .{});
+    }
+
+    pub const Action = enum { pause, @"resume", cancel };
+
+    pub fn control(self: *Store, job_id: []const u8, action: Action) !*const Job {
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            const next: State = switch (action) {
+                .pause => switch (job.state) {
+                    .queued, .scheduled => .paused,
+                    else => return error.InvalidJobControl,
+                },
+                .@"resume" => if (job.state == .paused) .queued else return error.InvalidJobControl,
+                .cancel => switch (job.state) {
+                    .queued, .scheduled, .paused, .retry_wait => .canceled,
+                    else => return error.InvalidJobControl,
+                },
+            };
+            const previous = job.state;
+            const previous_revision = job.revision;
+            job.state = next;
+            job.revision += 1;
+            self.persist() catch |err| {
+                job.state = previous;
+                job.revision = previous_revision;
+                return err;
+            };
+            return job;
+        }
+        return error.JobNotFound;
     }
 
     fn newId(self: *Store) ![]u8 {
