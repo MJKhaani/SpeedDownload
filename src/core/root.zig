@@ -18,6 +18,20 @@ pub const State = enum {
     canceled,
 };
 
+/// Snapshot exposed to CLI/UI clients. Protocol workers can update byte counts
+/// without leaking their internal I/O objects across the core boundary.
+pub const Progress = struct {
+    completed_bytes: u64 = 0,
+    total_bytes: ?u64 = null,
+
+    pub fn fraction(self: Progress) ?f64 {
+        const total = self.total_bytes orelse return null;
+        if (total == 0) return if (self.completed_bytes == 0) 1 else null;
+        if (self.completed_bytes > total) return null;
+        return @as(f64, @floatFromInt(self.completed_bytes)) / @as(f64, @floatFromInt(total));
+    }
+};
+
 pub const TransitionError = error{InvalidTransition};
 
 /// Reports whether a job may move from `from` to `to`.
@@ -83,4 +97,15 @@ test "transition mutates state only after validation" {
 
     try @import("std").testing.expectError(error.InvalidTransition, transition(&state, .completed));
     try @import("std").testing.expectEqual(State.resolving, state);
+}
+
+test "progress distinguishes unknown, empty, and invalid totals" {
+    const unknown = Progress{ .completed_bytes = 4 };
+    const empty = Progress{ .total_bytes = 0 };
+    const half = Progress{ .completed_bytes = 5, .total_bytes = 10 };
+    const invalid = Progress{ .completed_bytes = 11, .total_bytes = 10 };
+    try @import("std").testing.expect(unknown.fraction() == null);
+    try @import("std").testing.expectEqual(@as(f64, 1), empty.fraction().?);
+    try @import("std").testing.expectEqual(@as(f64, 0.5), half.fraction().?);
+    try @import("std").testing.expect(invalid.fraction() == null);
 }

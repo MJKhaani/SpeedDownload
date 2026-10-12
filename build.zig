@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_http_tests = b.addRunArtifact(http_tests);
 
-    const test_step = b.step("test", "Run core unit tests");
+    const test_step = b.step("test", "Run core and HTTP unit tests");
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_http_tests.step);
 

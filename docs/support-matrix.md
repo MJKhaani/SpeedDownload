@@ -6,7 +6,7 @@
 
 ## Current evidence
 
-Zig 0.17.0 is installed and can be used with a workspace-local cache. The project now has a Zig build manifest, portable core module, and single-stream HTTP(S) CLI prototype, but no Capy checkout or GUI build manifest. Network access was unavailable during this assessment, so upstream state could not be re-queried. The project specification and `Agent.md` record the 2026-10-11 upstream review: Capy identifies Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. Zig 0.17.0 has not been proven compatible with Capy and is only under evaluation for independent core code.
+Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume. Automated local fixtures cover redirects, overwrite protection, status/encoding rejection, interrupted transfer recovery, changed ETags, and redirect-target changes. There is no Capy checkout or GUI build manifest. Network access was unavailable during this assessment, so upstream state could not be re-queried. The project specification and `Agent.md` record the 2026-10-11 upstream review: Capy identifies Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. Zig 0.17.0 has not been proven compatible with Capy and is only used for independent core code.
 
 ## Target matrix
 
@@ -24,7 +24,7 @@ Zig 0.17.0 is installed and can be used with a workspace-local cache. The projec
 
 ## Core module check
 
-On 2026-10-12, direct Zig 0.17.0 commands compiled the CLI and passed five core state tests plus one HTTP scheme test on macOS 14.8.4 x86_64. A local HTTP fixture verified redirect handling, binary transfer, preservation of an existing destination, and partial-file removal on 404. `zig build` itself stalled in the build-runner in this workspace, so the tag workflow uses the verified direct compiler/test commands. This host result does not validate other OS/CPU targets, HTTPS certificate behavior, GUI, or packaging.
+On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six core state tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirect handling, binary transfer, overwrite protection, error cleanup, interrupted resume, and rejection of changed ETag or redirected target. No other OS/CPU target, HTTPS certificate behavior, GUI, or package is validated.
 
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.
 

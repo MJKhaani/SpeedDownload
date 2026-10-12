@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping build Open Download Manager. The project is in feasibility work; read [`PROJECT.md`](PROJECT.md) and [`Agent.md`](Agent.md) before proposing implementation changes. These documents define platform caveats, safety invariants, and validation expectations.
+Thanks for helping build Open Download Manager. The project is in early implementation; read [`PROJECT.md`](PROJECT.md) and [`Agent.md`](Agent.md) before proposing implementation changes. These documents define platform caveats, safety invariants, and validation expectations.
 
 ## Before changing code
 
@@ -13,7 +13,17 @@ Thanks for helping build Open Download Manager. The project is in feasibility wo
 
 Describe the behavior and relevant requirement IDs in a pull request. Include exact commands and results for checks that were run, and identify platforms not tested. Never include credentials, tokens, private URLs, or user download data in a change or log.
 
-The Zig build and test commands will be documented here once their manifests and targets are established. The current planning-only repository has no build or test target.
+The current core is evaluated with Zig 0.17.0. Build and check the headless prototype with:
+
+```sh
+mkdir -p zig-out/bin
+zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
+zig test src/core/root.zig
+zig test src/protocols/http/download.zig
+python3 tests/integration/http_cli.py zig-out/bin/odm
+```
+
+The integration fixture uses loopback networking only. Platform support remains unvalidated outside the development host.
 
 ## License
 

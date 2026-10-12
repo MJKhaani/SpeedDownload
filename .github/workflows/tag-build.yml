@@ -16,28 +16,12 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Check for a Zig build manifest
-        id: manifest
-        shell: bash
-        run: |
-          if [[ -f build.zig ]]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Report planning-only tag
-        if: steps.manifest.outputs.present != 'true'
-        run: echo "No build.zig exists at this tag; the project is not buildable yet." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Set up Zig
-        if: steps.manifest.outputs.present == 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
 
       - name: Build CLI and validate core
-        if: steps.manifest.outputs.present == 'true'
         run: |
           mkdir -p zig-out/bin
           zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
