@@ -6,6 +6,6 @@ The application source in this repository is offered under the MIT License; see 
 
 ## Third-party components
 
-No third-party source dependencies or binaries are currently vendored. Capy UI is a required future dependency; the project source review identifies its license as MPL-2.0. Before adopting or distributing a specific Capy revision, verify its actual license file, preserve required notices, and document whether local modifications trigger source-availability obligations. Review each future protocol, database, native binding, and packaging dependency for license compatibility and target support before adding it.
+No third-party source dependencies or binaries are currently vendored. The adopted architecture uses platform SDKs and toolkits independently: Apple SDK/SwiftUI, Windows App SDK/.NET, and GTK 4/GLib. Review each platform's redistribution and notice requirements before packaging. Review each future protocol, database, native binding, and packaging dependency for license compatibility and target support before adding it. Capy was removed from the project architecture; see [ADR 0001](adr/0001-native-guis-local-ipc.md).
 
 This file is an initial inventory, not a complete dependency audit or legal opinion. Update it alongside dependency changes and include applicable notices and an SBOM with binary releases.

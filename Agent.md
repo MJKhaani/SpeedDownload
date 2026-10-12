@@ -2,8 +2,8 @@
 
 > **Applies to:** all AI coding agents, automated contributors, and human maintainers working on this repository.  
 > **Canonical product specification:** [PROJECT.md](PROJECT.md)  
-> **Status:** Initial development guide — 2026-10-11  
-> **Language:** Zig (native app and engine); Capy UI (desktop interface); JS/TS only where browser extension runtimes require it.
+> **Status:** Architecture adopted; daemon, IPC and native GUI implementations pending — 2026-10-12
+> **Language:** Zig engine/CLI; Swift/SwiftUI on macOS; C#/WinUI 3 on Windows; C/GTK 4 on Linux; JS/TS for browser extension runtimes.
 
 ## 1. Your role and mission
 
@@ -15,9 +15,9 @@ You are a senior, security-conscious Zig engineer building a cross-platform open
 
 ## 2. Non-negotiable constraints
 
-1. **Zig-first native implementation.** Engine, job manager, CLI/headless service, native IPC, persistence interfaces, and desktop application logic must be Zig. Small C/Objective-C/Swift/Win32 bindings and Xcode packaging glue are acceptable only when necessary for native OS APIs and reviewed. Use JS/TS for browser extensions because browser extension runtimes require it.
-2. **Capy UI is mandatory for the desktop GUI.** Do not substitute Qt, Electron, Flutter, Tauri, webviews, or a new framework without an explicit architecture decision from maintainers.
-3. **Toolchain must be pinned and proven.** The checked Capy upstream README on 2026-10-11 targets Zig **0.14.1**, calls itself pre-production, marks macOS GUI backends as planned, and does not certify Windows ARM64. Zig **0.17.0** is newer, not automatically compatible. Verify actual upstream state, select a tested compiler/Capy revision, and record it in `docs/adr/0001-zig-capy-toolchain.md`. Never assert that a cross-compiled executable proves full GUI functionality.
+1. **Keep one authoritative engine.** Transfers, state, persistence, scheduling, and IPC live in Zig. The CLI and three separate native GUIs are IPC clients; they do not call engine internals or write its database.
+2. **Use the platform GUI.** macOS uses Swift/SwiftUI, Windows uses C#/WinUI 3, and Linux uses C/GTK 4. Follow [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the hard IPC contract in [protocol v1](docs/protocols/ipc-v1.md).
+3. **Pin and verify each toolchain independently.** Record tested Zig, Xcode/Swift, .NET/Windows App SDK, GTK/GLib versions and target-specific results. Cross-compilation alone does not establish runtime or GUI support.
 4. **macOS 32-bit builds are out of scope.** On Windows/Linux, x86 includes **32-bit and 64-bit**. ARM64 is required where stated; Linux 32-bit ARM is exploratory. Target status is experimental until exercised on the actual OS/CPU and packaged.
 5. **Security, integrity, and crash recovery are essential.** Never skip TLS validation, checksum/validator checks, safe filename/path rules, or durable progress journals for apparent speed.
 6. **No sensitive data leakage.** Credentials must be stored only in OS secret stores. Never commit credentials, print auth headers/cookies/tokens, or store site passwords in SQLite/plaintext configuration.
@@ -32,7 +32,7 @@ Before writing code:
 
 1. Read `PROJECT.md`, this file, relevant source modules, and any ADRs/tests for the affected area.
 2. Identify the narrowest useful change and the spec requirement IDs it addresses (e.g., `DL-06`, `SC-03`).
-3. Inspect current Zig/compiler version, Capy revision, dependencies, platform-specific limitations, and existing build/test targets. **Do not assume commands or APIs exist from memory**, especially when Zig/Capy version changes.
+3. Inspect current toolchain versions, dependencies, platform limitations, and build/test targets. **Do not assume commands or APIs exist from memory.**
 4. Define a short plan: changes, key invariants, likely failure paths, test cases, docs updates, and any blocked platform.
 5. Implement in small composable commits/patches, preserving backward compatibility or providing migrations.
 6. Format and run relevant unit/integration tests plus the broadest affordable build matrix. Investigate failures rather than suppress warnings or ignoring test results.
@@ -44,13 +44,13 @@ For larger features, create/update a focused design document or ADR **before** l
 
 Follow the milestone gates in `PROJECT.md`:
 
-**Phase 0 (mandatory feasibility).** Prove the Zig/Capy pairing; build a minimal native window and Capy component/scrolling/progress prototype; test Windows x86/x64 and Linux x86/x64/ARM64; investigate macOS x86_64/ARM64 and Windows ARM64 backends on real hosts; document missing components and packaging obstacles. Separately confirm headless core and CLI compile on relevant architectures.
+**Phase 0 (mandatory feasibility).** Prove the engine/IPC lifecycle, framing, permissions, handshake, job listing, progress subscription, reconnect and crash recovery. Build one native window/client per OS and verify real-host launch and reconnect. Separately confirm the headless engine and CLI compile on target architectures.
 
 **Phase 1.** Establish basic Zig build, core job model/state machine, persistable queue, safe filesystem operations, CLI, single-stream HTTP/HTTPS, retries and resume with validators; create HTTP fixture server tests.
 
 **Phase 2.** Implement intelligent **dynamic HTTP byte-range allocation** (IDM-inspired), per-host/global connection limits, crash-safe segment journal, fair scheduler, bandwidth limiter, deterministic/adversarial tests; emit progress as snapshots/events.
 
-**Phase 3.** Implement tested Capy GUI on verified baselines; queue, details, prefs, accessible multipart visualization and native platform UX. Keep GUI attach/detach independent of transfers.
+**Phase 3.** Implement the native SwiftUI, WinUI 3 and GTK clients against the shared IPC contract. Deliver downloads, details, preferences, accessible progress/range visualization and native platform UX. Keep GUI attach/detach independent of transfers.
 
 **Phase 4.** Add FTP/FTPS, BitTorrent, recurring time windows, upload/download bandwidth rules, OS credential adapters and comprehensive tests.
 
@@ -58,18 +58,18 @@ Follow the milestone gates in `PROJECT.md`:
 
 **Phase 6–7.** Complete remaining platform backends/ports, installers/signing, native-hardware tests, audit, and stable release.
 
-Do not implement UI widgets against imagined Capy APIs. If a phase is blocked, work on portable, testable core slices and document the blocker rather than pretending it is resolved.
+Keep all business operations behind the versioned local IPC contract. If a platform phase is blocked, complete portable engine/protocol work and record the evidence and blocker.
 
 ## 5. Architectural rules
 
 Use the module boundaries in `PROJECT.md`:
 
-- **`core/`:** job IDs and state transitions, priorities, policy, queue fairness, events and cancellation, with no dependency on Capy, browser runtimes, or OS toolkit APIs.
+- **`core/`:** job IDs and state transitions, priorities, policy, queue fairness, events and cancellation, with no dependency on browser runtimes or OS toolkit APIs.
 - **`protocols/`:** protocol-specific probes, transfers, retries, auth negotiation and verifiers behind explicit interfaces. HTTP intervals and BitTorrent pieces are different concepts.
 - **`storage/`:** versioned metadata, atomic journal/checkpoints, sparse/random-access disk writing, finalization, file locks and path safety.
-- **`platform/`:** separate implementations of OS secrets, notifications, startup, tray/menu-bar, file dialogs, paths, and local IPC. Return explicit *unsupported* statuses rather than no-op success.
+- **`platform/`:** separate implementations of OS secrets, notifications, startup, tray/menu-bar, file dialogs, paths, and secure local IPC. Return explicit *unsupported* statuses rather than no-op success.
 - **`ipc/`:** versioned command/message schema, authorization, strict parsing and request IDs for idempotent browser handoff. No arbitrary shell execution or general file access.
-- **`ui/`:** Capy views, view-models and adapters; UI dispatches commands and reads immutable snapshots, never mutates download internals directly.
+- **Native clients:** separate SwiftUI, WinUI 3 and GTK projects; clients dispatch IPC commands and render authoritative snapshots/events.
 - **`extensions/`:** browser-facing JS/TS modules, Chrome-family and Firefox manifests, Safari host/bridge, install and permission metadata.
 
 **Concurrency model:** explicitly define ownership, thread-safe transitions, cancellation lifetimes, and backpressure. Prefer a single state owner with asynchronous worker messages rather than many threads modifying job records directly. UI rendering must never block on network, database, file I/O or worker joins. Use bounded allocations/channels and 64-bit-safe offsets on 32-bit architectures.
@@ -113,7 +113,7 @@ Never download to an attacker-controlled path outside the approved destination. 
 | Tray/menu-bar | NSStatusItem-style adapter | Notification-area icon | StatusNotifier/AppIndicator where available; fallback when unavailable |
 | UI guide | macOS HIG | Microsoft Fluent guidance | GTK/GNOME HIG plus DE conventions |
 
-These are proposed integration mechanisms, **not** claims that Capy exposes a built-in API for them. Validate compatibility, user permissions, lifecycle and packaging. Do not require administrator/root privileges for normal operation. Service-at-boot and per-user login autostart must not be conflated.
+Validate native OS integration, user permissions, lifecycle and packaging. Do not require administrator/root privileges for normal operation. Service-at-boot and per-user login autostart must not be conflated.
 
 If the Linux keyring is unavailable/locked, allow **session-only** credentials or return an actionable failure. Do not store fallback passwords unencrypted. App must not silently hide when tray functionality is absent; maintain an accessible way to reopen background jobs.
 
@@ -158,7 +158,7 @@ Keep comments accurate as code changes; remove stale prose. Avoid commenting eve
 
 Use native menu structure, commands, file dialogs and system keyboard conventions. Follow system light/dark preference; respect high contrast, large text, screen readers, reduced motion and keyboard-only usage. A pretty segmented progress bar that is inaccessible is **not done**.
 
-Aggregate progress is primary; show detailed segment map in a compact secondary row or expandable details. Segment states are indicated by labels/shapes/patterns in addition to color. Never block the UI thread on transfer work. Throttle view updates, not engine state updates, and provide a fallback when Capy lacks custom drawing or accessible components on a target backend.
+Aggregate progress is primary; show the detailed segment map in a compact secondary row or expandable details. Segment states use labels/shapes/patterns in addition to color. Keep transfer work off the UI thread and coalesce progress updates for rendering.
 
 Review mockups and runtime behavior per-platform rather than assuming one screenshot satisfies every HIG.
 
@@ -182,19 +182,20 @@ zig build run                   # Only if a 'run' build step has been defined
 - **Platform support:** exact validated OS/CPU/toolchain combinations versus not tested.
 - **Risks/follow-up:** remaining blockers, protocol/security issues, docs and next logical milestone.
 
-If a component cannot compile due to Capy or Zig limitations, show the actual error/constraint and deliver the portable portions and docs instead of silently switching technologies.
+If a platform component is blocked, report the actual constraint and deliver portable engine, protocol and documentation work.
 
 ## 14. Definition of Done
 
 A task is done when its requirement is implemented **and** measurable acceptance tests pass on applicable verified targets; it fails securely; no potential corruption is hidden; cancellation/restart is safe; the UI/CLI state matches the engine; sensitive data is protected; docs and error semantics are accurate; and no unsupported architecture/browser is advertised as working.
 
-**Start here:** prove toolchain/platform feasibility and write the minimal headless HTTP transfer + persistence test slice. Build robust fundamentals first, then acceleration, UI, remaining protocols, and integrations.
+**Start here:** implement the IPC v1 framing/handshake proof and an engine daemon lifecycle around the existing headless core. Then connect a minimal native client and verify reconnect before expanding UI or protocols.
 
 ## 15. Authoritative reading
 
 - [PROJECT.md](PROJECT.md) — product requirements, roadmap, architecture, acceptance criteria and source references.
-- [Capy UI repository](https://github.com/capy-ui/capy) — exact upstream APIs/status; pin revision before implementing UI.
-- [Zig downloads](https://ziglang.org/download/) — compiler releases; **not** proof of Capy compatibility.
+- [Native GUI and IPC architecture](docs/adr/0001-native-guis-local-ipc.md) — decisions and release proof requirements.
+- [IPC v1](docs/protocols/ipc-v1.md) — normative framing, handshake, API and security contract.
+- [Zig downloads](https://ziglang.org/download/) — compiler releases; validate the engine compiler independently of native GUI toolchains.
 - [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html) — HTTP range/resume semantics.
 - [IDM dynamic segmentation overview](https://internet.internetdownloadmanager.com/support/segmentation.html) — conceptual inspiration only.
 - [Apple macOS HIG](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos/), [Windows design](https://learn.microsoft.com/en-us/windows/apps/design/), [GNOME HIG](https://developer.gnome.org/hig/).

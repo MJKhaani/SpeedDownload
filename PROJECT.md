@@ -3,10 +3,11 @@
 > **Status:** Proposed / architecture and feasibility phase  
 > **Product name:** Speed Download (`speed-download` CLI)
 > **Type:** Free, open-source, cross-platform desktop download manager  
-> **Primary language:** Zig  
-> **GUI toolkit:** Capy UI (required; platform readiness must be validated)  
-> **Document version:** 0.1 — 2026-10-11  
-> **Related:** [Agent.md](Agent.md)
+> **Core/engine language:** Zig (shared across all platforms)
+> **Native GUIs:** macOS Swift / SwiftUI; Windows C# / WinUI 3; Linux C / GTK 4
+> **IPC:** JSON-RPC 2.0 over framed, local OS IPC (Windows Named Pipes; macOS/Linux Unix domain sockets)
+> **Document version:** 0.2 — 2026-10-12
+> **Related:** [Agent.md](Agent.md), [IPC v1](docs/protocols/ipc-v1.md), [ADR 0001](docs/adr/0001-native-guis-local-ipc.md)
 
 ## 1. Vision
 
@@ -16,7 +17,7 @@ Build a fast, resilient, privacy-respecting download manager that feels native o
 
 1. **Correctness before acceleration.** Never sacrifice data integrity to increase speed; do not claim that parallel requests always make downloads faster.
 2. **Native where it matters.** Respect each platform's human-interface guidance, accessibility model, notification service, secret storage, startup mechanism, and system tray/menu bar conventions.
-3. **One download engine, multiple front ends.** GUI, command-line/headless process, and browser bridges use one documented core service API.
+3. **One Zig engine, three independent native front ends.** SwiftUI, WinUI 3, GTK 4, the CLI, and browser bridges communicate with the single headless engine over the same versioned, local IPC protocol.
 4. **Transparent control.** All interception, auto-start, scheduling, bandwidth rules, and post-download actions are user-configurable and reversible.
 5. **Security and privacy by default.** Credentials remain in OS-protected storage; no telemetry or cloud account is required; secrets do not enter logs or persistent download records.
 6. **Community maintainability.** Document public APIs, invariants, decisions, platform exceptions, and tests. Keep builds reproducible and source code readable.
@@ -25,30 +26,48 @@ Build a fast, resilient, privacy-respecting download manager that feels native o
 
 ### 2.1 Architecture matrix
 
-| OS | CPU targets | Desired product support | Engineering status / caveat |
+| OS | CPU targets | Native GUI | Core engine | Engineering status / caveat |
+|---|---|---|---|---|
+| macOS | Intel x86_64; Apple Silicon aarch64 | Swift + SwiftUI / AppKit adapters | Zig | Separate universal (or per-arch) app/engine builds; test sign/notarization, helper launch, IPC, menu-bar and login behavior. |
+| Windows | x86 (32-bit i386); x86_64; ARM64 aarch64 | C# + WinUI 3 / Windows App SDK | Zig | Per-architecture .NET/WinUI and Zig artifacts; verify bundled engine lifecycle, named-pipe ACLs, and packaged vs unpackaged deployment. |
+| Linux | x86 (32-bit i386); x86_64; ARM64 aarch64 | C + GTK 4 / GLib/GIO | Zig | Match GTK runtime and distro ABI; test X11/Wayland, portals, desktop integration, and installed system libraries. |
+| Linux | ARM32 (e.g. armv7) | C + GTK 4, subject to distro support | Zig | Stretch target; engine-first until runtime/CI/hardware support is demonstrated. |
+
+*x86* includes both 32-bit and 64-bit Windows and Linux targets. Modern macOS targets only 64-bit Intel and Apple Silicon; ARM64 is the main ARM target. **A functioning Zig core does not automatically mean that the platform GUI, runtime, installer, or native bridge supports that architecture.** Each advertised configuration must pass real-device installation, accessibility, crash-recovery, and IPC tests.
+
+**Minimum OS/runtime versions remain feasibility decisions**, not commitments. As a starting point, WinUI 3 uses the Windows App SDK and supports Windows 10 version 1809 and later at the framework level; precise app requirements and supported servicing channels must be verified. SwiftUI's macOS deployment target will be selected after validating the UI features used. Record tested versions in `docs/support-matrix.md`.
+
+### 2.2 Native GUI technology decision — mandatory
+
+**Capy UI is removed as a project dependency and is not a release gate.** Its source and Zig version compatibility no longer constrain the Speed Download GUI. Keep the existing Zig CLI/headless core working without any desktop toolkits.
+
+| Platform | Required technology | Language | Responsibility |
 |---|---|---|---|
-| macOS | Intel x86_64; Apple Silicon aarch64 | GUI + engine + integration | **Blocked pending Capy backend validation.** Capy currently labels both as planned. |
-| Windows | x86 (32-bit i386); x86_64; ARM64 aarch64 | GUI + engine + integration | Capy advertises i386 and x86_64; **ARM64 GUI must be prototyped and verified**. |
-| Linux | x86 (32-bit i386); x86_64; ARM64 aarch64 | GUI + engine + integration | Capy advertises these three; verify distro-specific GTK4 and packaging requirements. |
-| Linux | 32-bit ARM (e.g., armv7) | Stretch target, engine first | Architecture and distro ABI support, GUI dependencies, and CI runners must be assessed separately. |
+| macOS | SwiftUI; AppKit only where a native capability is missing | Swift | App lifecycle, macOS menus, settings, Finder integration, panels, notifications and accessibility |
+| Windows | WinUI 3 + Windows App SDK (XAML); platform APIs as necessary | C# / .NET | Fluent UI, app activation, taskbar/tray, file picker, notifications and accessibility |
+| Linux | GTK 4 + GLib/GIO; optional libadwaita when appropriate | C | GTK application lifecycle, file dialogs/portals, desktop notifications, XDG integration and accessibility |
+| All | Headless engine/service + CLI | Zig | Transfer protocols, state, persistence, scheduler, bandwidth, download integrity, RPC server and OS IPC transports |
 
-The word *x86* includes **both 32-bit and 64-bit** Windows and Linux targets. On modern macOS, only 64-bit Intel and Apple Silicon are in scope: macOS 10.15 and later cannot run 32-bit macOS apps. ARM here means ARM64 by default; Linux ARM32 is a distinct stretch target. No ARM32 macOS target is planned.
+**Hard architecture rules:**
 
-**Support is not certified by cross-compilation alone:** a release target needs a compiled GUI, native integration, functional tests, installer, accessibility checks, and a real-device smoke test. The intended minimum OS/distro versions will be decided in the feasibility phase, not invented in advance. Record them in `docs/support-matrix.md`.
+- Each GUI is a **separate native executable/project**. No webview/Electron/Tauri/Capy/Qt/common cross-platform widget layer is used to implement the product GUIs. Reuse the *API schema and design concepts*, not UI view code.
+- GUIs never link to the Zig download engine in-process, invoke its internal functions directly, maintain their own download workers, or write the engine's state database. All operational commands and observable download state go through IPC.
+- The Zig core must compile, test, and operate as a headless daemon and CLI independent of any GUI or installed UI framework.
+- Native platform helpers are allowed for OS facilities (e.g., keychain access, status-bar items, notifications, activation). They must obey the IPC/API boundary, avoid duplicating business logic, and be documented.
+- A GUI can restart or reconnect to a surviving engine without losing jobs; the engine can run without the GUI, including after windows close if configured.
+- Pin and independently test the exact **Zig toolchain**, **Xcode/Swift**, **.NET + Windows App SDK**, and **GTK/GLib** versions in CI. Do not impose the GUI's language/toolchain on the core.
 
-### 2.2 Toolchain compatibility — hard release gate
+### 2.3 IPC architecture decision — hard release gate
 
-As checked on **2026-10-11**, the [Capy repository](https://github.com/capy-ui/capy) says it is *not production-ready*, targets **Zig 0.14.1**, lists macOS x86_64/aarch64 as **planned**, and exposes different components across Win32/GTK/macOS. Meanwhile, the official [Zig download page](https://ziglang.org/download/) lists **0.17.0** as a newer release. Do not simply pin the latest Zig version or assume missing Capy widgets exist.
+Adopt **JSON-RPC 2.0 using UTF-8 JSON, framed by a 4-byte unsigned little-endian payload length**, over secure **local, bidirectional stream transports**:
 
-Required action before building product UI:
+- **Windows:** per-user **Named Pipe** in byte-stream mode; use explicit user/logon-session scoped access control and reject remote connections.
+- **macOS:** per-user filesystem **AF_UNIX stream socket** with a short, private runtime path; verify peer identity with `getpeereid`.
+- **Linux:** **AF_UNIX stream socket**, normally under `$XDG_RUNTIME_DIR/speed-download/`; verify peer identity with `SO_PEERCRED`.
 
-- Pin **an exact Zig version and exact Capy commit** proven to build together; begin evaluation with the version Capy names, but do not assume the pinned toolchain supports every required target.
-- Build a **GUI compatibility spike** on Windows x86/x64, Linux x86/x64/ARM64, macOS x64/ARM64, and Windows ARM64. Smoke-test window creation, native events, text, lists, scrolling, progress drawing, keyboard access, theming, DPI, and packaging.
-- Maintain Capy as the required UI toolkit. If a backend/widget is missing, prefer contributing an upstream patch or adding an isolated platform backend/adapter around Capy. **Do not silently replace Capy** with a different GUI framework.
-- Keep the downloader core and headless binary buildable while GUI backends are developed. Mark unsupported combinations *blocked* or *experimental*, never *released*.
-- Decide whether native widgets, toolkit extensions, or a custom-drawn segment strip can meet the required progress visualization and accessibility standards.
+All clients (Swift, C#, C, Zig CLI, native-messaging bridge) use the **same application protocol**. The platform transport is intentionally different so its security and client APIs are idiomatic and reliable. Do **not** open unauthenticated TCP, HTTP, or WebSocket listeners on localhost as the default desktop control channel. No gRPC/HTTP2 runtime or generated C++/Java bindings are necessary for this use case.
 
-**Decision record:** `docs/adr/0001-zig-capy-toolchain.md` will capture versions, patches, alternatives investigated, platform tests, and conditions for upgrading.
+The formal normative contract lives in `docs/protocols/ipc-v1.md`, and the decision is recorded in `docs/adr/0001-native-guis-local-ipc.md`. The first native-UI feasibility spike must prove a one-engine/two-clients request, progress subscription, reconnect, lifecycle, and credential/permission scenario on each OS.
 
 ## 3. Users and primary workflows
 
@@ -154,25 +173,27 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 - A hover/focus segment detail shows offset range, downloaded bytes, worker ID, recent rate and retry state. Enable keyboard and screen-reader equivalent summaries; offer a simple progress-only fallback.
 - Avoid color-only distinctions and high-frequency repainting. Throttle UI updates (e.g., 5–10 Hz under load), separately from internal engine updates; prevent the UI from blocking on disk/network operations.
 
-**Platform rules:**
+**Platform-native implementations:**
 
-| Platform | Primary HIG / conventions | Examples |
+| Platform | HIG / conventions | Implementation expectations |
 |---|---|---|
-| macOS | [Apple macOS HIG](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos/) | Real app menus, standard keyboard shortcuts, Dock/menu-bar behavior, standard open/save panels, macOS notifications, accessibility. |
-| Windows | [Microsoft Windows app design / Fluent](https://learn.microsoft.com/en-us/windows/apps/design/) | Title/command/navigation conventions, taskbar + notification area, high-DPI, system colors, Win accessibility, Windows notifications. |
-| Linux | [GNOME HIG](https://developer.gnome.org/hig/) as GTK baseline, while respecting desktop environments | GTK4-compatible controls, XDG directories/portals, StatusNotifier where available, theme and notification integrations, keyboard support. |
+| macOS | [Apple macOS HIG](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos/) | SwiftUI `WindowGroup`/settings/views, true system menus, keyboard shortcuts, native open/save panels, accessibility, and AppKit integrations only as needed (Dock/menu-bar/status item, advanced table behavior). |
+| Windows | [Windows/Fluent design](https://learn.microsoft.com/en-us/windows/apps/design/) | C# WinUI 3 XAML views, `NavigationView` or equivalent native patterns, Windows App SDK, taskbar/notification area, scalable DPI, system colors, native activation and accessibility. |
+| Linux | [GNOME HIG](https://developer.gnome.org/hig/) as a baseline with other desktops respected | GTK 4 / GLib application with `GtkColumnView`/models where appropriate, GTK native file dialogs or portals, XDG paths, keyboard access, theme preference and desktop notifications. |
 
-**Linux caveat:** tray support varies by GNOME/KDE/Xfce and Wayland/desktop environment; where no tray exists, hide-to-background must remain recoverable via launcher/notification/CLI. Use native platform services behind explicit adapters; Capy's native-widget promise does **not** mean every listed widget or OS integration exists today.
+The **multipart segment map** is a small platform-native custom drawing control (SwiftUI `Canvas`/accessibility equivalent, WinUI 3 `Canvas`/Composition/custom control as validated, GTK 4 `GtkDrawingArea` or snapshot custom widget). It consumes identical segment data but is implemented and accessible separately on each OS. Shared business logic must remain in Zig, not copied into three view models.
+
+**Linux caveat:** notification-area/tray support varies by GNOME/KDE/Xfce and Wayland; where unavailable, background jobs must be recoverable through the launcher, notification, and CLI. `libadwaita` may be adopted for GNOME style but cannot be a silent hard dependency if it prevents other supported desktops or CPU architectures from working.
 
 ### 4.7 Browser extensions and integration
 
 **Target browsers:** Google Chrome, Microsoft Edge, Mozilla Firefox, Safari (macOS), Brave, Opera, Vivaldi. Chromium-derived browsers may share most extension code but require separate packaging/QA and potentially separate native host allowlists.
 
-- Browser extension code must be WebExtensions-compatible **JavaScript/TypeScript**, with minimal vendor-specific glue. **Zig-only** refers to the native desktop application/core, not browser-managed JS extension runtimes or platform packaging glue.
+- Browser extension code must be WebExtensions-compatible **JavaScript/TypeScript**, with minimal vendor-specific glue. **Zig-only** applies to the shared download engine and core CLI; native desktop GUIs intentionally use Swift, C#, and C, while browser extensions use JS/TypeScript.
 - Functions: context-menu **Download with Speed Download**, optional integration with the browser download API, URL handoff with user confirmation, add-from-current-tab when authorized, extension settings, per-site enable/disable, and installed-app status.
 - Never claim all downloads can be intercepted: browser API/security/sandbox restrictions, streaming media, DRM, authentication-bound requests, blob/object URLs, and `POST` transfers may prevent handoff. Avoid promising DRM bypass or media extraction.
-- Use **native messaging** for Chromium and Firefox (with host manifest per OS/browser). An extension service worker forwards messages from content scripts and wakes/reconnects as necessary. No unauthenticated TCP localhost listener by default.
-- Safari uses an **Xcode-packaged Safari Web Extension**, a containing macOS app and native extension bridge; app groups/native message paths require Apple-specific work and signing/distribution review. Safari is not merely a Chrome extension binary copied onto macOS.
+- Use **native messaging** for Chromium and Firefox (with host manifest per OS/browser). The trusted native host is a minimal, separately scoped adapter that validates/authorizes browser messages and forwards only approved operations to the same engine IPC server. Native messaging `stdin/stdout` framing and access policy remain distinct from the engine IPC transport. An extension service worker reconnects as needed; do not open an unauthenticated localhost TCP listener.
+- Safari uses an **Xcode-packaged Safari Web Extension** attached to the SwiftUI containing app and a native Safari bridge. Its entitlement/app-group/signing design must be reviewed; the bridge routes permitted actions to the same engine IPC, not directly to internal Zig APIs. Safari is not simply the Chromium extension binary copied onto macOS.
 - Version, validate, size-limit, and authenticate/authorize IPC messages. Maintain strict allowed extension IDs/origins, explicit user intent, least privileges, origin-aware handoff, and redaction of cookies/authorization headers. Do not pass browser session cookies by default.
 - Persist jobs in the daemon **before** acknowledging the browser handoff, and deduplicate retries using request IDs; handle native-host crash and service-worker sleep.
 - Keep separate extension store release checklists; permissions and manifests can differ across browsers.
@@ -181,16 +202,16 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 
 ### 4.8 Headless, startup, tray, and notifications
 
-- Expose a single-instance **engine service** that can run without graphical windows, with controlled IPC. The GUI attaches/detaches; closing a window follows preferences (`quit`, `hide to tray`, `leave engine running`) and user-facing confirmation if behavior is ambiguous.
+- Expose one **single-instance per-user Zig engine process** that survives GUI restarts, runs without graphical windows, and exposes the authenticated local IPC endpoint. Every GUI/CLI client attaches independently. Closing a window follows preferences (`quit GUI`, `hide when supported`, `leave engine running`, or `stop engine`) and gives confirmation when ambiguous. Do not stop the engine merely because a UI connection is lost.
 - Settings: **Launch on login**, **Start minimized**, **Run engine in background**, **Minimize to tray / menu-bar/status area when supported**, and **Launch GUI when manually invoked**. Each is an independent explicit preference.
 - Distinguish desktop login startup from **system service at boot**. Service-before-login is optional, platform-specific, carefully permissioned, and not enabled by default.
 - Provide native OS completion/failure notifications with per-category toggles and clickable actions where supported. Do not show credentials, private source query strings, or sensitive file paths in lock-screen notifications.
-- Platform mechanisms (evaluate during spike): macOS login item / LaunchAgent + UserNotifications; Windows per-user startup/task scheduling + notification APIs; Linux systemd user service or XDG autostart + Freedesktop notifications / portals.
+- Platform mechanisms (evaluate during spike): macOS login item / LaunchAgent plus SwiftUI/AppKit notification helper; Windows per-user task/startup and Windows App SDK notification integration; Linux systemd user service or XDG autostart plus GTK/GIO/Freedesktop/portal notifications. GUI and engine use independently managed process lifecycles; avoid automatically configuring a privileged system-wide service.
 - Keep headless CLI useful: `speed-download add <url>`, `speed-download list`, `speed-download pause <id>`, `speed-download resume <id>`, `speed-download status`, `speed-download daemon` (proposed; finalize in CLI design). CLI should share application commands and validation with GUI.
 
 ### 4.9 Credentials and privacy
 
-- Save site credentials, optional proxy credentials, and certificate-related secrets using **OS-provided secret stores**, never plaintext config, logs, shell arguments, or the job database.
+- Save site credentials, optional proxy credentials, and certificate-related secrets using **OS-provided secret stores**, never plaintext config, logs, shell arguments, or the job database. The Zig engine/platform-services layer controls durable credential references; GUIs send approved changes over IPC and must not leak secrets into snapshots or progress events.
 - macOS: **Keychain Services**; Windows: **Windows Credential Manager / DPAPI-backed per-user credential storage**; Linux: **Secret Service API (libsecret / compatible keyring)**. Detect missing/locked Linux keyring and offer session-only use or clear error, **not silent plaintext fallback**.
 - Maintain records by protocol, normalized host, realm/account, port and optional path scope. Support add/view metadata, update, remove; password reveal requires explicit OS-backed authorization where practical. Never assume credentials for one origin should be sent after cross-origin redirects.
 - Browser handoff should transfer URL and safe metadata only by default. If authenticated downloads need cookie/header forwarding, implement a narrowly scoped, ephemeral, consent-driven flow with high scrutiny; never bulk-import browser passwords.
@@ -199,71 +220,83 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 
 ## 5. Architecture
 
-### 5.1 Core separation
+### 5.1 Process and ownership architecture
 
 ```mermaid
 flowchart TD
-  UI[Capy UI / OS adapters] --> API[Versioned local application API]
-  CLI[CLI and headless controller] --> API
-  EXT[Browser WebExtensions] --> NM[Native Messaging host / Safari bridge]
-  NM --> API
-  API --> CORE[Job manager and durable state]
-  CORE --> QUEUE[Fair scheduling / policy / bandwidth]
-  QUEUE --> HTTP[HTTP and HTTPS engine]
-  QUEUE --> FTP[FTP and FTPS engine]
-  QUEUE --> BT[BitTorrent engine]
-  HTTP --> STORE[Segment journal / file writer / verifier]
+  MAC[macOS: Swift / SwiftUI app] --> IPC[JSON-RPC 2.0 / framed local IPC]
+  WIN[Windows: C# / WinUI 3 app] --> IPC
+  LIN[Linux: C / GTK 4 app] --> IPC
+  CLI[Zig CLI client] --> IPC
+  EXT[Browser WebExtensions] --> NM[Native messaging host / Safari adapter]
+  NM --> IPC
+  IPC --> DAEMON[Zig single-instance headless engine process]
+  DAEMON --> CORE[Job manager / scheduler / policy / events]
+  CORE --> HTTP[HTTP / HTTPS]
+  CORE --> FTP[FTP / FTPS]
+  CORE --> BT[BitTorrent]
+  HTTP --> STORE[Verified writer / segment journal]
   FTP --> STORE
   BT --> STORE
-  CORE --> DB[(SQLite or verified embedded DB)]
-  CORE --> SECRET[Platform secrets adapter]
-  CORE --> NOTIF[Platform notifications and startup]
+  CORE --> DB[(Durable DB / metadata)]
+  DAEMON --> OS[OS adapters: secret store / notifications / startup]
 ```
 
-**Boundary rules:**
+**Process separation and boundary rules:**
 
-- `core` defines jobs, protocol interfaces, finite state transitions, scheduling, throttling, events, persistence, and checksumming. No Capy imports in core.
-- Transfer drivers implement a documented interface: `probe`, `start`, `pause`, `cancel`, `resume`, `progress`, `verify`, `cleanup`; torrent may have upload/seeding extensions.
-- `storage` handles atomic journals and files; SQLite is a **candidate**, subject to Zig bindings/FFI, licensing, WAL durability and target-architecture validation. Choose and document a durable store before implementing persistence.
-- `platform` abstracts credentials, notifications, autostart, tray, file dialogs, process lifecycle, XDG/known paths, and native IPC.
-- `ui` only reads snapshots/events and issues commands; it does not own worker threads or download state.
-- `extensions` is a separately packaged WebExtensions project plus browser-specific manifests, installation instructions, and native host bridge.
-- All IPC handlers are bounded, local-only, versioned, permission-checked, and fuzz-tested where parsing occurs.
+- `engine` is the authoritative owner of transfer workers, jobs, settings, scheduler, queued state, persistence, and download files. It is a **separate Zig process**, not a linked DLL/dylib, framework, or dynamic library embedded in any GUI.
+- `ipc` is a documented JSON-RPC application protocol with OS-specific local transports; it carries commands, snapshot results, and optional streamed event notifications. Messages are validated before entering core services.
+- Each `gui/*` implements only local presentation, interaction, OS integrations, and a typed RPC client: **SwiftUI in Swift**, **WinUI 3 in C#**, and **GTK 4 in C**. Views must never block waiting for synchronous engine I/O on the UI thread.
+- `cli` uses the **same RPC endpoint** for interactive commands; only the `daemon` command starts the engine and hosts the endpoint. Shared Zig modules may define types internally, but the CLI is not a privileged backdoor to core state.
+- Transfer drivers implement documented operations: `probe`, `start`, `pause`, `cancel`, `resume`, `progress`, `verify`, `cleanup`; BitTorrent may implement seeding/upload extensions.
+- `storage` owns atomic journals/files; SQLite remains a **candidate** pending Zig FFI/binding, WAL, recovery, licensing and target-arch review.
+- `platform` in the engine defines trusted OS service adapters for secret storage, launcher/autostart, paths, and notification orchestration. Platform-specific GUI code implements OS-facing window/dialog/status-area details. Do not require a GUI process just to save a progress checkpoint or execute a schedule.
+- `extensions` is packaged separately: a browser cannot talk to the privileged engine API directly. Its native messaging host implements a **restricted allowlist** and delegates to IPC after validation.
+- Multiple UI clients and the CLI can connect concurrently. Commands use stable identifiers, idempotency keys where needed, and expected-state revisions; UI cache never overwrites authoritative engine state.
 
 ### 5.2 Suggested repository layout (proposed, not implemented)
 
 ```text
 .
-├── Agent.md                      # Coding-agent constraints and workflow
-├── PROJECT.md                    # This specification
-├── README.md                     # Project intro, installation, contributing
-├── LICENSE                       # Choose before publishing source
-├── build.zig                     # Native targets, CLI, engine and optional UI
-├── build.zig.zon                 # Pinned Zig dependencies
+├── Agent.md                         # Update agent guidance to match this ADR
+├── PROJECT.md                       # Project specification
+├── README.md
+├── LICENSE
+├── build.zig                        # Zig engine + CLI + common Zig tests only
+├── build.zig.zon                    # Pinned Zig dependencies
 ├── src/
-│   ├── main.zig                  # GUI entry point
-│   ├── cli/main.zig              # CLI/headless entry point
-│   ├── core/                     # Jobs, state machine, queue, events, policy
-│   ├── protocols/http/           # HTTP(S), ranges, validators, retry
-│   ├── protocols/ftp/            # FTP/FTPS
-│   ├── protocols/torrent/        # BitTorrent metadata, pieces, peers
-│   ├── storage/                  # Metadata DB, journal, file writer
-│   ├── platform/{macos,windows,linux}/
-│   ├── ipc/                      # Versioned commands/events, native bridge
-│   ├── ui/                       # Capy views, view models, adapters
-│   └── util/                     # Checked math, units, redaction, error types
+│   ├── daemon/main.zig              # Single-instance headless engine entry point
+│   ├── cli/main.zig                 # Zig CLI acting as RPC client
+│   ├── core/                        # Jobs, queue, scheduling, policy, events
+│   ├── protocols/{http,ftp,torrent}/
+│   ├── storage/                     # DB, crash-safe journals, file writer
+│   ├── ipc/                         # JSON-RPC, framing, schema, endpoint and clients
+│   ├── platform/{macos,windows,linux}/ # Zig OS-specific daemon adapters
+│   └── util/                        # Checked math, units, redaction
+├── gui/
+│   ├── macos/                       # Xcode project: Swift + SwiftUI + AppKit glue
+│   ├── windows/                     # .sln/.csproj: C# + WinUI 3 + Windows App SDK
+│   └── linux/                       # Meson: C + GTK 4 + GLib/GIO
+├── ipc-schema/                      # Shared protocol JSON schemas + fixtures
 ├── extensions/
-│   ├── common/                   # Shared TypeScript/WebExtension source
-│   ├── chromium/                 # Chrome/Edge/Brave/Opera/Vivaldi variants
-│   ├── firefox/                  # Firefox manifest/packaging
-│   └── safari/                   # Xcode host and Safari extension bridge
-├── tests/{unit,integration,e2e,fixtures}/
-├── docs/{architecture,adr,design,security,protocols,platforms}/
+│   ├── common/                      # TypeScript WebExtension implementation
+│   ├── chromium/                    # Chromium browser variants
+│   ├── firefox/
+│   ├── safari/                      # Swift/Xcode native Safari bridge
+│   └── native-host/                 # Narrowly scoped browser-to-engine IPC bridge
+├── tests/{unit,integration,ipc,e2e,fixtures}/
+├── docs/
+│   ├── architecture/
+│   ├── adr/0001-native-guis-local-ipc.md
+│   ├── protocols/ipc-v1.md
+│   ├── design/
+│   ├── security/
+│   └── platforms/
 ├── packaging/{macos,windows,linux}/
-└── .github/workflows/           # CI builds, tests and release checks
+└── .github/workflows/              # Separate engine + native GUI CI per OS/arch
 ```
 
-Filesystem layout is adjustable by ADR; never invent stub modules as if complete. Keep dependent packages pinned, license-audited, and checksummed.
+The repository structure is a design proposal, not a claim that these files exist. macOS apps build with Xcode, Windows with MSBuild/.NET and Windows App SDK, Linux with Meson/pkg-config/GTK 4, while Zig manages only the engine and CLI. The release pipeline assembles **one native GUI plus the matching engine and IPC bridge(s)** per platform/CPU architecture. The presence of three GUIs does not mean every release must build all three on one host.
 
 ### 5.3 Persistence / file integrity model
 
@@ -275,7 +308,43 @@ Filesystem layout is adjustable by ADR; never invent stub modules as if complete
 
 ### 5.4 Event/API model
 
-Example logical commands: `AddJob`, `StartJob`, `PauseJob`, `CancelJob`, `SetPriority`, `SetBandwidthPolicy`, `SetSchedule`, `GetSnapshot`, `SubscribeProgress`, `SelectTorrentFiles`. Command payloads include unique IDs, schema versions, expected state/revision, and structured errors. Subscriber backpressure must not block core threads. Never expose raw OS credential handles or unrestricted file-system API over the browser bridge.
+The server implements **JSON-RPC 2.0** (not an ad hoc JSON command format). Recommended names: `engine.hello`, `engine.status`, `jobs.add`, `jobs.list`, `jobs.get`, `jobs.start`, `jobs.pause`, `jobs.resume`, `jobs.cancel`, `jobs.retry`, `jobs.subscribe`, `jobs.unsubscribe`, `settings.get`, `settings.update`, `schedule.set`, `torrents.selectFiles`. Finalize method contracts before implementation in `docs/protocols/ipc-v1.md`.
+
+**Requests** have JSON-RPC `id`, `method`, and `params`; requests requiring changes also carry a stable `idempotency_key` and optionally `expected_revision`. **Responses** contain `result` or structured `error`. **Progress/events** are JSON-RPC notifications from server to client with no `id`; clients must not expect a reply to notifications. A GUI should subscribe on a long-lived duplex connection, not poll every job at high frequency.
+
+- `engine.hello` is required before any other application RPC. Negotiate protocol **major/minor versions**, client type, supported features, and engine instance identifier. Reject incompatible major versions gracefully; tolerate only explicitly documented backwards-compatible changes.
+- Use **4-byte little-endian unsigned length + exactly that many UTF-8 JSON bytes** per frame (not newline-delimited JSON). Maximum frame length: **1 MiB initially**; enforce configurable smaller limits where appropriate; reject zero-length, malformed UTF-8/JSON, giant arrays, and excessive nesting. `read`/`write` can be partial.
+- Define all logical `uint64` counters, byte offsets, and sizes as **base-10 decimal strings** in JSON to avoid precision loss in JavaScript/native bridges. Never send local integer pointers or OS handles as values. Define timestamps as ISO 8601 strings with UTC offset and speeds as appropriately named units.
+- Subscribing returns a consistent **initial snapshot + cursor** (atomic relationship), then ordered `events.changed` notifications with monotonically increasing sequence numbers. Slow clients receive coalesced progress; missed sequence or engine-instance change forces a re-snapshot. Download progress visualization should generally refresh at 5–10 Hz or slower under load.
+- Keep command replies and subscriptions independent so a slow window cannot block or stall core workers. Bound per-client outgoing buffers; disconnect/resync a client when necessary. No loss of authoritative job state is allowed.
+- Each accepted mutation is persisted when necessary **before acknowledging success**. Use request IDs for matching RPC responses and idempotency keys for safe retries after a broken connection (these are distinct concepts). Client disconnect/retry must not create duplicate downloads.
+- Canonical jobs/settings/status definitions live in a shared, version-controlled `ipc-schema/` with golden fixtures and examples usable from Swift, C#, C, Zig and TypeScript tests.
+
+### 5.5 Platform IPC endpoints and security
+
+| OS | Transport and example location | Required guardrails |
+|---|---|---|
+| Windows | Byte-mode Named Pipe at a deterministic, collision-resistant per-user/session name, e.g. `\\.\pipe\SpeedDownload-<user-scope>` (illustrative) | Explicit DACL restricted to intended user/logon scope and required service principals only; `PIPE_REJECT_REMOTE_CLIENTS`, no generic Everyone/anonymous access; protect against pipe squatting and cross-session collisions. |
+| macOS | AF_UNIX SOCK_STREAM at a **short per-user runtime path**, secured within an owned mode-0700 directory | `getpeereid` UID validation; mode-0600 socket where supported; protect against symlink/path replacement; obey `sun_path` length limit. |
+| Linux | AF_UNIX SOCK_STREAM at `$XDG_RUNTIME_DIR/speed-download/engine.sock` | Private mode-0700 directory, mode-0600 socket, validate `SO_PEERCRED` UID; fail safely or use a strictly verified private runtime directory if XDG runtime is unavailable. |
+
+For every OS: scope the daemon to the current interactive account, enforce one engine per profile, verify the endpoint owner and server identity where supported, use safe ownership-aware stale-endpoint cleanup, and launch **only the signed/installed engine at a trusted absolute path**. An OS-local pipe is **not** a security boundary against malware running as the same user; don't overpromise. No inherited privileged server identity, network exposure, arbitrary file read/write RPC, generic command execution, or silent elevation. Permission grants and sensitive operations require specific, audited methods with constrained paths and user intent.
+
+### 5.6 Engine lifecycle, discovery and failure handling
+
+- A GUI starts by attempting to connect to the configured endpoint. If no engine is running, launch the installed matching Zig daemon **as that user**, await readiness with a bounded timeout, and reconnect. Handle simultaneous UI/CLI launches via OS process lock/single-instance semantics; never spawn multiple competing engines.
+- Login/background startup manages only the daemon if configured. The GUI can launch later, close, crash, or upgrade independently of active transfers. If the engine stops, GUIs render a disconnected state and offer safe restart/reconnect; do not display stale progress as live.
+- Do not silently terminate ongoing downloads on GUI exit. An explicit **Quit and stop engine** action checks active jobs and uses a graceful stop policy; upgrading binaries preserves verified checkpoints and handles active transfers safely.
+- Discover endpoint via fixed safe per-user rules, not untrusted environment/URL input. A browser native-host process may wake the engine only through the same trusted installation and lifecycle path.
+- On reconnect, renegotiate `engine.hello`, get a fresh snapshot/subscription, reconcile revisions/cursor, and reissue only operations with durable idempotency keys. Run engine versions and GUI versions through an explicit backwards-compatibility matrix.
+
+### 5.7 Browser-facing boundary
+
+Chrome/Firefox/Chromium native messaging uses its browser-defined native host contract, and Safari uses Apple app-extension APIs. These are **not** the engine IPC server. The native host must validate extension identity, payload format, origin and explicit user action, and forward only narrowly approved commands (e.g. add eligible URL) to the authenticated local engine. It must not forward arbitrary JSON-RPC method names, filesystem paths, credentials, or privileged method bodies from a web page. Apply rate limits, replay/deduplication keys, and strict redaction. Browser extension output and engine RPC responses use separate schemas and permissions.
+
+### 5.8 Implementation spike / contract acceptance tests
+
+Before committing to full GUI development, demonstrate: engine start from cold, concurrent Swift/C#/C/CLI client connects on their respective OSes, `hello`, add and pause a test download, live event subscription and coalescing, GUI crash and reconnect, engine restart and snapshot reconciliation, oversized/malformed framing, unauthorized local client rejection, application install/uninstall behavior, OS login startup, and at least one packaged Windows WinUI 3 build that can launch/connect to the matching Zig daemon. The engine must continue downloading when all GUIs are closed.
 
 ## 6. Quality, performance, accessibility, and security
 
@@ -299,16 +368,17 @@ Targets are release gates to measure, not established benchmark claims.
 | Unit | State machine, range allocator/interval invariants, math/overflow, rate limiter, scheduler/DST, URL/origin rules, filename sanitization, redaction. |
 | Property / fuzz | Interval split and merge, malformed HTTP headers/content ranges, torrent metadata and paths, native IPC payloads, persistence recovery. |
 | Integration | Local controllable HTTP/HTTPS/FTP/BitTorrent fixtures with artificial disconnects, 429/503, redirects, wrong lengths, TLS failures and disk faults. |
-| GUI | Capy platform smoke tests, focus/accessibility, HiDPI, theme changes, tray behavior, relaunch/background handoff. |
+| GUI | Independent SwiftUI, WinUI 3, GTK 4 smoke tests: focus/accessibility, HiDPI, theme, native dialogs, lifecycle, status area, reconnect, background handoff. |
+| IPC | JSON-RPC 2.0 schema/golden fixtures shared by Zig/Swift/C#/C, framing/parser fuzz tests, peer permission checks, multi-client subscriptions, reconnect/version negotiation, queue backpressure, idempotent mutation retries. |
 | Browser | Manifest permission checks, native host registration, service-worker lifecycle, Safari bridge, browser update compatibility, multi-profile and uninstall. |
 | Packaging | Clean installation, signing/notarization where applicable, upgrade/migration, uninstall without deleting downloads, per-architecture native execution. |
 
-CI should be stratified: `format + unit` on every PR; Linux and Windows core builds; supported GUI smoke tests on OS runners; release builds on the platform/arch matrix; macOS Apple Silicon, Windows ARM64, and Linux ARM64 on real hardware or a validated runner before labels change to stable. Architecture-specific testing must not be replaced solely with emulation or cross-compilation.
+CI should be stratified: `format + unit` on every PR; cross-platform Zig core builds and IPC contract tests; separate Xcode/macOS, Windows/WinUI, and Linux/GTK GUI pipelines; supported GUI smoke tests on OS runners; release builds on the platform/arch matrix; macOS Apple Silicon, Windows ARM64, and Linux ARM64 on real hardware or a validated runner before labels change to stable. Architecture-specific testing must not be replaced solely with emulation or cross-compilation.
 
 ## 7. Distribution and license
 
-- Repository and source are publicly accessible under the **MIT License** for application code. Third-party dependencies retain their own licenses and must be reviewed before adoption. Capy itself is [MPL-2.0](https://github.com/capy-ui/capy/blob/master/LICENSE); review obligations for changes/distribution. BitTorrent libraries may impose additional obligations. Document decisions in `docs/licenses.md` and include notices/SBOM.
-- Planned packages: macOS `.app` + signed/notarized `.dmg`/`.pkg`; Windows signed `.msi`/installer plus portable build if practical; Linux `.deb`, `.rpm`, and portable AppImage or Flatpak where dependencies/portals work. Package availability depends on target validation and distribution restrictions.
+- Repository and source are publicly accessible under the **MIT License** for application code. Third-party dependencies retain their own licenses and must be reviewed before adoption. Review Swift/Apple SDK, WinUI 3/Windows App SDK/.NET redistributable terms, GTK 4/GLib (LGPL) dynamic linking/compliance, and BitTorrent engine dependencies. No Capy dependency remains. Document decisions in `docs/licenses.md`, include notices and an SBOM.
+- Planned packages: **macOS** native SwiftUI `.app` containing/signing a matching Zig daemon and optional helpers, shipped as notarized `.dmg`/`.pkg`; **Windows** WinUI 3 app + Zig daemon, with MSIX vs packaged-with-external-location vs unpackaged `.msi`/`.exe` decided after lifecycle/IPC and notification testing (portable optional); **Linux** GTK 4 app + Zig daemon with `.deb`, `.rpm`, AppImage and/or Flatpak where portals, runtime dependencies, and background execution work. Ship per-architecture native UI + engine together and verify upgrades cannot orphan running processes. Package availability depends on measured platform and store requirements.
 - Browser extensions are separately signed/published where required; Safari needs an Apple app-extension package. Extension permissions are reviewed for each release.
 - Never include update or silent-install mechanisms that bypass OS consent; signed update manifests and rollback can be a later milestone.
 - Include `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, license and third-party notices before public contribution campaigns.
@@ -317,46 +387,57 @@ CI should be stratified: `format + unit` on every PR; Linux and Windows core bui
 
 | Phase | Deliverables | Exit criteria |
 |---|---|---|
-| **0 — Feasibility** | Zig/Capy pin; platform capability matrix; prototype UI; protocol/backend choices; ADRs; license analysis | Evidence for supported vs blocked targets, including macOS & Windows ARM64; engine builds independently. |
-| **1 — Core MVP** | Headless CLI; HTTP/HTTPS single-stream; queue/state DB; safe resume; file writes; unit/integration suite | Reliable transfers and interruption recovery on baseline OSes. |
-| **2 — Acceleration** | Dynamic ranges, per-host fairness, retry/backoff, segment journal, limiter, UI-independent progress events | Adversarial range/validator tests pass; concurrent workers never write overlapping bytes. |
-| **3 — Desktop UI** | Capy download list, job details, segment timeline, preferences, accessibility; Windows/Linux baseline | UI smoke tests and release artifacts for verified baseline platforms. |
-| **4 — Protocols & automation** | FTP/FTPS, BitTorrent, scheduler, bandwidth profiles, secret storage | Cross-protocol scheduling, integrity, and credentials tests pass. |
-| **5 — Integrations** | Chromium/Firefox extensions, native bridge, native startup/tray/notifications, Safari bridge | Install/handoff/upgrade tests on each claimed OS/browser. |
-| **6 — Platform completion** | Capy macOS backend completion; ARM64 Windows support; Linux multiarch; signing/distribution | Each advertised OS/CPU has real-device release validation and packaging. |
-| **7 — Stable 1.0** | Security review, accessibility audit, performance profiles, docs, versioned APIs | Published release checklist and no unresolved P0 blockers. |
+| **0 — Native/IPC feasibility** | Zig toolchain pin; per-platform GUI hello-world apps; native IPC demo; shared JSON-RPC schema; endpoint ACL/permissions; ADR; distribution feasibility | WinUI 3, SwiftUI, GTK 4 each connect to separate Zig engine build on their OS, show live test progress, reconnect; all GUI targets labeled verified/experimental/blocked. |
+| **1 — Core MVP** | Headless Zig daemon and RPC CLI; HTTP/HTTPS single-stream; queue/state DB; safe resume; file writes; unit/integration suite | Reliable headless transfers and restart persistence; GUI not required. |
+| **2 — Acceleration** | Dynamic byte ranges, per-host fairness, retry/backoff, segment journal, limiter, IPC progress subscriptions | Adversarial validators pass, no overlapping writes; multiple UI/CLI clients can't stall core. |
+| **3 — Native desktop UIs** | Independently built SwiftUI/macOS, WinUI 3/Windows, GTK 4/Linux download list, details, segment timeline, preferences, accessibility | Each GUI passes native HIG, IPC, install, restart and platform smoke tests on declared architectures. |
+| **4 — Protocols & automation** | FTP/FTPS, BitTorrent, scheduler, bandwidth profiles, platform secret-store adapters | Cross-protocol integrity, time-window scheduling and secrets tests pass without GUI open. |
+| **5 — Integrations** | Chromium/Firefox bridges, Safari bridge, OS startup/tray/notifications, IPC security audit | Native host only exposes allowed browser actions; each OS/browser can safely hand off and recover after restart. |
+| **6 — Multiarch and distribution** | macOS universal builds/notarization, Windows x86/x64/ARM64 WinUI packages, Linux multiarch GTK packages, migration/upgrade tests | Every advertised combination passes on real hardware or fully validated equivalent; no Capy-related target gate. |
+| **7 — Stable 1.0** | Security, IPC fuzz, HIG/accessibility, performance, docs, versioned protocol compatibility | Source/installer/checksum/license notices published; no unresolved P0 issues. |
 
-Phases can overlap, but **do not label 1.0 cross-platform until phase-6 platform gates pass**. A limited early preview must explicitly list verified combinations.
+Phases can overlap, but **do not label 1.0 cross-platform until phase-6 release gates pass**. Early previews must list verified platforms and CPU architectures. Update `Agent.md` and the architecture ADR before a coding agent resumes GUI changes.
 
 ## 9. Risks and decisions still open
 
 | Risk / question | Mitigation / decision owner |
 |---|---|
-| Capy does not yet fully support macOS or Windows ARM64 | Run first-class backend spike, upstream work, and isolated adapters; keep headless viable. |
-| Capy missing scrolling, menus, or custom drawing on some backends | Component matrix, accessible fallbacks, minimal backend patches; no fake unsupported features. |
-| Zig toolchain/API changes | Pin compiler/dependencies, upgrade behind CI and ADR, avoid unreviewed latest versions. |
-| Performance of multiple connections is server dependent | Benchmark against single stream; adaptive caps and safe fallback; no marketing speed guarantees. |
-| BitTorrent engine complexity, security, license | Evaluate maintained engines/FFI vs Zig implementation by license, maturity, resource usage, ARM32 support and testability. |
-| Platform credential APIs and secret-store availability | Native adapters; locked-keyring handling; manual QA; no plaintext fallback. |
-| Native Messaging/browser store behavior changes | Versioned bridge, browser-specific manifests, integration CI, documented permissions. |
-| Service/tray behavior across Linux desktops | Explicit supported desktop matrix and recoverable headless operation. |
-| macOS signing, notarization, Safari packaging | Release on macOS CI/hardware and Apple-approved distribution pipeline. |
-| Architecture-specific large-file/ABI problems | Checked 64-bit offsets, file I/O tests on 32-bit Windows/Linux, target-specific toolchain checks. |
-| Source license / dependency obligations | Choose OSI license, SPDX headers, SBOM and legal review before public binary release. |
+| Multiple native GUI codebases increase maintenance | Keep business logic inside Zig; share protocol contracts, UI flows, assets, accessibility acceptance criteria, and fixtures. |
+| WinUI 3 Windows ARM64/x86 deployment and packaged process model | Verify .NET/Windows App SDK version, runtime architecture, app activation, bundled daemon and pipe ACL on hardware in phase 0. |
+| macOS SwiftUI feature availability, notarization and helper execution | Set supported macOS baseline after SwiftUI feature spike; sign/notarize engine and helpers in app bundle; validate LaunchAgent/login behavior. |
+| GTK 4/Linux ARM32 and distro availability | Track distro/ABI/GTK dependencies separately; keep ARM32 engine-first until native GUI and installer run on hardware. |
+| IPC format, schema drift, backward compatibility | Versioned JSON-RPC 2.0 + framed transport, golden fixtures across four languages, compatibility tests and explicit major/minor negotiation. |
+| Named Pipe / Unix socket hijacking and local privilege misuse | Private per-user endpoint, explicit pipe DACL, Linux SO_PEERCRED / macOS getpeereid, no remote listener, safe process launch and least-privileged RPC API. |
+| Too many progress events freeze native UI or daemon | Bounded subscriptions, updates coalesced to 5–10 Hz, snapshot + cursor protocol, no blocking on UI threads. |
+| Browser native messaging becomes a general RPC tunnel | Keep browser host on a small allowlist; validate origin/user intent; never expose unrestricted RPC or secrets to web content. |
+| Zig toolchain and native toolchain versions diverge | Independently pin Zig, Xcode/Swift, .NET/Windows App SDK, GTK/GLib and integrate only over backwards-compatible IPC. |
+| Performance of multiple connections is server dependent | Benchmark single-stream vs multipart, safe fallback, adaptive caps; never promise speedups. |
+| BitTorrent protocol complexity, license, and security | Evaluate maintained engines/FFI vs Zig implementation by license, ABI, multiarch and tests. |
+| OS credential store availability and headless auth prompts | Separate daemon storage APIs from native GUI consent/credential entry; never fall back to plaintext. |
+| Background/tray behavior differs across Linux desktops | Explicit desktop matrix; recoverable daemon from launcher/notification/CLI. |
+| Architecture-specific large-file and ABI problems | Checked 64-bit offsets, file I/O and CLI/GUI/IPC tests on 32-bit Windows/Linux. |
+| Licensing and third-party notices | Review .NET/Windows App SDK redistribution and LGPL libraries, SBOM, open-source notices. |
 
 ## 10. Definition of release readiness
 
-A release is ready only when its advertised platform/architecture targets compile, run, install, and pass their specified smoke/integration tests; the download engine does not corrupt files under network faults; credential storage is OS-backed; no feature claims exceed tested behavior; accessible alternatives exist for essential UI controls; user documentation explains permissions/limitations; and build, source, third-party notices, checksums, and release notes are published.
+A release is ready only when its **separate native GUI and Zig engine** both compile, run, install, securely connect through IPC, and pass their specified smoke/integration tests on every advertised platform/architecture; the download engine does not corrupt files under network faults; credential storage is OS-backed; no feature claims exceed tested behavior; accessible alternatives exist for essential UI controls; user documentation explains permissions/limitations; and build, source, third-party notices, checksums, and release notes are published.
 
-**The first engineering action** should be phase 0 (Zig/Capy/platform proof of concept) in parallel with a small, independently tested Zig HTTP download engine, not a full UI implementation based on unverified backend support.
+**The first engineering action** should be phase 0: a running Zig daemon with framed JSON-RPC 2.0 and one small native GUI client per OS (SwiftUI, WinUI 3, GTK 4), in parallel with independently tested HTTP downloads. Preserve working CLI/core builds. Do not design full UIs against an untested IPC, process startup or packaging model.
 
 ## 11. Technical references
 
 These are normative background/verification links, not copied source code:
 
 - [Zig releases and target downloads](https://ziglang.org/download/)
-- [Capy UI repository, support matrix, and toolkit caveats](https://github.com/capy-ui/capy)
-- [Capy UI website](https://capy-ui.org/)
+- [WinUI 3 / Windows App SDK](https://learn.microsoft.com/en-us/windows/apps/winui/winui3/)
+- [Windows app packaging and deployment](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/packaging/)
+- [Named pipes: security and access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+- [Apple SwiftUI documentation](https://developer.apple.com/documentation/swiftui/)
+- [Apple silicon universal Mac apps](https://developer.apple.com/documentation/apple-silicon/porting-your-macos-apps-to-apple-silicon)
+- [Apple `getpeereid` reference](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/getpeereid.3.html)
+- [GTK 4 API documentation](https://docs.gtk.org/gtk4/)
+- [Linux `unix(7)` and `SO_PEERCRED`](https://man7.org/linux/man-pages/man7/unix.7.html)
+- [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification)
 - [IDM dynamic segmentation explanation](https://internet.internetdownloadmanager.com/support/segmentation.html) — behavioral inspiration only
 - [RFC 9110 — HTTP Semantics and Range](https://www.rfc-editor.org/rfc/rfc9110.html)
 - [BitTorrent BEP 3](https://www.bittorrent.org/beps/bep_0003.html) and [BEP 9 metadata exchange](https://www.bittorrent.org/beps/bep_0009.html)
