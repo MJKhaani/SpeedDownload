@@ -162,6 +162,7 @@ fn dispatchMethod(
     const added = jobs.add(input) catch |err| {
         if (request_id == null) return null;
         if (err == error.InvalidJob) return dispatchError(allocator, request_id, -32010, "Invalid download request");
+        if (err == error.InvalidDestination) return dispatchError(allocator, request_id, -32014, "Destination must be an existing writable directory");
         if (err == error.IdempotencyConflict) return dispatchError(allocator, request_id, -32011, "Idempotency key was already used for another request");
         return dispatchError(allocator, request_id, -32020, "Could not save the download request");
     };

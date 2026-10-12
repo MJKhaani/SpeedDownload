@@ -276,7 +276,7 @@ private struct AddDownloadView: View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Add Download").font(.title2.weight(.bold))
-                Text("Save a URL as a queued job. The file will not download until transfer support is available.")
+                Text("Save a URL as a queued job in an existing writable folder. Transfers are not active yet.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -322,8 +322,14 @@ private struct AddDownloadView: View {
             validationError = "Enter a valid HTTP or HTTPS URL."
             return
         }
+        let folderPath = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        var isDirectory: ObjCBool = false
+        guard folderPath.hasPrefix("/"), FileManager.default.fileExists(atPath: folderPath, isDirectory: &isDirectory), isDirectory.bool else {
+            validationError = "Choose an existing folder for downloaded files."
+            return
+        }
         validationError = nil
-        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), destination.trimmingCharacters(in: .whitespacesAndNewlines))
+        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), folderPath)
     }
 
     private func chooseDestination() {

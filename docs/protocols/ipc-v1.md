@@ -62,7 +62,7 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `engine.status` | `{}` | Engine uptime/capabilities/state | No secrets, never leaks credentials |
 | `jobs.list` | Pagination/safe filters | Authoritative job summaries + revision | Bounded page size |
 | `jobs.get` | `job_id` | Detailed state/segments | Redacted sensitive URL metadata |
-| `jobs.add` | URL, optional name/destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Validate URL, approved destination and idempotent retries |
+| `jobs.add` | URL, optional name/destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Require an absolute existing writable destination directory; validate URL and idempotent retries |
 | `jobs.control` | `job_id`, action (`pause`, `resume`, `cancel`) | Updated job state/revision | Current v1 engine permits queue/paused-state changes only; persist before response |
 | `jobs.start` / `jobs.pause` / `jobs.resume` / `jobs.retry` | `job_id`, key, optional `expected_revision` | Updated job state/revision | Valid state transitions, idempotent operations |
 | `jobs.cancel` | `job_id`, explicit partial-file policy | Final state | Never conflate pause with deleting partial data |

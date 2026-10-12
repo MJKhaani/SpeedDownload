@@ -9,6 +9,10 @@ const c = std.c;
 const lstat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
     .name = if (builtin.os.tag == .macos) "lstat$INODE64" else "lstat",
 });
+const statPath = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
+    .name = if (builtin.os.tag == .macos) "stat$INODE64" else "stat",
+});
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 extern "c" fn chmod(path: [*:0]const u8, mode: c.mode_t) c_int;
 
 pub const State = enum { queued, scheduled, resolving, connecting, downloading, paused, retry_wait, verifying, completed, failed, canceled };
@@ -326,6 +330,14 @@ fn validateInput(input: AddInput) !void {
         return error.InvalidJob;
     if (input.destination.len == 0 or input.destination.len > 4096 or
         std.mem.indexOfScalar(u8, input.destination, 0) != null) return error.InvalidJob;
+    if (!std.fs.path.isAbsolute(input.destination)) return error.InvalidDestination;
+    const destination_z = try std.heap.page_allocator.dupeSentinel(u8, input.destination, 0);
+    defer std.heap.page_allocator.free(destination_z);
+    var destination_stat: c.Stat = undefined;
+    if (statPath(destination_z, &destination_stat) != 0 or
+        destination_stat.mode & c.S.IFMT != c.S.IFDIR or
+        access(destination_z, c.W_OK | c.X_OK) != 0)
+        return error.InvalidDestination;
     if (input.idempotency_key.len == 0 or input.idempotency_key.len > 128 or
         !std.unicode.utf8ValidateSlice(input.idempotency_key)) return error.InvalidJob;
 }
