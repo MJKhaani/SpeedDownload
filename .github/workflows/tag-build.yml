@@ -36,6 +36,11 @@ jobs:
         with:
           version: 0.17.0
 
-      - name: Build and validate core
+      - name: Build CLI and validate core
         if: steps.manifest.outputs.present == 'true'
-        run: zig build test
+        run: |
+          mkdir -p zig-out/bin
+          zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
+          zig test src/core/root.zig
+          zig test src/protocols/http/download.zig
+          python3 tests/integration/http_cli.py zig-out/bin/odm

@@ -18,13 +18,17 @@ The required GUI toolkit is Capy UI. Its compatibility with a pinned Zig compile
 
 ## Build
 
-The initial build currently validates the core job-state module only:
+Build the command-line prototype and run the unit tests:
 
 ```sh
-zig build test
+mkdir -p zig-out/bin
+zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
+zig test src/core/root.zig
+zig test src/protocols/http/download.zig
+python3 tests/integration/http_cli.py zig-out/bin/odm
 ```
 
-The command uses Zig 0.17.0 for independent core evaluation. It does not yet build a downloader, GUI, or release artifact. Do not treat successful cross-compilation as proof of native GUI, packaging, or runtime support. Follow [`Agent.md`](Agent.md) when contributing.
+The CLI currently supports a single HTTP(S) transfer. It writes an exclusive `.part` file and publishes it after a successful response; pause/resume, persistence, checksums, parallel ranges, and GUI are not implemented. The build uses Zig 0.17.0 for independent core evaluation. Do not treat successful cross-compilation as proof of native GUI, packaging, or runtime support. Follow [`Agent.md`](Agent.md) when contributing.
 
 ## License
 

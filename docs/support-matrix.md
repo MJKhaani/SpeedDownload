@@ -1,12 +1,12 @@
 # Platform Support and Feasibility Matrix
 
-**Status date:** 2026-10-11  
-**Current project phase:** 0 — feasibility  
+**Status date:** 2026-10-12
+**Current project phase:** Phase 0 feasibility; portable core implementation has started
 **Meaning:** “Not validated” means no native build/runtime evidence is available. Cross-compilation alone cannot change a target to supported.
 
 ## Current evidence
 
-Zig 0.17.0 is installed and can be used with a workspace-local cache. The project now has an initial `build.zig` for the portable core module, but no Capy checkout or GUI build manifest. Network access was unavailable during this assessment, so upstream state could not be re-queried. The project specification and `Agent.md` record the 2026-10-11 upstream review: Capy identifies Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. Zig 0.17.0 has not been proven compatible with Capy and is only under evaluation for independent core code.
+Zig 0.17.0 is installed and can be used with a workspace-local cache. The project now has a Zig build manifest, portable core module, and single-stream HTTP(S) CLI prototype, but no Capy checkout or GUI build manifest. Network access was unavailable during this assessment, so upstream state could not be re-queried. The project specification and `Agent.md` record the 2026-10-11 upstream review: Capy identifies Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. Zig 0.17.0 has not been proven compatible with Capy and is only under evaluation for independent core code.
 
 ## Target matrix
 
@@ -24,7 +24,7 @@ Zig 0.17.0 is installed and can be used with a workspace-local cache. The projec
 
 ## Core module check
 
-On 2026-10-12, `zig build test --summary all` succeeded with Zig 0.17.0 on macOS 14.8.4 x86_64. This compiles and runs only the five `src/core` state-transition tests. It does not validate a downloader, CLI, GUI, package, or any other target in the matrix. The build runner required execution outside the restricted sandbox; direct `zig test src/core/root.zig` also passed in the workspace.
+On 2026-10-12, direct Zig 0.17.0 commands compiled the CLI and passed five core state tests plus one HTTP scheme test on macOS 14.8.4 x86_64. A local HTTP fixture verified redirect handling, binary transfer, preservation of an existing destination, and partial-file removal on 404. `zig build` itself stalled in the build-runner in this workspace, so the tag workflow uses the verified direct compiler/test commands. This host result does not validate other OS/CPU targets, HTTPS certificate behavior, GUI, or packaging.
 
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.
 
