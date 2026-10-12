@@ -16,7 +16,7 @@ Speed Download is a free, open-source download manager in active development. It
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The native GUI architecture and local IPC contract are adopted. The Zig code now has bounded JSON frame encoding/decoding and a framed `engine.hello` handshake with feature negotiation; OS transports, peer authentication, method dispatch, durable jobs, and native clients remain pending. Platform support remains unvalidated; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The native GUI architecture and local IPC contract are adopted. The Zig code now has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, and structured protocol errors. OS transports, peer authentication, job methods, durable jobs, and native clients remain pending. Platform support remains unvalidated; see [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 

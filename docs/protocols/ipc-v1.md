@@ -1,13 +1,13 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; frame decoding and the `engine.hello` handshake are implemented, while OS transports and later method dispatch remain pending
+- **Status:** Draft normative contract; frame decoding, the `engine.hello` handshake, per-connection negotiation state, and base JSON-RPC errors are implemented, while OS transports and application method dispatch remain pending
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
 
 ## 1. Contract overview
 
-The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, and `root.zig` composes them into the framed first-message handshake. These primitives do not open sockets or named pipes, authenticate peers, or dispatch later methods. The repository exposes `zig build ipc` for compiling this module.
+The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, `session.zig` enforces the per-connection handshake requirement and standard pre-dispatch errors, and `root.zig` composes them into framed message handling. These primitives do not open sockets or named pipes, authenticate peers, or implement application methods. The repository exposes `zig build ipc` for compiling this module.
 
 The engine is an **independent single-instance per-user daemon**. Client processes make duplex requests and subscriptions to it; the engine has the only writable copy of download history, jobs, and transfer workers.
 
@@ -116,7 +116,9 @@ Use the standard JSON-RPC `error` object with `code`, short `message` (safe for 
 {"jsonrpc":"2.0","id":"pause-4","error":{"code":-32010,"message":"Job state conflict","data":{"kind":"state_conflict","job_id":"83b16cf2-6dba-4c3f-8511-3c365b89a4d0","current_revision":"10"}}}
 ```
 
-Error classes: invalid handshake/version; permission denied; validation/invalid URI; not found; revision/state conflict; duplicate key with different arguments; unavailable engine/dependency; too many requests; resync required; temporary storage failure. Standard JSON-RPC parse/method/params error codes remain reserved. Publish stable application error codes before v1 release.
+The initial session implementation uses standard `-32700` for parse errors, `-32600` for invalid requests, and `-32601` for methods not yet registered. It uses provisional application errors `-32001` for a missing handshake and `-32002` for an unsupported protocol major. These application codes require final registry review before v1 release.
+
+Future error classes include permission denied; validation/invalid URI; not found; revision/state conflict; duplicate key with different arguments; unavailable engine/dependency; too many requests; resync required; and temporary storage failure. Standard JSON-RPC parse/method/params error codes remain reserved. Publish stable application error codes before v1 release.
 
 ## 8. Security and browser boundary
 

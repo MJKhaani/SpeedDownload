@@ -8,6 +8,14 @@ const frame = @import("frame.zig");
 const hello = @import("hello.zig");
 
 pub const max_payload_bytes = frame.max_payload_bytes;
+pub const Session = @import("session.zig").Session;
+
+pub const ServerInfo = struct {
+    engine_version: []const u8,
+    engine_instance_id: []const u8,
+    session_id: []const u8,
+    supported_features: []const []const u8,
+};
 
 pub const FirstMessage = struct {
     hello_payload: []const u8,
@@ -16,6 +24,11 @@ pub const FirstMessage = struct {
 
 pub const Handshake = struct {
     response_frame: []u8,
+    remaining: []const u8,
+};
+
+pub const MessageResult = struct {
+    response_frame: ?[]u8,
     remaining: []const u8,
 };
 
@@ -52,5 +65,36 @@ pub fn acceptFirstMessage(
     return .{
         .response_frame = try frame.encode(allocator, response_json),
         .remaining = decoded.remaining,
+    };
+}
+
+/// Handles one framed request on a negotiated connection and frames any reply.
+pub fn handleFrame(
+    allocator: std.mem.Allocator,
+    session: *Session,
+    input: []const u8,
+    server: ServerInfo,
+) !MessageResult {
+    const decoded = try frame.decodeOne(allocator, input);
+    const response_json = try session.handle(
+        allocator,
+        decoded.payload,
+        server.engine_version,
+        server.engine_instance_id,
+        server.session_id,
+        server.supported_features,
+    );
+
+    if (response_json) |json| {
+        defer allocator.free(json);
+        return .{
+            .response_frame = try frame.encode(allocator, json),
+            .remaining = input[decoded.consumed..],
+        };
+    }
+
+    return .{
+        .response_frame = null,
+        .remaining = input[decoded.consumed..],
     };
 }
