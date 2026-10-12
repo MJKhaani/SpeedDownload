@@ -10,8 +10,21 @@ permissions:
 
 jobs:
   build:
-    name: Build on Ubuntu
-    runs-on: ubuntu-latest
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: zig-out/bin/odm
+            artifact: odm-linux-x86_64
+          - os: windows-latest
+            binary: zig-out/bin/odm.exe
+            artifact: odm-windows-x86_64
+          - os: macos-latest
+            binary: zig-out/bin/odm
+            artifact: odm-macos-arm64
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -22,16 +35,17 @@ jobs:
           version: 0.17.0
 
       - name: Build CLI and validate core
+        shell: bash
         run: |
           mkdir -p zig-out/bin
-          zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
+          zig build-exe src/main.zig -femit-bin=${{ matrix.binary }}
           zig test src/core/root.zig
           zig test src/protocols/http/download.zig
-          python3 tests/integration/http_cli.py zig-out/bin/odm
+          python3 tests/integration/http_cli.py ${{ matrix.binary }}
 
-      - name: Retain tagged CLI build
+      - name: Retain native CLI build
         uses: actions/upload-artifact@v4
         with:
-          name: odm-linux-x86_64-${{ github.ref_name }}
-          path: zig-out/bin/odm
+          name: ${{ matrix.artifact }}-${{ github.ref_name }}
+          path: ${{ matrix.binary }}
           if-no-files-found: error
