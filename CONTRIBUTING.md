@@ -19,6 +19,7 @@ The current core is evaluated with Zig 0.17.0. Build and check the headless prot
 mkdir -p zig-out/bin
 zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
 zig test src/core/root.zig
+zig test src/core/queue.zig
 zig test src/protocols/http/download.zig
 python3 tests/integration/http_cli.py zig-out/bin/odm
 ```

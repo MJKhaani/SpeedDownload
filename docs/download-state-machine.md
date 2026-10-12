@@ -50,6 +50,11 @@ unknown when the total is unknown, `1` for a known empty resource with zero
 completed bytes, and unknown when completed bytes exceed the total. This keeps
 invalid counters from appearing as valid progress.
 
+The separate queue policy selects only `queued` jobs, enforces global and
+per-host active limits, then ranks by priority, least-loaded eligible host, and
+FIFO sequence. It is a deterministic core primitive; no queue persistence,
+worker dispatch, or user controls are wired to it yet.
+
 Future queue/persistence work must preserve these rules and add explicit
 idempotency, cancellation, and worker ownership semantics before exposing
 concurrent control commands.

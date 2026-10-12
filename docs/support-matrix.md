@@ -6,7 +6,7 @@
 
 ## Current evidence
 
-Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume and optional SHA-256 verification. Automated local fixtures cover redirects, destination races, status/encoding rejection, interrupted transfer recovery, changed ETags, redirect-target changes, and matching/mismatching checksums. The Capy UI is blocked pending a compatible production-ready toolkit release: the current upstream README says Capy is not production-ready and targets Zig 0.14.1, while this core uses Zig 0.17.0. Upstream lists macOS M1/x86_64 as planned and does not list Windows ARM64. No Capy checkout or GUI build manifest is present.
+Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume and optional SHA-256 verification. A pure host-aware queue selector enforces global and per-host limits, priority, and FIFO tie-breaking, but is not yet connected to workers or durable jobs. Automated local fixtures cover redirects, destination races, status/encoding rejection, interrupted transfer recovery, changed ETags, redirect-target changes, and matching/mismatching checksums. The Capy UI is blocked pending a compatible production-ready toolkit release: the current upstream README says Capy is not production-ready and targets Zig 0.14.1, while this core uses Zig 0.17.0. Upstream lists macOS M1/x86_64 as planned and does not list Windows ARM64. No Capy checkout or GUI build manifest is present.
 
 ## Target matrix
 
@@ -24,7 +24,7 @@ Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with 
 
 ## Core module check
 
-On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six core state tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, or package is validated. Current Capy limitations are documented in [ADR 0001](adr/0001-zig-capy-toolchain.md) and the [upstream README](https://github.com/capy-ui/capy#readme).
+On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, or package is validated. Current Capy limitations are documented in [ADR 0001](adr/0001-zig-capy-toolchain.md) and the [upstream README](https://github.com/capy-ui/capy#readme).
 
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.
 

@@ -25,12 +25,13 @@ Build the command-line prototype and run the unit and local HTTP integration che
 mkdir -p zig-out/bin
 zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
 zig test src/core/root.zig
+zig test src/core/queue.zig
 zig test src/protocols/http/download.zig
 python3 tests/integration/http_cli.py zig-out/bin/odm
 zig-out/bin/odm --help
 ```
 
-The CLI currently supports a single HTTP(S) transfer with redirects, strict response validation, safe resume for credential-free URLs when the server provides a known length and strong ETag, and optional `--sha256 <64-hex-digits>` verification before publishing the final file. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. It does not yet provide a persistent job queue, user-directed pause/cancel, parallel ranges, or GUI. Do not treat successful cross-compilation as proof of native GUI, packaging, or runtime support. Follow [`Agent.md`](Agent.md) when contributing.
+The CLI currently supports a single HTTP(S) transfer with redirects, strict response validation, safe resume for credential-free URLs when the server provides a known length and strong ETag, and optional `--sha256 <64-hex-digits>` verification before publishing the final file. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. The core also has a host-aware queue selection policy, but it is not connected to durable jobs or transfer workers. The CLI does not yet provide a persistent job queue, user-directed pause/cancel, parallel ranges, or GUI. Do not treat successful cross-compilation as proof of native GUI, packaging, or runtime support. Follow [`Agent.md`](Agent.md) when contributing.
 
 ## License
 

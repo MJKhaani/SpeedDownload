@@ -40,6 +40,7 @@ jobs:
           mkdir -p zig-out/bin
           zig build-exe src/main.zig -femit-bin=${{ matrix.binary }}
           zig test src/core/root.zig
+          zig test src/core/queue.zig
           zig test src/protocols/http/download.zig
           python3 tests/integration/http_cli.py ${{ matrix.binary }}
 
