@@ -54,11 +54,14 @@ completed bytes, and unknown when completed bytes exceed the total. This keeps
 invalid counters from appearing as valid progress.
 
 The engine-owned job store permits `pause` from `queued` or `scheduled`,
-`resume` from `paused` back to `queued`, and `cancel` from queued, scheduled,
-paused, or retry-wait states. Every accepted change increments the job revision
-and is atomically persisted before the RPC response. Active-transfer controls
-remain unavailable until workers have explicit cancellation and ownership
-semantics.
+`resume` from `paused` or `retry_wait` back to `queued`, and `cancel` from
+queued, scheduled, paused, or retry-wait states. Every accepted change
+increments the job revision and is atomically persisted before the RPC
+response. On startup, any persisted `resolving`, `connecting`, `downloading`,
+or `verifying` job is moved to `retry_wait` and persisted before the engine
+serves clients. The GUI displays it for an explicit user resume. Active-transfer
+controls remain unavailable until workers have explicit cancellation and
+ownership semantics.
 
 The separate queue policy selects only `queued` jobs, enforces global and
 per-host active limits, then ranks by priority, least-loaded eligible host, and

@@ -98,7 +98,7 @@ struct DashboardView: View {
 
     private var filteredJobs: [DownloadJob] {
         switch selection {
-        case "Queue": engine.jobs.filter { $0.state == "queued" || $0.state == "scheduled" || $0.state == "paused" }
+        case "Queue": engine.jobs.filter { $0.state == "queued" || $0.state == "scheduled" || $0.state == "paused" || $0.state == "retry_wait" }
         case "Completed": engine.jobs.filter { $0.state == "completed" }
         default: engine.jobs
         }
@@ -135,7 +135,7 @@ struct DashboardView: View {
                         .disabled(engine.isSubmitting)
                     Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
                         .disabled(engine.isSubmitting)
-                } else if job.state == "paused" {
+                } else if job.state == "paused" || job.state == "retry_wait" {
                     Button("Resume") { Task { await engine.controlJob(job, action: "resume") } }
                         .disabled(engine.isSubmitting)
                     Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }

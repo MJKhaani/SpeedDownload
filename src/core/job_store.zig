@@ -173,7 +173,10 @@ pub const Store = struct {
                     .queued, .scheduled => .paused,
                     else => return error.InvalidJobControl,
                 },
-                .@"resume" => if (job.state == .paused) .queued else return error.InvalidJobControl,
+                .@"resume" => switch (job.state) {
+                    .paused, .retry_wait => .queued,
+                    else => return error.InvalidJobControl,
+                },
                 .cancel => switch (job.state) {
                     .queued, .scheduled, .paused, .retry_wait => .canceled,
                     else => return error.InvalidJobControl,
@@ -267,6 +270,19 @@ pub const Store = struct {
         const jobs_value = parsed.value.object.get("jobs") orelse return error.InvalidJobStore;
         if (jobs_value != .array) return error.InvalidJobStore;
         for (jobs_value.array.items) |value| try self.loadJob(value);
+
+        var recovered = false;
+        for (self.jobs.items) |*job| {
+            switch (job.state) {
+                .resolving, .connecting, .downloading, .verifying => {
+                    job.state = .retry_wait;
+                    job.revision += 1;
+                    recovered = true;
+                },
+                else => {},
+            }
+        }
+        if (recovered) try self.persist();
     }
 
     fn loadJob(self: *Store, value: std.json.Value) !void {
