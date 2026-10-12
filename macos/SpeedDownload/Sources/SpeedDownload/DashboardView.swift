@@ -221,7 +221,7 @@ struct DashboardView: View {
                     metric(title: "Instance", value: String(instance.prefix(8)), icon: "server.rack")
                     metric(title: "Session", value: String(session.prefix(8)), icon: "point.3.connected.trianglepath.dotted")
                 }
-                Text("Connected. Start a queued job to download it. One transfer runs at a time.")
+                Text("Connected. Start a queued job to run the queue, up to four transfers at once.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             case .disconnected(let message):

@@ -40,7 +40,6 @@ const EngineContext = struct {
     io: std.Io,
     jobs: *job_store.Store,
     active_workers: std.atomic.Value(u32) = .init(0),
-    active_job_key: std.atomic.Value(u64) = .init(0),
 };
 
 pub const ServerIdentity = struct {
@@ -158,7 +157,7 @@ fn dispatchMethod(
         const control = parseJobControl(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         const id = request_id orelse return null;
         if (control.action == .start) return startDownload(allocator, id, control, engine);
-        if ((control.action == .pause or control.action == .cancel) and isActiveJob(engine, control.job_id)) {
+        if ((control.action == .pause or control.action == .cancel) and jobs.isDownloading(control.job_id)) {
             const stop_action: job_store.StopAction = if (control.action == .pause) .pause else .cancel;
             const response = jobs.requestStopJson(id, control.job_id, stop_action, control.expected_revision) catch |err| {
                 if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
@@ -192,39 +191,37 @@ fn dispatchMethod(
 }
 
 fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, control: JobControl, engine: *EngineContext) anyerror!?[]u8 {
-    if (engine.active_workers.cmpxchgStrong(0, 1, .acquire, .monotonic) != null)
+    if (!reserveWorker(engine))
         return dispatchError(allocator, request_id, -32016, "Another download is already active");
 
     const response = engine.jobs.controlJson(request_id, control.job_id, .start, control.expected_revision) catch |err| {
-        engine.active_workers.store(0, .release);
+        releaseWorker(engine);
         if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
         if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
+        if (err == error.HostLimitReached) return dispatchError(allocator, request_id, -32016, "This host already has the maximum number of active downloads");
         if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
         return dispatchError(allocator, request_id, -32020, "Could not save the download request");
     };
     const task = engine.jobs.copyDownloadTask(control.job_id) catch |err| {
         engine.jobs.finishDownload(control.job_id, false, "Could not prepare the download") catch {};
-        engine.active_workers.store(0, .release);
+        releaseWorker(engine);
         allocator.free(response);
         return dispatchError(allocator, request_id, if (err == error.JobNotFound) -32012 else -32020, "Could not prepare the download");
     };
-    engine.active_job_key.store(jobKey(task.id), .release);
-    var thread = std.Thread.spawn(.{}, runDownloadWorker, .{ engine, task }) catch {
-        task.deinit(engine.allocator);
-        engine.active_job_key.store(0, .release);
-        engine.active_workers.store(0, .release);
-        engine.jobs.finishDownload(control.job_id, false, "Worker thread could not be started") catch {};
+    launchWorker(engine, task) catch {
         allocator.free(response);
         return dispatchError(allocator, request_id, -32020, "Could not start the download worker");
     };
-    thread.detach();
+    scheduleQueued(engine);
     return response;
 }
 
 fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) void {
-    defer engine.active_workers.store(0, .release);
-    defer engine.active_job_key.store(0, .release);
     defer task.deinit(engine.allocator);
+    defer {
+        releaseWorker(engine);
+        scheduleQueued(engine);
+    }
     const destination = buildDestination(engine.allocator, task) catch {
         engine.jobs.finishDownload(task.id, false, "Could not create a safe destination path") catch {};
         return;
@@ -247,13 +244,42 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     engine.jobs.finishDownload(task.id, true, null) catch {};
 }
 
-fn isActiveJob(engine: *EngineContext, job_id: []const u8) bool {
-    return engine.active_workers.load(.acquire) == 1 and engine.active_job_key.load(.acquire) == jobKey(job_id);
+fn reserveWorker(engine: *EngineContext) bool {
+    while (true) {
+        const active = engine.active_workers.load(.acquire);
+        if (active >= job_store.max_parallel_downloads) return false;
+        if (engine.active_workers.cmpxchgWeak(active, active + 1, .acquire, .monotonic) == null) return true;
+    }
 }
 
-fn jobKey(job_id: []const u8) u64 {
-    const key = std.hash.Wyhash.hash(0, job_id);
-    return if (key == 0) 1 else key;
+fn releaseWorker(engine: *EngineContext) void {
+    _ = engine.active_workers.fetchSub(1, .release);
+}
+
+fn launchWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) !void {
+    var thread = std.Thread.spawn(.{}, runDownloadWorker, .{ engine, task }) catch |err| {
+        engine.jobs.finishDownload(task.id, false, "Worker thread could not be started") catch {};
+        task.deinit(engine.allocator);
+        releaseWorker(engine);
+        return err;
+    };
+    thread.detach();
+}
+
+fn scheduleQueued(engine: *EngineContext) void {
+    while (reserveWorker(engine)) {
+        const task = engine.jobs.startNextQueued() catch {
+            releaseWorker(engine);
+            return;
+        } orelse {
+            releaseWorker(engine);
+            return;
+        };
+        launchWorker(engine, task) catch {
+            // The job was failed durably before launchWorker returned.
+            continue;
+        };
+    }
 }
 
 fn deletePartial(engine: *EngineContext, destination: []const u8) void {

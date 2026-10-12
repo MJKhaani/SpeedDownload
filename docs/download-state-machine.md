@@ -1,10 +1,11 @@
 # Download State Machine
 
 The core defines the state vocabulary and legal transitions. The engine
-persists queued jobs, runs one HTTP(S) transfer worker at a time, and supports
-queue pause/resume/cancel plus explicit start and retry. Active pause/cancel
-requests are persisted and take effect at the next downloader progress check;
-a network read that has not returned data can delay that check.
+persists queued jobs, drains them through a host-aware scheduler (four workers
+globally, two per host), and supports queue pause/resume/cancel plus explicit
+start and retry. Active pause/cancel requests are persisted and take effect at
+the next downloader progress check; a network read that has not returned data
+can delay that check.
 
 ```mermaid
 stateDiagram-v2
@@ -59,31 +60,30 @@ The engine-owned job store permits `start` from `queued` or `retry_wait`,
 `resume` from `paused` or `retry_wait` back to `queued`, and `cancel` from
 queued, scheduled, paused, or retry-wait states. Every accepted change
 increments the job revision and is atomically persisted before the RPC
-response. On startup, any persisted `resolving`, `connecting`, `downloading`,
-or `verifying` job is moved to `retry_wait` and persisted before the engine
-serves clients. The GUI displays it for an explicit user resume. Active-transfer
-controls remain unavailable until workers have explicit cancellation and
-ownership semantics. Active control leaves the state `downloading` while its
+response. On startup, persisted `resolving`, `connecting`, `downloading`,
+and `verifying` jobs are recovered before the engine serves clients. Active
+control leaves the state `downloading` while its
 `requested_control` is pending; after the worker exits it becomes `paused` or
 `canceled`. Pause preserves a validator-backed `.part` file and journal.
 Unresumable partial data is discarded by the downloader. Cancel always removes
 the `.part` and journal after the worker closes them. A restart resolves a
 pending pause/cancel before serving clients and removes partial data for a
-pending cancel. The current scheduler is a one-worker gate; the host-aware
-multi-job policy remains unconnected. Progress snapshots are persisted at the
+pending cancel. The scheduler enforces four global workers and two workers per
+host.
+Progress snapshots are persisted at the
 downloader's durable checkpoints: data is synced, then the resume journal is
 atomically replaced, then the job byte count is atomically replaced. A crash
 between these writes can leave the job count behind the journal, which is safe;
-the next explicit retry reloads the journal offset and corrects the count. For
+the next retry reloads the journal offset and corrects the count. For
 transfers without a resumable journal, byte counts are persisted after the file
 is synced. The count represents durable downloaded bytes, not checksum-verified
 bytes; completion is not reported until final validation and publication pass.
 
-The separate queue policy selects only `queued` jobs, enforces global and
-per-host active limits, then ranks by priority, least-loaded eligible host, and
-FIFO sequence. It is a deterministic core primitive and is not yet used by the
-single-worker engine dispatch path.
+The queue policy selects only `queued` jobs, enforces global and per-host
+active limits, then ranks by priority, least-loaded eligible host, and FIFO
+sequence. Current jobs use default priority zero and creation order as their
+sequence; user-configurable priority is not yet exposed.
 
-Future worker improvements must preserve these rules and add cooperative
-cancellation and worker ownership semantics before exposing controls for active
-transfers.
+Future worker improvements should make network reads directly interruptible so
+active pause/cancel does not need to wait for the next read to return, while
+preserving per-job ownership and checkpoint ordering.

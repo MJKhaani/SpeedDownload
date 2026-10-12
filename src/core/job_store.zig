@@ -5,6 +5,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = std.c;
+const queue_policy = @import("queue.zig");
+const CoreState = @import("root.zig").State;
 
 const lstat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
     .name = if (builtin.os.tag == .macos) "lstat$INODE64" else "lstat",
@@ -17,6 +19,8 @@ extern "c" fn chmod(path: [*:0]const u8, mode: c.mode_t) c_int;
 
 pub const State = enum { queued, scheduled, resolving, connecting, downloading, paused, retry_wait, verifying, completed, failed, canceled };
 pub const StopAction = enum { pause, cancel };
+pub const max_parallel_downloads = 4;
+pub const max_parallel_downloads_per_host = 2;
 
 pub const Job = struct {
     id: []const u8,
@@ -203,7 +207,10 @@ pub const Store = struct {
                     else => return error.InvalidJobControl,
                 },
                 .start => switch (job.state) {
-                    .queued, .retry_wait => .downloading,
+                    .queued, .retry_wait => blk: {
+                        if (self.activeForHost(job.url) >= max_parallel_downloads_per_host) return error.HostLimitReached;
+                        break :blk .downloading;
+                    },
                     else => return error.InvalidJobControl,
                 },
             };
@@ -268,6 +275,85 @@ pub const Store = struct {
             return .{ .id = id, .url = url, .name = name, .destination = destination };
         }
         return error.JobNotFound;
+    }
+
+    pub fn startNextQueued(self: *Store) !?DownloadTask {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var refs: std.ArrayList(queue_policy.JobRef) = .empty;
+        defer refs.deinit(self.allocator);
+        for (self.jobs.items, 0..) |job, index| {
+            const uri = try std.Uri.parse(job.url);
+            try refs.append(self.allocator, .{
+                .id = @intCast(index),
+                .host = hostString(uri) orelse "",
+                .priority = 0,
+                .sequence = @intCast(index + 1),
+                .state = std.meta.stringToEnum(CoreState, @tagName(job.state)).?,
+            });
+        }
+        const selected = queue_policy.next(refs.items, .{
+            .global_active = max_parallel_downloads,
+            .per_host_active = max_parallel_downloads_per_host,
+        }) orelse return null;
+        const job = &self.jobs.items[@intCast(refs.items[selected].id)];
+        const old_state = job.state;
+        const old_revision = job.revision;
+        const old_error = job.error_message;
+        const old_completed = job.completed_bytes;
+        const old_total = job.total_bytes;
+        const next_revision = try std.math.add(u64, old_revision, 1);
+        const task = try self.copyTaskUnlocked(job.*);
+        errdefer task.deinit(self.allocator);
+        job.state = .downloading;
+        job.revision = next_revision;
+        job.error_message = null;
+        job.completed_bytes = 0;
+        job.total_bytes = null;
+        job.requested_control = null;
+        self.persist() catch |err| {
+            job.state = old_state;
+            job.revision = old_revision;
+            job.error_message = old_error;
+            job.completed_bytes = old_completed;
+            job.total_bytes = old_total;
+            return err;
+        };
+        if (old_error) |message| self.allocator.free(message);
+        return task;
+    }
+
+    fn activeForHost(self: *Store, url: []const u8) usize {
+        const target = std.Uri.parse(url) catch return max_parallel_downloads_per_host;
+        const target_host = hostString(target) orelse return max_parallel_downloads_per_host;
+        var active: usize = 0;
+        for (self.jobs.items) |job| {
+            if (job.state != .resolving and job.state != .connecting and job.state != .downloading and job.state != .verifying) continue;
+            const uri = std.Uri.parse(job.url) catch continue;
+            const host = hostString(uri) orelse continue;
+            if (std.ascii.eqlIgnoreCase(host, target_host)) active += 1;
+        }
+        return active;
+    }
+
+    fn hostString(uri: std.Uri) ?[]const u8 {
+        const host = uri.host orelse return null;
+        return switch (host) {
+            .raw => |value| value,
+            .percent_encoded => |value| value,
+        };
+    }
+
+    fn copyTaskUnlocked(self: *Store, job: Job) !DownloadTask {
+        const id = try self.allocator.dupe(u8, job.id);
+        errdefer self.allocator.free(id);
+        const url = try self.allocator.dupe(u8, job.url);
+        errdefer self.allocator.free(url);
+        const name = if (job.name) |value| try self.allocator.dupe(u8, value) else null;
+        errdefer if (name) |value| self.allocator.free(value);
+        const destination = try self.allocator.dupe(u8, job.destination);
+        errdefer self.allocator.free(destination);
+        return .{ .id = id, .url = url, .name = name, .destination = destination };
     }
 
     pub fn finishDownload(self: *Store, job_id: []const u8, succeeded: bool, error_message: ?[]const u8) !void {
@@ -337,6 +423,15 @@ pub const Store = struct {
             if (std.mem.eql(u8, job.id, job_id) and job.state == .downloading) return job.requested_control;
         }
         return null;
+    }
+
+    pub fn isDownloading(self: *Store, job_id: []const u8) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |job| {
+            if (std.mem.eql(u8, job.id, job_id)) return job.state == .downloading;
+        }
+        return false;
     }
 
     pub fn finishStoppedDownload(self: *Store, job_id: []const u8, next_state: State) !void {
