@@ -40,12 +40,26 @@ fn runEngine(init: std.process.Init) !void {
         return error.EngineTransportUnavailable;
     } else {
         const unix_ipc = @import("ipc/unix.zig");
+        const JobStore = @import("core/job_store.zig").Store;
         const raw_runtime_dir = if (builtin.os.tag == .macos)
             (init.environ_map.get("TMPDIR") orelse return error.RuntimeDirectoryUnavailable)
         else
             (init.environ_map.get("XDG_RUNTIME_DIR") orelse return error.RuntimeDirectoryUnavailable);
         const trimmed_runtime_dir = std.mem.trimEnd(u8, raw_runtime_dir, "/");
         const runtime_dir = if (trimmed_runtime_dir.len == 0) "/" else trimmed_runtime_dir;
+
+        const home = init.environ_map.get("HOME") orelse return error.HomeDirectoryUnavailable;
+        const state_directory = if (init.environ_map.get("SPEED_DOWNLOAD_STATE_DIR")) |override|
+            try init.gpa.dupe(u8, override)
+        else if (builtin.os.tag == .macos)
+            try std.fs.path.join(init.gpa, &.{ home, "Library", "Application Support", "Speed Download" })
+        else if (init.environ_map.get("XDG_STATE_HOME")) |state_home|
+            try std.fs.path.join(init.gpa, &.{ state_home, "speed-download" })
+        else
+            try std.fs.path.join(init.gpa, &.{ home, ".local", "state", "speed-download" });
+        defer init.gpa.free(state_directory);
+        var jobs = try JobStore.open(init.gpa, init.io, state_directory);
+        defer jobs.deinit();
 
         var instance_bytes: [16]u8 = undefined;
         try init.io.randomSecure(&instance_bytes);
@@ -56,6 +70,7 @@ fn runEngine(init: std.process.Init) !void {
         std.debug.print("Speed Download engine starting; IPC endpoint: {s}/speed-download/engine.sock\n", .{runtime_dir});
         try unix_ipc.serve(init.gpa, .{
             .runtime_dir = runtime_dir,
+            .jobs = &jobs,
             .server = .{
                 .engine_version = "0.1.0",
                 .engine_instance_id = instance_id,

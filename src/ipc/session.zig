@@ -8,8 +8,18 @@ const std = @import("std");
 const hello = @import("hello.zig");
 const Value = std.json.Value;
 
+pub const DispatchFn = *const fn (
+    allocator: std.mem.Allocator,
+    id: ?Value,
+    method: []const u8,
+    params: ?Value,
+    context: ?*anyopaque,
+) anyerror!?[]u8;
+
 pub const Session = struct {
     negotiated: bool = false,
+    dispatch: ?DispatchFn = null,
+    context: ?*anyopaque = null,
 
     /// Processes one decoded JSON payload. The caller owns and frees a response.
     /// Notifications with no `id` return null unless the JSON itself is invalid.
@@ -67,6 +77,14 @@ pub const Session = struct {
         }
 
         if (std.mem.eql(u8, method.string, "engine.hello")) return invalidRequest(allocator, id);
+        if (self.dispatch) |dispatch| {
+            const response = try dispatch(allocator, id, method.string, request.get("params"), self.context);
+            if (!has_id) {
+                if (response) |payload_result| allocator.free(payload_result);
+                return null;
+            }
+            if (response) |payload_result| return payload_result;
+        }
         if (!has_id) return null;
         return try errorResponse(allocator, id.?, -32601, "Method not found");
     }

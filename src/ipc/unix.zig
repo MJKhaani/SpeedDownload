@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const frame = @import("frame.zig");
 const protocol = @import("root.zig");
+const job_store = @import("../core/job_store.zig");
 
 const c = std.c;
 const SocketPath = [*:0]const u8;
@@ -31,6 +32,7 @@ pub const Config = struct {
     app_dir_name: []const u8 = "speed-download",
     socket_name: []const u8 = "engine.sock",
     server: ServerIdentity,
+    jobs: *job_store.Store,
 };
 
 pub const ServerIdentity = struct {
@@ -78,11 +80,11 @@ pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
     while (true) {
         const client = c.accept(listener, null, null);
         if (client < 0) continue;
-        handleClient(allocator, client, config.server) catch {};
+        handleClient(allocator, client, config.server, config.jobs) catch {};
     }
 }
 
-fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity) !void {
+fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity, jobs: *job_store.Store) !void {
     defer _ = c.close(client);
     if (builtin.os.tag == .macos) {
         var enabled: c_int = 1;
@@ -90,11 +92,11 @@ fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIden
             return;
     }
     if (!try peerIsCurrentUser(client)) return;
-    try serveConnection(allocator, client, server);
+    try serveConnection(allocator, client, server, jobs);
 }
 
-fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdentity) !void {
-    var session = protocol.Session{};
+fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdentity, jobs: *job_store.Store) !void {
+    var session = protocol.Session{ .dispatch = dispatchMethod, .context = @ptrCast(jobs) };
     var header: [4]u8 = undefined;
     const request_frame = try allocator.alloc(u8, frame.header_bytes + frame.max_payload_bytes);
     defer allocator.free(request_frame);
@@ -127,6 +129,90 @@ fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdent
             allocator.free(response_frame);
         }
     }
+}
+
+fn dispatchMethod(
+    allocator: std.mem.Allocator,
+    request_id: ?std.json.Value,
+    method: []const u8,
+    params: ?std.json.Value,
+    context: ?*anyopaque,
+) anyerror!?[]u8 {
+    const jobs: *job_store.Store = @ptrCast(@alignCast(context orelse return error.MissingDispatcherContext));
+    if (std.mem.eql(u8, method, "jobs.list")) {
+        const page = parseListPage(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (request_id) |id| return @as(?[]u8, try jobs.listJson(id, page.offset, page.limit));
+        return null;
+    }
+    if (!std.mem.eql(u8, method, "jobs.add")) return null;
+
+    const input = parseAddInput(params orelse return dispatchError(allocator, request_id, -32602, "Invalid params")) catch {
+        return dispatchError(allocator, request_id, -32602, "Invalid params");
+    };
+    const added = jobs.add(input) catch |err| {
+        if (request_id == null) return null;
+        if (err == error.InvalidJob) return dispatchError(allocator, request_id, -32010, "Invalid download request");
+        if (err == error.IdempotencyConflict) return dispatchError(allocator, request_id, -32011, "Idempotency key was already used for another request");
+        return dispatchError(allocator, request_id, -32020, "Could not save the download request");
+    };
+    const id = request_id orelse return null;
+    return @as(?[]u8, try std.json.Stringify.valueAlloc(allocator, .{
+        .jsonrpc = "2.0",
+        .id = id,
+        .result = .{
+            .job_id = added.job.id,
+            .state = added.job.state,
+            .revision = "1",
+            .duplicate = added.duplicate,
+        },
+    }, .{}));
+}
+
+const ListPage = struct { offset: usize = 0, limit: usize = 50 };
+
+fn parseListPage(params: ?std.json.Value) !ListPage {
+    const value = params orelse return .{};
+    if (value != .object) return error.InvalidParams;
+    var page = ListPage{};
+    if (value.object.get("offset")) |offset_value| {
+        if (offset_value != .integer or offset_value.integer < 0) return error.InvalidParams;
+        page.offset = std.math.cast(usize, offset_value.integer) orelse return error.InvalidParams;
+    }
+    if (value.object.get("limit")) |limit_value| {
+        if (limit_value != .integer or limit_value.integer < 1 or limit_value.integer > 50)
+            return error.InvalidParams;
+        page.limit = @intCast(limit_value.integer);
+    }
+    return page;
+}
+
+fn parseAddInput(params: std.json.Value) !job_store.AddInput {
+    if (params != .object) return error.InvalidParams;
+    const object = params.object;
+    const url = stringField(object, "url") orelse return error.InvalidParams;
+    const destination = stringField(object, "destination") orelse return error.InvalidParams;
+    const key = stringField(object, "idempotency_key") orelse return error.InvalidParams;
+    const name_value = object.get("name");
+    const name = if (name_value) |value| switch (value) {
+        .string => |text| text,
+        .null => null,
+        else => return error.InvalidParams,
+    } else null;
+    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key };
+}
+
+fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = object.get(key) orelse return null;
+    return if (value == .string) value.string else null;
+}
+
+fn dispatchError(allocator: std.mem.Allocator, id: ?std.json.Value, code: i64, message: []const u8) !?[]u8 {
+    const request_id = id orelse return null;
+    return @as(?[]u8, try std.json.Stringify.valueAlloc(allocator, .{
+        .jsonrpc = "2.0",
+        .id = request_id,
+        .@"error" = .{ .code = code, .message = message },
+    }, .{}));
 }
 
 fn uuidString(buffer: *[36]u8) []const u8 {

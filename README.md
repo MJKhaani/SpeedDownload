@@ -16,7 +16,7 @@ Speed Download is a free, open-source download manager in active development. It
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, and a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID. `speed-download engine` starts the early engine listener. A native SwiftUI macOS shell now connects to the same handshake and reports engine state; job actions remain unavailable until the engine adds job RPCs. Windows and Linux clients, durable jobs, and no IPC platform have runtime validation yet; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID, and persistent `jobs.add`/`jobs.list` RPCs. `speed-download engine` starts the early engine listener. A native SwiftUI macOS shell connects through the handshake and reports engine state; job list/add controls are the next client step. The engine stores queued records but does not yet run transfer workers. Windows and Linux clients and IPC runtime validation remain pending; see [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 
@@ -35,6 +35,8 @@ zig-out/bin/speed-download --help
 ```
 
 Start the Unix IPC engine on macOS or Linux with `zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download && zig-out/bin/speed-download engine`. It listens at `$TMPDIR/speed-download/engine.sock` on macOS or `$XDG_RUNTIME_DIR/speed-download/engine.sock` on Linux. The runtime base must be a private directory owned by the current user.
+
+Job records are saved atomically under `~/Library/Application Support/Speed Download/jobs.json` on macOS, or `$XDG_STATE_HOME/speed-download/jobs.json` (falling back to `~/.local/state/speed-download/jobs.json`) on Linux. Set `SPEED_DOWNLOAD_STATE_DIR` to override the state directory.
 
 Build the macOS SwiftUI client from `macos/SpeedDownload` with `swift build -c release`. Run the `SpeedDownload` executable after starting the engine.
 
