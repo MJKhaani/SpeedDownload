@@ -1,7 +1,7 @@
-# Open Download Manager — Project Specification
+# Speed Download — Project Specification
 
 > **Status:** Proposed / architecture and feasibility phase  
-> **Working name:** Open Download Manager (`odm`, placeholder; final brand TBD)  
+> **Product name:** Speed Download (`speed-download` CLI)
 > **Type:** Free, open-source, cross-platform desktop download manager  
 > **Primary language:** Zig  
 > **GUI toolkit:** Capy UI (required; platform readiness must be validated)  
@@ -57,7 +57,7 @@ Required action before building product UI:
 **Core journeys:**
 
 1. Paste a URL → preview safe file details, destination, and transfer method → add and start → monitor speed and individual segments → verify and open folder.
-2. Click a download in a browser → explicitly offer **Download with ODM** → securely hand off to installed app → maintain progress even when the browser closes.
+2. Click a download in a browser → explicitly offer **Download with Speed Download** → securely hand off to installed app → maintain progress even when the browser closes.
 3. Import a `.torrent` file or `magnet:` URL → select files/destination → download with piece validation and optional seeding policy.
 4. Set schedules and bandwidth caps → queue jobs → apply rules while running headlessly at login.
 5. Pause/resume/restart the app or recover from power loss → reuse only bytes proven to match the same remote representation.
@@ -169,7 +169,7 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 **Target browsers:** Google Chrome, Microsoft Edge, Mozilla Firefox, Safari (macOS), Brave, Opera, Vivaldi. Chromium-derived browsers may share most extension code but require separate packaging/QA and potentially separate native host allowlists.
 
 - Browser extension code must be WebExtensions-compatible **JavaScript/TypeScript**, with minimal vendor-specific glue. **Zig-only** refers to the native desktop application/core, not browser-managed JS extension runtimes or platform packaging glue.
-- Functions: context-menu **Download with ODM**, optional integration with the browser download API, URL handoff with user confirmation, add-from-current-tab when authorized, extension settings, per-site enable/disable, and installed-app status.
+- Functions: context-menu **Download with Speed Download**, optional integration with the browser download API, URL handoff with user confirmation, add-from-current-tab when authorized, extension settings, per-site enable/disable, and installed-app status.
 - Never claim all downloads can be intercepted: browser API/security/sandbox restrictions, streaming media, DRM, authentication-bound requests, blob/object URLs, and `POST` transfers may prevent handoff. Avoid promising DRM bypass or media extraction.
 - Use **native messaging** for Chromium and Firefox (with host manifest per OS/browser). An extension service worker forwards messages from content scripts and wakes/reconnects as necessary. No unauthenticated TCP localhost listener by default.
 - Safari uses an **Xcode-packaged Safari Web Extension**, a containing macOS app and native extension bridge; app groups/native message paths require Apple-specific work and signing/distribution review. Safari is not merely a Chrome extension binary copied onto macOS.
@@ -186,7 +186,7 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 - Distinguish desktop login startup from **system service at boot**. Service-before-login is optional, platform-specific, carefully permissioned, and not enabled by default.
 - Provide native OS completion/failure notifications with per-category toggles and clickable actions where supported. Do not show credentials, private source query strings, or sensitive file paths in lock-screen notifications.
 - Platform mechanisms (evaluate during spike): macOS login item / LaunchAgent + UserNotifications; Windows per-user startup/task scheduling + notification APIs; Linux systemd user service or XDG autostart + Freedesktop notifications / portals.
-- Keep headless CLI useful: `odm add <url>`, `odm list`, `odm pause <id>`, `odm resume <id>`, `odm status`, `odm daemon` (proposed; finalize in CLI design). CLI should share application commands and validation with GUI.
+- Keep headless CLI useful: `speed-download add <url>`, `speed-download list`, `speed-download pause <id>`, `speed-download resume <id>`, `speed-download status`, `speed-download daemon` (proposed; finalize in CLI design). CLI should share application commands and validation with GUI.
 
 ### 4.9 Credentials and privacy
 

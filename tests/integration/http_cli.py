@@ -124,7 +124,7 @@ def run(binary: str, url: str, destination: Path, *options: str) -> subprocess.C
 
 def main() -> None:
     if len(sys.argv) != 2:
-        raise SystemExit("usage: http_cli.py <odm-binary>")
+        raise SystemExit("usage: http_cli.py <speed-download-binary>")
     binary = str(Path(sys.argv[1]).resolve())
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -132,7 +132,7 @@ def main() -> None:
     base_url = f"http://127.0.0.1:{server.server_port}"
 
     try:
-        with tempfile.TemporaryDirectory(prefix="odm-http-test-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="speed-download-http-test-") as tmp:
             successful_path = Path(tmp) / "download.bin"
             result = run(binary, base_url + "/redirect", successful_path)
             assert result.returncode == 0, result.stderr.decode(errors="replace")

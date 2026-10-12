@@ -1,4 +1,4 @@
-# AI Agent Development Instructions — Open Download Manager
+# AI Agent Development Instructions — Speed Download
 
 > **Applies to:** all AI coding agents, automated contributors, and human maintainers working on this repository.  
 > **Canonical product specification:** [PROJECT.md](PROJECT.md)  

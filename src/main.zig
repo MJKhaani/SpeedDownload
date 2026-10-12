@@ -6,7 +6,7 @@ const download = @import("protocols/http/download.zig").download;
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        std.debug.print("Usage: odm [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
+        std.debug.print("Usage: speed-download [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
         return;
     }
     var expected_sha256: ?[32]u8 = null;
@@ -14,18 +14,18 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 5 and std.mem.eql(u8, args[1], "--sha256")) {
         var digest: [32]u8 = undefined;
         _ = std.fmt.hexToBytes(&digest, args[2]) catch {
-            std.debug.print("odm: --sha256 requires exactly 64 hexadecimal digits\n", .{});
+            std.debug.print("speed-download: --sha256 requires exactly 64 hexadecimal digits\n", .{});
             return error.InvalidChecksum;
         };
         expected_sha256 = digest;
         url_index = 3;
     } else if (args.len != 3) {
-        std.debug.print("Usage: odm [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
+        std.debug.print("Usage: speed-download [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
         return error.InvalidArguments;
     }
 
     download(init.gpa, init.io, args[url_index], args[url_index + 1], expected_sha256) catch |err| {
-        std.debug.print("odm: {s}\n", .{errorMessage(err)});
+        std.debug.print("speed-download: {s}\n", .{errorMessage(err)});
         return err;
     };
 }

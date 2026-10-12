@@ -17,14 +17,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            binary: zig-out/bin/odm
-            artifact: odm-linux-x86_64
+            binary: zig-out/bin/speed-download
+            artifact: speed-download-linux-x86_64
           - os: windows-latest
-            binary: zig-out/bin/odm.exe
-            artifact: odm-windows-x86_64
+            binary: zig-out/bin/speed-download.exe
+            artifact: speed-download-windows-x86_64
           - os: macos-latest
-            binary: zig-out/bin/odm
-            artifact: odm-macos-arm64
+            binary: zig-out/bin/speed-download
+            artifact: speed-download-macos-arm64
     steps:
       - name: Check out source
         uses: actions/checkout@v4

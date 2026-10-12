@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping build Open Download Manager. The project is in early implementation; read [`PROJECT.md`](PROJECT.md) and [`Agent.md`](Agent.md) before proposing implementation changes. These documents define platform caveats, safety invariants, and validation expectations.
+Thanks for helping build Speed Download. The project is in early implementation; read [`PROJECT.md`](PROJECT.md) and [`Agent.md`](Agent.md) before proposing implementation changes. These documents define platform caveats, safety invariants, and validation expectations.
 
 ## Before changing code
 
@@ -17,11 +17,11 @@ The current core is evaluated with Zig 0.17.0. Build and check the headless prot
 
 ```sh
 mkdir -p zig-out/bin
-zig build-exe src/main.zig -femit-bin=zig-out/bin/odm
+zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download
 zig test src/core/root.zig
 zig test src/core/queue.zig
 zig test src/protocols/http/download.zig
-python3 tests/integration/http_cli.py zig-out/bin/odm
+python3 tests/integration/http_cli.py zig-out/bin/speed-download
 ```
 
 The integration fixture uses loopback networking only. Platform support remains unvalidated outside the development host.

@@ -1,6 +1,6 @@
 # Security Policy
 
-Open Download Manager is in feasibility development and does not yet provide a released product or supported binary.
+Speed Download is in early development and does not yet provide a released product or supported binary.
 
 ## Reporting a vulnerability
 

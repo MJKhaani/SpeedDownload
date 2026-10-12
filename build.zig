@@ -11,13 +11,13 @@ pub fn build(b: *std.Build) void {
     });
 
     const core_tests = b.addTest(.{
-        .name = "odm-core-tests",
+        .name = "speed-download-core-tests",
         .root_module = core,
     });
     const run_core_tests = b.addRunArtifact(core_tests);
 
     const queue_tests = b.addTest(.{
-        .name = "odm-queue-tests",
+        .name = "speed-download-queue-tests",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/core/queue.zig"),
             .target = target,
@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     const run_queue_tests = b.addRunArtifact(queue_tests);
 
     const http_tests = b.addTest(.{
-        .name = "odm-http-tests",
+        .name = "speed-download-http-tests",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/protocols/http/download.zig"),
             .target = target,
@@ -41,13 +41,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_queue_tests.step);
     test_step.dependOn(&run_http_tests.step);
 
-    const odm = b.addExecutable(.{
-        .name = "odm",
+    const speed_download = b.addExecutable(.{
+        .name = "speed-download",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    b.installArtifact(odm);
+    b.installArtifact(speed_download);
 }
