@@ -3,6 +3,7 @@ import SwiftUI
 struct DashboardView: View {
     @EnvironmentObject private var engine: EngineModel
     @State private var selection: String? = "Downloads"
+    @State private var showingAddDownload = false
 
     var body: some View {
         NavigationSplitView {
@@ -20,7 +21,16 @@ struct DashboardView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         connectionCard
-                        emptyDownloads
+                        if let error = engine.actionError {
+                            Label(error, systemImage: "exclamationmark.triangle.fill")
+                                .font(.callout)
+                                .foregroundStyle(.red)
+                                .textSelection(.enabled)
+                                .padding(14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        jobsContent
                     }
                     .padding(28)
                     .frame(maxWidth: 900, alignment: .leading)
@@ -32,8 +42,16 @@ struct DashboardView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { Task { await engine.connect() } } label: {
-                    Label("Reconnect", systemImage: "arrow.clockwise")
+                    Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .disabled(!isConnected)
+            }
+        }
+        .sheet(isPresented: $showingAddDownload) {
+            AddDownloadView(isSubmitting: engine.isSubmitting) { url, name, destination in
+                let added = await engine.addJob(url: url, name: name, destination: destination)
+                if added { showingAddDownload = false }
+                return added
             }
         }
     }
@@ -46,16 +64,81 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button {} label: {
+            Button { showingAddDownload = true } label: {
                 Label("Add Download", systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(true)
-            .help("Download jobs will be available when engine job methods are implemented.")
+            .disabled(!isConnected)
+            .help(isConnected ? "Add a URL to the download queue." : "Connect to the engine to add a job.")
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 22)
         .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private var jobsContent: some View {
+        let visibleJobs = filteredJobs
+        if visibleJobs.isEmpty {
+            emptyDownloads
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(selection ?? "Downloads").font(.title2.weight(.semibold))
+                    Spacer()
+                    Text("\(visibleJobs.count) job\(visibleJobs.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(visibleJobs) { job in jobRow(job) }
+            }
+        }
+    }
+
+    private var filteredJobs: [DownloadJob] {
+        switch selection {
+        case "Queue": engine.jobs.filter { $0.state == "queued" || $0.state == "scheduled" }
+        case "Completed": engine.jobs.filter { $0.state == "completed" }
+        default: engine.jobs
+        }
+    }
+
+    private func jobRow(_ job: DownloadJob) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: job.state == "completed" ? "checkmark.circle.fill" : "arrow.down.circle.fill")
+                .font(.title2)
+                .foregroundStyle(job.state == "completed" ? .green : .blue)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(job.name?.isEmpty == false ? job.name! : displayName(for: job.url))
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(job.url)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                Label(job.destination, systemImage: "folder")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            Text(job.state.capitalized)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background((job.state == "completed" ? Color.green : Color.blue).opacity(0.1), in: Capsule())
+        }
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary, lineWidth: 1))
+    }
+
+    private func displayName(for rawURL: String) -> String {
+        guard let url = URL(string: rawURL) else { return rawURL }
+        let lastComponent = url.lastPathComponent
+        return lastComponent.isEmpty ? (url.host ?? rawURL) : lastComponent
     }
 
     private var connectionCard: some View {
@@ -80,14 +163,14 @@ struct DashboardView: View {
                     metric(title: "Instance", value: String(instance.prefix(8)), icon: "server.rack")
                     metric(title: "Session", value: String(session.prefix(8)), icon: "point.3.connected.trianglepath.dotted")
                 }
-                Text("Secure local connection established. The engine is ready for job control once job RPCs are available.")
+                Text("Connected. Jobs are saved in the queue; transfer workers are still under development.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             case .disconnected(let message):
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Engine unavailable").font(.title3.weight(.semibold))
                     Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                    Text("Start `speed-download engine`, then reconnect.")
+                    Text("Start `speed-download engine`, then refresh.")
                         .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
                 }
@@ -103,13 +186,22 @@ struct DashboardView: View {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("No downloads yet")
+            Text(isConnected ? "No jobs here yet" : "Connect to your engine")
                 .font(.title3.weight(.semibold))
-            Text("The download list will appear here when job storage and IPC controls are available.")
+            Text(isConnected
+                 ? "Add a URL to save it in your queue. Transfers will begin when the download worker is available."
+                 : "Start the Speed Download engine to view and manage your saved jobs.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: 440)
+            if isConnected {
+                Button(action: { showingAddDownload = true }) {
+                    Label("Add Download", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 54)
@@ -150,5 +242,66 @@ struct DashboardView: View {
             Text(value).font(.system(.body, design: .monospaced).weight(.semibold))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct AddDownloadView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var url = ""
+    @State private var name = ""
+    @State private var destination = "\(NSHomeDirectory())/Downloads"
+    @State private var validationError: String?
+    let isSubmitting: Bool
+    let submit: (String, String, String) async -> Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Add Download").font(.title2.weight(.bold))
+                Text("Save a URL as a queued job. The file will not download until transfer support is available.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Form {
+                TextField("https://example.com/file.zip", text: $url)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Name (optional)", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Destination folder", text: $destination)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if let validationError {
+                Text(validationError)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button {
+                    Task { await save() }
+                } label: {
+                    if isSubmitting { ProgressView().controlSize(.small) }
+                    else { Text("Add to Queue") }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(isSubmitting || url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private func save() async {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = URL(string: trimmedURL), ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""), parsed.host != nil else {
+            validationError = "Enter a valid HTTP or HTTPS URL."
+            return
+        }
+        validationError = nil
+        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), destination.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }

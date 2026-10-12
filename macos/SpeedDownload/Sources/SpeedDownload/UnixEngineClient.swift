@@ -7,34 +7,129 @@ struct HelloResult: Sendable {
     let sessionID: String
 }
 
+struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
+    let jobID: String
+    let url: String
+    let name: String?
+    let destination: String
+    let state: String
+    let revision: String
+
+    var id: String { jobID }
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case url, name, destination, state, revision
+    }
+}
+
+struct JobListResult: Decodable, Sendable {
+    let jobs: [DownloadJob]
+    let total: String
+    let nextOffset: String?
+
+    enum CodingKeys: String, CodingKey {
+        case jobs, total
+        case nextOffset = "next_offset"
+    }
+}
+
+struct AddJobResult: Decodable, Sendable {
+    let jobID: String
+    let state: String
+    let revision: String
+    let duplicate: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case state, revision, duplicate
+    }
+}
+
 struct UnixEngineClient: Sendable {
     private let maxFrameSize = 1_048_576
 
     func hello() throws -> HelloResult {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        return try negotiate(fd: fd)
+    }
+
+    func listJobs() throws -> [DownloadJob] {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        let response: JobListResult = try request(
+            fd: fd,
+            id: "jobs-list-\(UUID().uuidString)",
+            method: "jobs.list",
+            params: ["offset": 0, "limit": 50]
+        )
+        return response.jobs
+    }
+
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String) throws -> AddJobResult {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        var params: [String: Any] = [
+            "url": url,
+            "destination": destination,
+            "idempotency_key": idempotencyKey,
+        ]
+        if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            params["name"] = name
+        }
+        return try request(
+            fd: fd,
+            id: "jobs-add-\(UUID().uuidString)",
+            method: "jobs.add",
+            params: params
+        )
+    }
+
+    private func openConnection() throws -> Int32 {
         let runtime = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
         let socketPath = URL(fileURLWithPath: runtime)
             .appendingPathComponent("speed-download", isDirectory: true)
             .appendingPathComponent("engine.sock")
             .path
         let fd = try connect(path: socketPath)
-        defer { Darwin.close(fd) }
-
         var noSignal: Int32 = 1
         _ = withUnsafePointer(to: &noSignal) {
             Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, $0, socklen_t(MemoryLayout<Int32>.size))
         }
+        return fd
+    }
 
-        let request: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": "hello-1",
-            "method": "engine.hello",
-            "params": [
+    private func negotiate(fd: Int32) throws -> HelloResult {
+        let envelope: RPCEnvelope<HelloEnvelope.Result> = try request(
+            fd: fd,
+            id: "hello-\(UUID().uuidString)",
+            method: "engine.hello",
+            params: [
                 "protocol": ["major": 1, "minor": 0],
                 "client": ["kind": "macos-gui", "version": "0.1.0"],
                 "features": [],
-            ],
-        ]
-        let payload = try JSONSerialization.data(withJSONObject: request)
+            ]
+        )
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return HelloResult(
+            engineVersion: result.engineVersion,
+            engineInstanceID: result.engineInstanceID,
+            sessionID: result.sessionID
+        )
+    }
+
+    private func request<Result: Decodable & Sendable>(
+        fd: Int32,
+        id: String,
+        method: String,
+        params: [String: Any]
+    ) throws -> RPCEnvelope<Result> {
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+        ])
         guard !payload.isEmpty, payload.count <= maxFrameSize else { throw ClientError.frameTooLarge }
         var frame = UInt32(payload.count).littleEndian
         var output = Data(bytes: &frame, count: MemoryLayout<UInt32>.size)
@@ -44,17 +139,11 @@ struct UnixEngineClient: Sendable {
         let header = try readExactly(fd: fd, count: 4)
         let length = header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).littleEndian }
         guard length > 0, length <= maxFrameSize else { throw ClientError.invalidFrame }
-        let responseData = try readExactly(fd: fd, count: Int(length))
-        let envelope = try JSONDecoder().decode(HelloEnvelope.self, from: responseData)
-        if let error = envelope.error { throw ClientError.remote(error.message) }
-        guard envelope.id == .string("hello-1"), let result = envelope.result else {
-            throw ClientError.invalidResponse
-        }
-        return HelloResult(
-            engineVersion: result.engineVersion,
-            engineInstanceID: result.engineInstanceID,
-            sessionID: result.sessionID
-        )
+        let data = try readExactly(fd: fd, count: Int(length))
+        let envelope = try JSONDecoder().decode(RPCEnvelope<Result>.self, from: data)
+        guard envelope.id == id else { throw ClientError.invalidResponse }
+        if let error = envelope.error { throw ClientError.remote(method: method, message: error.message) }
+        return envelope
     }
 
     private func connect(path: String) throws -> Int32 {
@@ -116,10 +205,16 @@ struct UnixEngineClient: Sendable {
     }
 }
 
-private struct HelloEnvelope: Decodable {
-    struct RemoteError: Decodable { let message: String }
-    struct Result: Decodable {
-        struct ProtocolVersion: Decodable { let major: Int; let minor: Int }
+private struct RPCEnvelope<Result: Decodable & Sendable>: Decodable, Sendable {
+    struct RemoteError: Decodable, Sendable { let message: String }
+    let id: String
+    let result: Result?
+    let error: RemoteError?
+}
+
+private enum HelloEnvelope {
+    struct Result: Decodable, Sendable {
+        struct ProtocolVersion: Decodable, Sendable { let major: Int; let minor: Int }
         let protocolVersion: ProtocolVersion
         let engineVersion: String
         let engineInstanceID: String
@@ -132,10 +227,6 @@ private struct HelloEnvelope: Decodable {
             case sessionID = "session_id"
         }
     }
-
-    let id: String
-    let result: Result?
-    let error: RemoteError?
 }
 
 private enum ClientError: LocalizedError {
@@ -144,17 +235,17 @@ private enum ClientError: LocalizedError {
     case invalidResponse
     case connectionClosed
     case socketPathTooLong
-    case remote(String)
+    case remote(method: String, message: String)
     case posix(String)
 
     var errorDescription: String? {
         switch self {
         case .frameTooLarge: "The engine message is too large."
         case .invalidFrame: "The engine returned an invalid IPC frame."
-        case .invalidResponse: "The engine returned an invalid handshake response."
+        case .invalidResponse: "The engine returned an invalid RPC response."
         case .connectionClosed: "The engine closed the connection."
         case .socketPathTooLong: "The engine socket path is too long for macOS."
-        case .remote(let message): "The engine rejected the handshake: \(message)"
+        case .remote(let method, let message): "The engine rejected \(method): \(message)"
         case .posix(let message): message
         }
     }

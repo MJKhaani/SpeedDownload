@@ -16,7 +16,7 @@ Speed Download is a free, open-source download manager in active development. It
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID, and persistent `jobs.add`/`jobs.list` RPCs. `speed-download engine` starts the early engine listener. A native SwiftUI macOS shell connects through the handshake and reports engine state; job list/add controls are the next client step. The engine stores queued records but does not yet run transfer workers. Windows and Linux clients and IPC runtime validation remain pending; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID, and persistent `jobs.add`/`jobs.list` RPCs. `speed-download engine` starts the early engine listener. The native SwiftUI macOS client connects to the engine, lists saved jobs, and adds new queued jobs. The engine stores queued records but does not yet run transfer workers. Windows and Linux clients and IPC runtime validation remain pending; see [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 

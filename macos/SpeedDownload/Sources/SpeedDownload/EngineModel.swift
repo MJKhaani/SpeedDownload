@@ -10,6 +10,9 @@ final class EngineModel: ObservableObject {
     }
 
     @Published private(set) var state: State = .connecting
+    @Published private(set) var jobs: [DownloadJob] = []
+    @Published private(set) var actionError: String?
+    @Published private(set) var isSubmitting = false
     private var attempt = 0
 
     func connect() async {
@@ -17,18 +20,52 @@ final class EngineModel: ObservableObject {
         let currentAttempt = attempt
         state = .connecting
         do {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try UnixEngineClient().hello()
+            let snapshot = try await Task.detached(priority: .userInitiated) {
+                let client = UnixEngineClient()
+                let hello = try client.hello()
+                let jobs = try client.listJobs()
+                return (hello, jobs)
             }.value
             guard currentAttempt == attempt else { return }
+            jobs = snapshot.1
             state = .connected(
-                engineVersion: result.engineVersion,
-                instanceID: result.engineInstanceID,
-                sessionID: result.sessionID
+                engineVersion: snapshot.0.engineVersion,
+                instanceID: snapshot.0.engineInstanceID,
+                sessionID: snapshot.0.sessionID
             )
         } catch {
             guard currentAttempt == attempt else { return }
             state = .disconnected(error.localizedDescription)
+        }
+    }
+
+    func addJob(url: String, name: String, destination: String) async -> Bool {
+        guard !isSubmitting else { return false }
+        isSubmitting = true
+        actionError = nil
+        defer { isSubmitting = false }
+        do {
+            let client = UnixEngineClient()
+            _ = try await Task.detached(priority: .userInitiated) {
+                try client.addJob(
+                    url: url,
+                    name: name,
+                    destination: destination,
+                    idempotencyKey: UUID().uuidString
+                )
+            }.value
+            do {
+                let refreshed = try await Task.detached(priority: .userInitiated) {
+                    try client.listJobs()
+                }.value
+                jobs = refreshed
+            } catch {
+                actionError = "Job saved, but the list could not be refreshed: \(error.localizedDescription)"
+            }
+            return true
+        } catch {
+            actionError = error.localizedDescription
+            return false
         }
     }
 }
