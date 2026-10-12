@@ -16,7 +16,7 @@ Speed Download is a free, open-source download manager in active development. It
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, and a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID. `speed-download engine` starts the early engine listener. Application job methods, durable jobs, Windows named pipes, and native clients remain pending. No IPC platform has runtime validation yet; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, and a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID. `speed-download engine` starts the early engine listener. A native SwiftUI macOS shell now connects to the same handshake and reports engine state; job actions remain unavailable until the engine adds job RPCs. Windows and Linux clients, durable jobs, and no IPC platform have runtime validation yet; see [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 
@@ -35,6 +35,8 @@ zig-out/bin/speed-download --help
 ```
 
 Start the Unix IPC engine on macOS or Linux with `zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download && zig-out/bin/speed-download engine`. It listens at `$TMPDIR/speed-download/engine.sock` on macOS or `$XDG_RUNTIME_DIR/speed-download/engine.sock` on Linux. The runtime base must be a private directory owned by the current user.
+
+Build the macOS SwiftUI client from `macos/SpeedDownload` with `swift build -c release`. Run the `SpeedDownload` executable after starting the engine.
 
 The CLI currently supports a single HTTP(S) transfer with redirects, strict response validation, safe resume for credential-free URLs when the server provides a known length and strong ETag, and optional `--sha256 <64-hex-digits>` verification before publishing the final file. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. The core also has a host-aware queue selection policy, but it is not connected to durable jobs or transfer workers. The CLI does not yet provide a persistent job queue, user-directed pause/cancel, parallel ranges, or IPC integration. Follow [`Agent.md`](Agent.md) when contributing.
 
