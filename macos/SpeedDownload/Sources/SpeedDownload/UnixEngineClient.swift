@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-struct HelloResult {
+struct HelloResult: Sendable {
     let engineVersion: String
     let engineInstanceID: String
     let sessionID: String

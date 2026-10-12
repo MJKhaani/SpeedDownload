@@ -84,6 +84,11 @@ pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
 
 fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity) !void {
     defer _ = c.close(client);
+    if (builtin.os.tag == .macos) {
+        var enabled: c_int = 1;
+        if (c.setsockopt(client, c.SOL.SOCKET, c.SO.NOSIGPIPE, &enabled, @sizeOf(c_int)) != 0)
+            return;
+    }
     if (!try peerIsCurrentUser(client)) return;
     try serveConnection(allocator, client, server);
 }
@@ -161,7 +166,8 @@ fn readExact(fd: c.fd_t, buffer: []u8) !void {
 fn writeAll(fd: c.fd_t, buffer: []const u8) !void {
     var offset: usize = 0;
     while (offset < buffer.len) {
-        const count = c.write(fd, buffer[offset..].ptr, buffer.len - offset);
+        const flags: u32 = if (builtin.os.tag == .linux) c.MSG.NOSIGNAL else 0;
+        const count = c.send(fd, buffer[offset..].ptr, buffer.len - offset, flags);
         if (count <= 0) return Error.SystemCallFailed;
         offset += @intCast(count);
     }
