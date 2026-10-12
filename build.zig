@@ -61,4 +61,16 @@ pub fn build(b: *std.Build) void {
     });
     const ipc_step = b.step("ipc", "Compile the local IPC protocol primitives");
     ipc_step.dependOn(&ipc_primitives.step);
+
+    const ipc_unix = b.addObject(.{
+        .name = "speed-download-ipc-unix",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipc/unix.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const ipc_unix_step = b.step("ipc-unix", "Compile Unix-domain IPC transport for macOS or Linux");
+    ipc_unix_step.dependOn(&ipc_unix.step);
 }

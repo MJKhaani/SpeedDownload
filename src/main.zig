@@ -1,12 +1,17 @@
 //! Command-line entry point for the standalone download engine prototype.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const download = @import("protocols/http/download.zig").download;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len == 2 and std.mem.eql(u8, args[1], "engine")) {
+        try runEngine(init);
+        return;
+    }
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        std.debug.print("Usage: speed-download [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
+        std.debug.print("Usage: speed-download [engine | [--sha256 <64-hex-digits>] <http(s)-url> <destination>]\n", .{});
         return;
     }
     var expected_sha256: ?[32]u8 = null;
@@ -28,6 +33,51 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("speed-download: {s}\n", .{errorMessage(err)});
         return err;
     };
+}
+
+fn runEngine(init: std.process.Init) !void {
+    if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) {
+        return error.EngineTransportUnavailable;
+    } else {
+        const unix_ipc = @import("ipc/unix.zig");
+        const raw_runtime_dir = if (builtin.os.tag == .macos)
+            (init.environ_map.get("TMPDIR") orelse return error.RuntimeDirectoryUnavailable)
+        else
+            (init.environ_map.get("XDG_RUNTIME_DIR") orelse return error.RuntimeDirectoryUnavailable);
+        const trimmed_runtime_dir = std.mem.trimEnd(u8, raw_runtime_dir, "/");
+        const runtime_dir = if (trimmed_runtime_dir.len == 0) "/" else trimmed_runtime_dir;
+
+        var instance_bytes: [16]u8 = undefined;
+        try init.io.randomSecure(&instance_bytes);
+        var instance_id_buffer: [36]u8 = undefined;
+        const instance_id = formatUuid(&instance_id_buffer, instance_bytes);
+
+        const features = [_][]const u8{};
+        std.debug.print("Speed Download engine starting; IPC endpoint: {s}/speed-download/engine.sock\n", .{runtime_dir});
+        try unix_ipc.serve(init.gpa, .{
+            .runtime_dir = runtime_dir,
+            .server = .{
+                .engine_version = "0.1.0",
+                .engine_instance_id = instance_id,
+                .supported_features = &features,
+            },
+        });
+    }
+}
+
+fn formatUuid(uuid: *[36]u8, bytes: [16]u8) []const u8 {
+    const hex = "0123456789abcdef";
+    var index: usize = 0;
+    for (bytes, 0..) |byte, i| {
+        if (i == 4 or i == 6 or i == 8 or i == 10) {
+            uuid[index] = '-';
+            index += 1;
+        }
+        uuid[index] = hex[byte >> 4];
+        uuid[index + 1] = hex[byte & 0x0f];
+        index += 2;
+    }
+    return uuid;
 }
 
 fn errorMessage(err: anyerror) []const u8 {

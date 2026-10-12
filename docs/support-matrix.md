@@ -6,7 +6,7 @@
 
 ## Current evidence
 
-Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume and optional SHA-256 verification. A pure host-aware queue selector enforces global and per-host limits, priority, and FIFO tie-breaking, but is not yet connected to workers or durable jobs. Automated local fixtures cover redirects, destination races, status/encoding rejection, interrupted transfer recovery, changed ETags, redirect-target changes, and matching/mismatching checksums. The native GUI and local IPC architecture has been adopted, but no engine daemon, IPC transport, or native GUI client is implemented yet. The first proof must cover framed protocol decoding, endpoint permissions, handshake, job requests, event subscriptions and reconnect behavior before any platform is considered validated.
+Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume and optional SHA-256 verification. A pure host-aware queue selector enforces global and per-host limits, priority, and FIFO tie-breaking, but is not yet connected to workers or durable jobs. Automated local fixtures cover redirects, destination races, status/encoding rejection, interrupted transfer recovery, changed ETags, redirect-target changes, and matching/mismatching checksums. IPC framing and handshake logic are implemented, alongside a sequential macOS/Linux Unix socket listener with private directory checks and same-UID peer authentication, exposed as `speed-download engine`. The engine executable compiles on the current macOS host, but the sandbox denies socket bind, so runtime handshake behavior remains unverified here. Windows named pipes, GUI clients, and job RPCs are not implemented. No IPC platform is validated until runtime checks cover permissions, handshake, requests, subscriptions, and reconnect behavior.
 
 ## Target matrix
 
@@ -16,10 +16,10 @@ Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with 
 | Windows | x86_64 | Not validated | Not implemented | Not implemented | Validate Zig engine, WinUI app, pipe ACLs, packaged and unpackaged deployment. |
 | Windows | ARM64 | Not validated | Not implemented | Not implemented | Build and run on ARM64 hardware; validate WinUI/Windows App SDK and Named Pipe permissions. |
 | Linux | x86 (32-bit) | Not validated | Not implemented | Not implemented | Verify ABI/large-file behavior; validate GTK4/GLib and Unix socket credentials on named distro. |
-| Linux | x86_64 | Not validated | Not implemented | Not implemented | Validate GTK4/GLib, AF_UNIX permissions, accessibility and package on named distro. |
+| Linux | x86_64 | Not validated | Not implemented | Adapter not validated | Validate GTK4/GLib, AF_UNIX peer credentials, daemon lifecycle, accessibility and package on named distro. |
 | Linux | ARM64 | Not validated | Not implemented | Not implemented | Native build/runtime and package validation required; not inferred from cross-build. |
 | Linux | ARM32 | Not validated | Not implemented | Not implemented | Stretch target; assess ABI, OS dependencies and runner/hardware separately. |
-| macOS | x86_64 | Not validated | Not implemented | Not implemented | Validate SwiftUI, AF_UNIX peer identity, signed helper launch and packaging on Intel host. |
+| macOS | x86_64 | Not validated | Not implemented | Executable compiles; socket runtime blocked by sandbox | Validate SwiftUI, AF_UNIX peer identity, daemon lifecycle, signed helper launch and packaging on Intel host. |
 | macOS | ARM64 | Not validated | Not implemented | Not implemented | Validate SwiftUI, AF_UNIX peer identity, signed helper launch and packaging on Apple Silicon host. |
 
 ## Core module check

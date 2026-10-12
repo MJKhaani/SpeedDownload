@@ -1,13 +1,13 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; frame decoding, the `engine.hello` handshake, per-connection negotiation state, and base JSON-RPC errors are implemented, while OS transports and application method dispatch remain pending
+- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, and an initial sequential macOS/Linux Unix socket engine mode with same-UID peer checks are implemented. The listener is reachable via `speed-download engine`; Windows named pipes and application method dispatch remain pending.
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
 
 ## 1. Contract overview
 
-The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, `session.zig` enforces the per-connection handshake requirement and standard pre-dispatch errors, and `root.zig` composes them into framed message handling. These primitives do not open sockets or named pipes, authenticate peers, or implement application methods. The repository exposes `zig build ipc` for compiling this module.
+The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, `session.zig` enforces the per-connection handshake requirement and standard pre-dispatch errors, and `root.zig` composes them into framed message handling. `unix.zig` provides a sequential AF_UNIX listener for macOS/Linux, validates private runtime-directory ownership/mode, restricts the socket to 0600, checks peer UID, and passes complete frames through the session handler. It refuses an existing endpoint rather than deleting a potentially live socket. Run it with `speed-download engine`; `zig build ipc` compiles protocol primitives and `zig build ipc-unix` compiles the host Unix adapter. The daemon currently supports handshake and unknown-method errors only; it does not yet persist jobs or provide a shutdown/control API. A successful compile does not demonstrate validated OS behavior.
 
 The engine is an **independent single-instance per-user daemon**. Client processes make duplex requests and subscriptions to it; the engine has the only writable copy of download history, jobs, and transfer workers.
 
