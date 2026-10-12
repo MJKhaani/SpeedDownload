@@ -20,10 +20,14 @@ resume_requests = {"/resume": 0, "/resume-change": 0, "/target-a": 0, "/target-b
 ranged_requests = {"/resume": 0, "/resume-change": 0, "/target-a": 0, "/target-b": 0}
 redirect_resume_requests = 0
 request_lock = threading.Lock()
+race_destination = None
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/race":
+            assert race_destination is not None
+            race_destination.write_bytes(b"concurrent winner")
         if self.path == "/redirect-resume":
             global redirect_resume_requests
             with request_lock:
@@ -154,6 +158,13 @@ def main() -> None:
             overwrite = run(binary, base_url + "/download", successful_path)
             assert overwrite.returncode != 0
             assert successful_path.read_bytes() == PAYLOAD
+
+            global race_destination
+            race_destination = Path(tmp) / "raced.bin"
+            raced = run(binary, base_url + "/race", race_destination)
+            assert raced.returncode != 0
+            assert b"destination already exists" in raced.stderr
+            assert race_destination.read_bytes() == b"concurrent winner"
 
             missing_path = Path(tmp) / "missing.bin"
             missing = run(binary, base_url + "/missing", missing_path)
