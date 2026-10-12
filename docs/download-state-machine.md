@@ -81,8 +81,9 @@ bytes; completion is not reported until final validation and publication pass.
 
 The queue policy selects only `queued` jobs, enforces global and per-host
 active limits, then ranks by priority, least-loaded eligible host, and FIFO
-sequence. Current jobs use default priority zero and creation order as their
-sequence; user-configurable priority is not yet exposed.
+sequence. Jobs accept a persisted integer priority from -100 to 100; the
+macOS add form offers low, normal, and high values. Creation order is the FIFO
+sequence when priorities and host load tie.
 
 Future worker improvements should make network reads directly interruptible so
 active pause/cancel does not need to wait for the next read to return, while

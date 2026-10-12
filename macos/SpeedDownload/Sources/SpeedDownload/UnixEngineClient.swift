@@ -18,6 +18,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let completedBytes: String?
     let totalBytes: String?
     let requestedControl: String?
+    let priority: Int?
 
     var id: String { jobID }
 
@@ -28,6 +29,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         case completedBytes = "completed_bytes"
         case totalBytes = "total_bytes"
         case requestedControl = "requested_control"
+        case priority
     }
 }
 
@@ -83,7 +85,7 @@ struct UnixEngineClient: Sendable {
         }
     }
 
-    func addJob(url: String, name: String?, destination: String, idempotencyKey: String) throws -> AddJobResult {
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         _ = try negotiate(fd: fd)
@@ -91,6 +93,7 @@ struct UnixEngineClient: Sendable {
             "url": url,
             "destination": destination,
             "idempotency_key": idempotencyKey,
+            "priority": priority,
         ]
         if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             params["name"] = name

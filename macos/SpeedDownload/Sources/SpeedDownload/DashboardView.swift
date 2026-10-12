@@ -49,8 +49,8 @@ struct DashboardView: View {
             }
         }
         .sheet(isPresented: $showingAddDownload) {
-            AddDownloadView(isSubmitting: engine.isSubmitting) { url, name, destination in
-                let added = await engine.addJob(url: url, name: name, destination: destination)
+            AddDownloadView(isSubmitting: engine.isSubmitting) { url, name, destination, priority in
+                let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority)
                 if added { showingAddDownload = false }
                 return added
             }
@@ -119,6 +119,11 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .textSelection(.enabled)
+                if let priority = job.priority, priority != 0 {
+                    Label(priority > 0 ? "High priority" : "Low priority", systemImage: "arrow.up.arrow.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let errorMessage = job.errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -308,9 +313,10 @@ private struct AddDownloadView: View {
     @State private var url = ""
     @State private var name = ""
     @State private var destination = "\(NSHomeDirectory())/Downloads"
+    @State private var priority = 0
     @State private var validationError: String?
     let isSubmitting: Bool
-    let submit: (String, String, String) async -> Bool
+    let submit: (String, String, String, Int) async -> Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -325,6 +331,11 @@ private struct AddDownloadView: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("Name (optional)", text: $name)
                     .textFieldStyle(.roundedBorder)
+                Picker("Priority", selection: $priority) {
+                    Text("Low").tag(-1)
+                    Text("Normal").tag(0)
+                    Text("High").tag(1)
+                }
                 HStack(spacing: 8) {
                     TextField("Destination folder", text: $destination)
                         .textFieldStyle(.roundedBorder)
@@ -369,7 +380,7 @@ private struct AddDownloadView: View {
             return
         }
         validationError = nil
-        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), folderPath)
+        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), folderPath, priority)
     }
 
     private func chooseDestination() {

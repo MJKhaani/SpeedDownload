@@ -34,6 +34,7 @@ pub const Job = struct {
     completed_bytes: u64 = 0,
     total_bytes: ?u64 = null,
     requested_control: ?StopAction = null,
+    priority: i32 = 0,
 };
 
 pub const AddInput = struct {
@@ -41,6 +42,7 @@ pub const AddInput = struct {
     name: ?[]const u8,
     destination: []const u8,
     idempotency_key: []const u8,
+    priority: i32 = 0,
 };
 
 pub const AddResult = struct {
@@ -129,6 +131,7 @@ pub const Store = struct {
             .completed_bytes = decimalAlloc(allocator, job.completed_bytes) catch return error.OutOfMemory,
             .total_bytes = if (job.total_bytes) |total| decimalAlloc(allocator, total) catch return error.OutOfMemory else null,
             .requested_control = job.requested_control,
+            .priority = job.priority,
         });
         defer for (summaries.items) |summary| allocator.free(summary.revision);
         defer for (summaries.items) |summary| {
@@ -287,7 +290,7 @@ pub const Store = struct {
             try refs.append(self.allocator, .{
                 .id = @intCast(index),
                 .host = hostString(uri) orelse "",
-                .priority = 0,
+                .priority = job.priority,
                 .sequence = @intCast(index + 1),
                 .state = std.meta.stringToEnum(CoreState, @tagName(job.state)).?,
             });
@@ -521,6 +524,7 @@ pub const Store = struct {
             .name = name,
             .destination = destination,
             .idempotency_key = idempotency_key,
+            .priority = input.priority,
         };
     }
 
@@ -611,6 +615,9 @@ pub const Store = struct {
             null
         else
             return error.InvalidJobStore;
+        const priority_value = object.get("priority") orelse std.json.Value{ .integer = 0 };
+        if (priority_value != .integer or priority_value.integer < -100 or priority_value.integer > 100)
+            return error.InvalidJobStore;
         const revision_value = object.get("revision") orelse return error.InvalidJobStore;
         if (revision_value != .integer or revision_value.integer <= 0) return error.InvalidJobStore;
         const name_value = object.get("name") orelse .null;
@@ -629,6 +636,7 @@ pub const Store = struct {
             .completed_bytes = @intCast(completed_value.integer),
             .total_bytes = total_bytes,
             .requested_control = requested_control,
+            .priority = @intCast(priority_value.integer),
         });
     }
 
@@ -696,6 +704,7 @@ const Summary = struct {
     completed_bytes: []const u8,
     total_bytes: ?[]const u8,
     requested_control: ?StopAction,
+    priority: i32,
 };
 
 fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
@@ -704,6 +713,7 @@ fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
 
 fn validateInput(input: AddInput) !void {
     if (input.url.len == 0 or input.url.len > 8192) return error.InvalidJob;
+    if (input.priority < -100 or input.priority > 100) return error.InvalidJob;
     const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
     if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null)
@@ -734,7 +744,7 @@ fn sameInput(job: *const Job, input: AddInput) bool {
     else
         input.name == null;
     return std.mem.eql(u8, job.url, input.url) and same_name and
-        std.mem.eql(u8, job.destination, input.destination);
+        std.mem.eql(u8, job.destination, input.destination) and job.priority == input.priority;
 }
 
 fn getString(object: std.json.ObjectMap, key: []const u8) ![]const u8 {

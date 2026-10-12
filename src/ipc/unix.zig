@@ -369,7 +369,11 @@ fn parseAddInput(params: std.json.Value) !job_store.AddInput {
         .null => null,
         else => return error.InvalidParams,
     } else null;
-    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key };
+    const priority: i32 = if (object.get("priority")) |value| blk: {
+        if (value != .integer or value.integer < -100 or value.integer > 100) return error.InvalidParams;
+        break :blk @intCast(value.integer);
+    } else 0;
+    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority };
 }
 
 fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {

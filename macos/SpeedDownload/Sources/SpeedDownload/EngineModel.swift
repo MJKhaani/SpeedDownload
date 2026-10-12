@@ -63,7 +63,7 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    func addJob(url: String, name: String, destination: String) async -> Bool {
+    func addJob(url: String, name: String, destination: String, priority: Int = 0) async -> Bool {
         guard !isSubmitting else { return false }
         isSubmitting = true
         actionError = nil
@@ -75,7 +75,8 @@ final class EngineModel: ObservableObject {
                     url: url,
                     name: name,
                     destination: destination,
-                    idempotencyKey: UUID().uuidString
+                    idempotencyKey: UUID().uuidString,
+                    priority: priority
                 )
             }.value
             do {
