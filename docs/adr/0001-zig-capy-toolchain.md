@@ -6,7 +6,7 @@
 
 ## Context
 
-The project requires Zig for the engine and Capy UI for the desktop interface. `PROJECT.md` and `Agent.md` record an upstream review dated 2026-10-11: Capy names Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. The same review noted Zig 0.17.0 as a newer release; newer does not imply Capy compatibility.
+The project requires Zig for the engine and Capy UI for the desktop interface. A fresh review of the [Capy upstream README](https://github.com/capy-ui/capy#readme) on 2026-10-12 still finds that Capy targets Zig 0.14.1 and says it is not ready for production. It lists macOS M1 and x86_64 as planned, does not list Windows ARM64, and its component table marks menus unavailable on all listed platforms and scrolling unavailable on macOS. Those gaps block the specified production UI, which needs menus and a scrolling download list. The same review notes Zig 0.17.0 as a newer release; newer does not imply Capy compatibility.
 
 Zig 0.17.0 is now installed in the development environment. Its default global cache was inaccessible under the workspace policy, but `ZIG_GLOBAL_CACHE_DIR=.zig-global-cache` allows local builds without writing outside the repository. No Capy checkout or network access is available, and its documented target is Zig 0.14.1. Therefore Zig 0.17.0 is an evaluation compiler for independent core work, not an approved project-wide or Capy-compatible pin. Pinning the pair based only on an upstream version statement would not satisfy the compatibility gate.
 
@@ -14,7 +14,7 @@ Zig 0.17.0 is now installed in the development environment. Its default global c
 
 Defer the project-wide toolchain pin. Use installed Zig 0.17.0 only to evaluate Capy-independent core modules. Separately begin the Capy spike against Zig 0.14.1, the candidate stated by the dated project source review, then select an exact Capy commit and compiler only after a reproducible build and GUI compatibility spike. Do not represent the core evaluation compiler as Capy-compatible or replace Capy with another GUI framework.
 
-Until evidence is recorded, the GUI and all platform targets remain unvalidated; macOS GUI remains blocked pending backend validation. Keep headless/core work independent of Capy.
+Until evidence is recorded, the GUI and all platform targets remain unvalidated; the GUI is blocked by both toolchain incompatibility and missing required toolkit components. Keep headless/core work independent of Capy.
 
 ## Required evidence to close this ADR
 

@@ -28,3 +28,10 @@ jobs:
           zig test src/core/root.zig
           zig test src/protocols/http/download.zig
           python3 tests/integration/http_cli.py zig-out/bin/odm
+
+      - name: Retain tagged CLI build
+        uses: actions/upload-artifact@v4
+        with:
+          name: odm-linux-x86_64-${{ github.ref_name }}
+          path: zig-out/bin/odm
+          if-no-files-found: error
