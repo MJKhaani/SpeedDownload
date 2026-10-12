@@ -10,6 +10,7 @@ const job_store = @import("../core/job_store.zig");
 const c = std.c;
 const SocketPath = [*:0]const u8;
 const max_socket_path_bytes = if (builtin.os.tag == .macos) 104 else 108;
+const max_ipc_clients = 32;
 
 comptime {
     if (builtin.os.tag != .macos and builtin.os.tag != .linux)
@@ -40,6 +41,7 @@ const EngineContext = struct {
     io: std.Io,
     jobs: *job_store.Store,
     active_workers: std.atomic.Value(u32) = .init(0),
+    active_clients: std.atomic.Value(u32) = .init(0),
 };
 
 pub const ServerIdentity = struct {
@@ -88,8 +90,30 @@ pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
     while (true) {
         const client = c.accept(listener, null, null);
         if (client < 0) continue;
-        handleClient(allocator, client, config.server, &engine) catch {};
+        if (!reserveClient(&engine)) {
+            _ = c.close(client);
+            continue;
+        }
+        var thread = std.Thread.spawn(.{}, handleClientThread, .{ allocator, client, config.server, &engine }) catch {
+            _ = engine.active_clients.fetchSub(1, .release);
+            _ = c.close(client);
+            continue;
+        };
+        thread.detach();
     }
+}
+
+fn reserveClient(engine: *EngineContext) bool {
+    while (true) {
+        const active = engine.active_clients.load(.acquire);
+        if (active >= max_ipc_clients) return false;
+        if (engine.active_clients.cmpxchgWeak(active, active + 1, .acquire, .monotonic) == null) return true;
+    }
+}
+
+fn handleClientThread(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity, engine: *EngineContext) void {
+    defer _ = engine.active_clients.fetchSub(1, .release);
+    handleClient(allocator, client, server, engine) catch {};
 }
 
 fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity, engine: *EngineContext) !void {
