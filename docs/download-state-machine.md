@@ -1,9 +1,9 @@
 # Download State Machine
 
 The core defines the state vocabulary and legal transitions. The engine
-persists queued jobs and currently supports pausing or canceling a queued job,
-and resuming a paused job through IPC. Transfer workers are not connected, so
-controls do not interrupt an active network transfer yet.
+persists queued jobs, runs one HTTP(S) transfer worker at a time, and supports
+queue pause/resume/cancel plus explicit start and retry. Controls do not
+interrupt an active network transfer yet.
 
 ```mermaid
 stateDiagram-v2
@@ -53,7 +53,8 @@ unknown when the total is unknown, `1` for a known empty resource with zero
 completed bytes, and unknown when completed bytes exceed the total. This keeps
 invalid counters from appearing as valid progress.
 
-The engine-owned job store permits `pause` from `queued` or `scheduled`,
+The engine-owned job store permits `start` from `queued` or `retry_wait`,
+`pause` from `queued` or `scheduled`,
 `resume` from `paused` or `retry_wait` back to `queued`, and `cancel` from
 queued, scheduled, paused, or retry-wait states. Every accepted change
 increments the job revision and is atomically persisted before the RPC
@@ -61,12 +62,16 @@ response. On startup, any persisted `resolving`, `connecting`, `downloading`,
 or `verifying` job is moved to `retry_wait` and persisted before the engine
 serves clients. The GUI displays it for an explicit user resume. Active-transfer
 controls remain unavailable until workers have explicit cancellation and
-ownership semantics.
+ownership semantics. The current scheduler is a one-worker gate; the host-aware
+multi-job policy remains unconnected. Transfer byte progress is reported while
+the worker is running and becomes durable with the final job update; the
+downloader's separate checkpoint journal remains authoritative after a crash.
 
 The separate queue policy selects only `queued` jobs, enforces global and
 per-host active limits, then ranks by priority, least-loaded eligible host, and
-FIFO sequence. It is a deterministic core primitive; no queue persistence,
-worker dispatch, or user controls are wired to it yet.
+FIFO sequence. It is a deterministic core primitive and is not yet used by the
+single-worker engine dispatch path.
 
-Future worker integration must preserve these rules and add cancellation and
-worker ownership semantics before exposing controls for active transfers.
+Future worker improvements must preserve these rules and add cooperative
+cancellation and worker ownership semantics before exposing controls for active
+transfers.

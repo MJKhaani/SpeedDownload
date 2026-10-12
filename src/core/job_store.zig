@@ -25,6 +25,9 @@ pub const Job = struct {
     idempotency_key: []const u8,
     state: State = .queued,
     revision: u64 = 1,
+    error_message: ?[]const u8 = null,
+    completed_bytes: u64 = 0,
+    total_bytes: ?u64 = null,
 };
 
 pub const AddInput = struct {
@@ -45,6 +48,7 @@ pub const Store = struct {
     directory_path: []const u8,
     file_path: []const u8,
     jobs: std.ArrayList(Job) = .empty,
+    mutex: std.Io.Mutex = .init,
 
     pub fn open(allocator: std.mem.Allocator, io: std.Io, directory_path: []const u8) !Store {
         if (!std.fs.path.isAbsolute(directory_path)) return error.InvalidStorePath;
@@ -80,7 +84,7 @@ pub const Store = struct {
         self.* = undefined;
     }
 
-    pub fn add(self: *Store, input: AddInput) !AddResult {
+    fn addUnlocked(self: *Store, input: AddInput) !AddResult {
         try validateInput(input);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.idempotency_key, input.idempotency_key)) continue;
@@ -101,6 +105,8 @@ pub const Store = struct {
     }
 
     pub fn listJson(self: *Store, request_id: std.json.Value, offset: usize, limit: usize) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const allocator = self.allocator;
         var summaries: std.ArrayList(Summary) = .empty;
         defer summaries.deinit(allocator);
@@ -113,8 +119,15 @@ pub const Store = struct {
             .destination = job.destination,
             .state = job.state,
             .revision = try std.fmt.allocPrint(allocator, "{d}", .{job.revision}),
+            .error_message = job.error_message,
+            .completed_bytes = decimalAlloc(allocator, job.completed_bytes) catch return error.OutOfMemory,
+            .total_bytes = if (job.total_bytes) |total| decimalAlloc(allocator, total) catch return error.OutOfMemory else null,
         });
         defer for (summaries.items) |summary| allocator.free(summary.revision);
+        defer for (summaries.items) |summary| {
+            allocator.free(summary.completed_bytes);
+            if (summary.total_bytes) |total| allocator.free(total);
+        };
         const total = try std.fmt.allocPrint(allocator, "{d}", .{self.jobs.items.len});
         defer allocator.free(total);
         const next_offset = if (end < self.jobs.items.len)
@@ -134,7 +147,9 @@ pub const Store = struct {
     }
 
     pub fn addJson(self: *Store, request_id: std.json.Value, input: AddInput) ![]u8 {
-        const result = try self.add(input);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const result = try self.addUnlocked(input);
         return std.json.Stringify.valueAlloc(self.allocator, .{
             .jsonrpc = "2.0",
             .id = request_id,
@@ -148,7 +163,9 @@ pub const Store = struct {
     }
 
     pub fn controlJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: Action, expected_revision: u64) ![]u8 {
-        const job = self.control(job_id, action, expected_revision) catch |err| return err;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const job = self.controlUnlocked(job_id, action, expected_revision) catch |err| return err;
         const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
         defer self.allocator.free(revision);
         return std.json.Stringify.valueAlloc(self.allocator, .{
@@ -163,9 +180,9 @@ pub const Store = struct {
         }, .{});
     }
 
-    pub const Action = enum { pause, @"resume", cancel };
+    pub const Action = enum { pause, @"resume", cancel, start };
 
-    pub fn control(self: *Store, job_id: []const u8, action: Action, expected_revision: u64) !*const Job {
+    fn controlUnlocked(self: *Store, job_id: []const u8, action: Action, expected_revision: u64) !*const Job {
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.id, job_id)) continue;
             if (job.revision != expected_revision) return error.StaleJobRevision;
@@ -182,22 +199,104 @@ pub const Store = struct {
                     .queued, .scheduled, .paused, .retry_wait => .canceled,
                     else => return error.InvalidJobControl,
                 },
+                .start => switch (job.state) {
+                    .queued, .retry_wait => .downloading,
+                    else => return error.InvalidJobControl,
+                },
             };
             const previous = job.state;
             const previous_revision = job.revision;
+            const previous_error = job.error_message;
             job.state = next;
             job.revision = std.math.add(u64, job.revision, 1) catch {
                 job.state = previous;
                 return error.RevisionOverflow;
             };
+            if (action == .start) job.error_message = null;
             self.persist() catch |err| {
                 job.state = previous;
                 job.revision = previous_revision;
+                job.error_message = previous_error;
                 return err;
             };
+            if (action == .start) if (previous_error) |value| self.allocator.free(value);
             return job;
         }
         return error.JobNotFound;
+    }
+
+    pub const DownloadTask = struct {
+        id: []u8,
+        url: []u8,
+        name: ?[]u8,
+        destination: []u8,
+
+        pub fn deinit(self: DownloadTask, allocator: std.mem.Allocator) void {
+            allocator.free(self.id);
+            allocator.free(self.url);
+            if (self.name) |name| allocator.free(name);
+            allocator.free(self.destination);
+        }
+    };
+
+    pub fn copyDownloadTask(self: *Store, job_id: []const u8) !DownloadTask {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.state != .downloading) return error.InvalidJobControl;
+            const id = try self.allocator.dupe(u8, job.id);
+            errdefer self.allocator.free(id);
+            const url = try self.allocator.dupe(u8, job.url);
+            errdefer self.allocator.free(url);
+            const name = if (job.name) |value| try self.allocator.dupe(u8, value) else null;
+            errdefer if (name) |value| self.allocator.free(value);
+            const destination = try self.allocator.dupe(u8, job.destination);
+            errdefer self.allocator.free(destination);
+            return .{ .id = id, .url = url, .name = name, .destination = destination };
+        }
+        return error.JobNotFound;
+    }
+
+    pub fn finishDownload(self: *Store, job_id: []const u8, succeeded: bool, error_message: ?[]const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.state != .downloading) return error.InvalidJobControl;
+            const old_state = job.state;
+            const old_revision = job.revision;
+            const old_error = job.error_message;
+            const next_revision = try std.math.add(u64, job.revision, 1);
+            const owned_error = if (!succeeded and error_message != null)
+                try self.allocator.dupe(u8, error_message.?)
+            else
+                null;
+            job.state = if (succeeded) .completed else .failed;
+            job.revision = next_revision;
+            job.error_message = owned_error;
+            self.persist() catch |err| {
+                job.state = old_state;
+                job.revision = old_revision;
+                job.error_message = old_error;
+                if (owned_error) |value| self.allocator.free(value);
+                return err;
+            };
+            if (old_error) |value| self.allocator.free(value);
+            return;
+        }
+        return error.JobNotFound;
+    }
+
+    pub fn updateProgress(self: *Store, job_id: []const u8, completed_bytes: u64, total_bytes: ?u64) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id) or job.state != .downloading) continue;
+            job.completed_bytes = completed_bytes;
+            job.total_bytes = total_bytes;
+            return;
+        }
     }
 
     fn newId(self: *Store) ![]u8 {
@@ -299,6 +398,14 @@ pub const Store = struct {
         const state_value = object.get("state") orelse return error.InvalidJobStore;
         if (state_value != .string) return error.InvalidJobStore;
         const state = std.meta.stringToEnum(State, state_value.string) orelse return error.InvalidJobStore;
+        const error_value = object.get("error_message") orelse .null;
+        if (error_value != .null and error_value != .string) return error.InvalidJobStore;
+        const error_message = if (error_value == .string) try self.allocator.dupe(u8, error_value.string) else null;
+        const completed_value = object.get("completed_bytes") orelse std.json.Value{ .integer = 0 };
+        if (completed_value != .integer or completed_value.integer < 0) return error.InvalidJobStore;
+        const total_value = object.get("total_bytes") orelse .null;
+        if (total_value != .null and (total_value != .integer or total_value.integer < 0)) return error.InvalidJobStore;
+        const total_bytes = if (total_value == .integer and total_value.integer >= 0) @as(?u64, @intCast(total_value.integer)) else null;
         const revision_value = object.get("revision") orelse return error.InvalidJobStore;
         if (revision_value != .integer or revision_value.integer <= 0) return error.InvalidJobStore;
         const name_value = object.get("name") orelse .null;
@@ -311,6 +418,9 @@ pub const Store = struct {
             .idempotency_key = try self.allocator.dupe(u8, key),
             .state = state,
             .revision = @intCast(revision_value.integer),
+            .error_message = error_message,
+            .completed_bytes = @intCast(completed_value.integer),
+            .total_bytes = total_bytes,
         });
     }
 
@@ -338,7 +448,14 @@ const Summary = struct {
     destination: []const u8,
     state: State,
     revision: []const u8,
+    error_message: ?[]const u8,
+    completed_bytes: []const u8,
+    total_bytes: ?[]const u8,
 };
+
+fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{d}", .{value});
+}
 
 fn validateInput(input: AddInput) !void {
     if (input.url.len == 0 or input.url.len > 8192) return error.InvalidJob;
@@ -346,8 +463,9 @@ fn validateInput(input: AddInput) !void {
     if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null)
         return error.InvalidJob;
-    if (input.name) |name| if (name.len == 0 or name.len > 255 or std.mem.indexOfAny(u8, name, "/\\\x00") != null)
-        return error.InvalidJob;
+    if (input.name) |name| if (name.len == 0 or name.len > 255 or
+        std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..") or
+        std.mem.indexOfAny(u8, name, "/\\\x00") != null) return error.InvalidJob;
     if (input.destination.len == 0 or input.destination.len > 4096 or
         std.mem.indexOfScalar(u8, input.destination, 0) != null) return error.InvalidJob;
     if (!std.fs.path.isAbsolute(input.destination)) return error.InvalidDestination;

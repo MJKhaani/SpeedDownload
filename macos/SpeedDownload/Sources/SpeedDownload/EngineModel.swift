@@ -15,6 +15,10 @@ final class EngineModel: ObservableObject {
     @Published private(set) var isSubmitting = false
     private var attempt = 0
 
+    private var isConnected: Bool {
+        if case .connected = state { true } else { false }
+    }
+
     func connect() async {
         attempt += 1
         let currentAttempt = attempt
@@ -36,6 +40,18 @@ final class EngineModel: ObservableObject {
         } catch {
             guard currentAttempt == attempt else { return }
             state = .disconnected(error.localizedDescription)
+        }
+    }
+
+    func refreshJobs() async {
+        guard isConnected else { return }
+        do {
+            jobs = try await Task.detached(priority: .utility) {
+                try UnixEngineClient().listJobs()
+            }.value
+            actionError = nil
+        } catch {
+            actionError = "Could not refresh downloads: \(error.localizedDescription)"
         }
     }
 

@@ -76,6 +76,9 @@ const Journal = struct {
 const journal_magic = "ODMHJ002";
 const max_etag_len = 1024;
 const checkpoint_interval = 1024 * 1024;
+const progress_interval = 256 * 1024;
+
+pub const ProgressCallback = *const fn (context: *anyopaque, completed: u64, total: ?u64) void;
 
 /// Downloads `url` into a sibling `.part` file and safely resumes a prior run.
 ///
@@ -86,6 +89,18 @@ const checkpoint_interval = 1024 * 1024;
 /// A concurrent process could still create the final path while this download
 /// runs; final publication uses an atomic no-replace rename to protect it.
 pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8) !void {
+    return downloadWithProgress(allocator, io, url, destination, expected_sha256, null, null);
+}
+
+pub fn downloadWithProgress(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    progress_callback: ?ProgressCallback,
+    progress_context: ?*anyopaque,
+) !void {
     const uri = try std.Uri.parse(url);
     if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
         return DownloadError.UnsupportedScheme;
@@ -287,8 +302,13 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
         .file_writer = &file_writer,
         .journal_path = journal_path,
         .journal = if (journal != null) &journal.? else null,
+        .total_bytes = response_total,
+        .progress_callback = progress_callback,
+        .progress_context = progress_context,
+        .last_reported_bytes = offset,
         .writer = undefined,
     };
+    sink.reportProgress(true);
     sink.writer = .{ .vtable = &.{ .drain = CheckpointWriter.drain, .flush = CheckpointWriter.flush }, .buffer = &sink.buffer };
     _ = body_reader.streamRemaining(&sink.writer) catch |err| switch (err) {
         error.ReadFailed => return response.bodyErr().?,
@@ -447,6 +467,10 @@ const CheckpointWriter = struct {
     journal_path: []const u8,
     journal: ?*Journal,
     pending_bytes: u64 = 0,
+    total_bytes: ?u64,
+    progress_callback: ?ProgressCallback,
+    progress_context: ?*anyopaque,
+    last_reported_bytes: u64,
     last_error: ?anyerror = null,
 
     fn drain(writer: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
@@ -458,6 +482,7 @@ const CheckpointWriter = struct {
         for (0..splat) |_| self.writeAll(data[data.len - 1]) catch return error.WriteFailed;
         const count = Io.Writer.countSplat(data, splat);
         self.pending_bytes += buffered.len + count;
+        self.reportProgress(false);
         if (self.journal != null and self.pending_bytes >= checkpoint_interval) {
             self.checkpoint() catch |err| {
                 self.last_error = err;
@@ -487,6 +512,16 @@ const CheckpointWriter = struct {
             self.last_error = err;
             return error.WriteFailed;
         };
+        self.reportProgress(true);
+    }
+
+    fn reportProgress(self: *CheckpointWriter, force: bool) void {
+        const callback = self.progress_callback orelse return;
+        const context = self.progress_context orelse return;
+        const completed = self.file_writer.pos;
+        if (!force and completed -| self.last_reported_bytes < progress_interval) return;
+        callback(context, completed, self.total_bytes);
+        self.last_reported_bytes = completed;
     }
 
     fn checkpoint(self: *CheckpointWriter) !void {

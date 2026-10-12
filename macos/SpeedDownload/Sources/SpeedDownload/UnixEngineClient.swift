@@ -14,12 +14,18 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let destination: String
     let state: String
     let revision: String
+    let errorMessage: String?
+    let completedBytes: String?
+    let totalBytes: String?
 
     var id: String { jobID }
 
     enum CodingKeys: String, CodingKey {
         case jobID = "job_id"
         case url, name, destination, state, revision
+        case errorMessage = "error_message"
+        case completedBytes = "completed_bytes"
+        case totalBytes = "total_bytes"
     }
 }
 

@@ -42,7 +42,7 @@ struct DashboardView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { Task { await engine.connect() } } label: {
+                Button { Task { await engine.refreshJobs() } } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(!isConnected)
@@ -119,6 +119,26 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .textSelection(.enabled)
+                if let errorMessage = job.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                if job.state == "downloading" {
+                    if let total = job.totalBytes.flatMap({ UInt64($0) }), total > 0,
+                       let completed = job.completedBytes.flatMap({ UInt64($0) }), completed <= total {
+                        ProgressView(value: Double(completed), total: Double(total))
+                        Text("\(ByteCountFormatter.string(fromByteCount: Int64(completed), countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting or reading response…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Label(job.destination, systemImage: "folder")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -129,13 +149,24 @@ struct DashboardView: View {
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
-                    .background((job.state == "completed" ? Color.green : Color.blue).opacity(0.1), in: Capsule())
+                    .background((job.state == "completed" ? Color.green : job.state == "failed" ? Color.red : Color.blue).opacity(0.1), in: Capsule())
                 if job.state == "queued" || job.state == "scheduled" {
+                    if job.state == "queued" {
+                        Button("Start") { Task { await engine.controlJob(job, action: "start") } }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(engine.isSubmitting)
+                    }
                     Button("Pause") { Task { await engine.controlJob(job, action: "pause") } }
                         .disabled(engine.isSubmitting)
                     Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
                         .disabled(engine.isSubmitting)
-                } else if job.state == "paused" || job.state == "retry_wait" {
+                } else if job.state == "retry_wait" {
+                    Button("Retry") { Task { await engine.controlJob(job, action: "start") } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(engine.isSubmitting)
+                    Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
+                        .disabled(engine.isSubmitting)
+                } else if job.state == "paused" {
                     Button("Resume") { Task { await engine.controlJob(job, action: "resume") } }
                         .disabled(engine.isSubmitting)
                     Button("Cancel", role: .destructive) { Task { await engine.controlJob(job, action: "cancel") } }
@@ -181,7 +212,7 @@ struct DashboardView: View {
                     metric(title: "Instance", value: String(instance.prefix(8)), icon: "server.rack")
                     metric(title: "Session", value: String(session.prefix(8)), icon: "point.3.connected.trianglepath.dotted")
                 }
-                Text("Connected. Jobs are saved in the queue; transfer workers are still under development.")
+                Text("Connected. Start a queued job to download it. One transfer runs at a time.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             case .disconnected(let message):
@@ -207,7 +238,7 @@ struct DashboardView: View {
             Text(isConnected ? "No jobs here yet" : "Connect to your engine")
                 .font(.title3.weight(.semibold))
             Text(isConnected
-                 ? "Add a URL to save it in your queue. Transfers will begin when the download worker is available."
+                 ? "Add a URL to save it in your queue, then choose Start when you are ready."
                  : "Start the Speed Download engine to view and manage your saved jobs.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -276,7 +307,7 @@ private struct AddDownloadView: View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Add Download").font(.title2.weight(.bold))
-                Text("Save a URL as a queued job in an existing writable folder. Transfers are not active yet.")
+                Text("Save a URL as a queued job in an existing writable folder. You can start it from the queue.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

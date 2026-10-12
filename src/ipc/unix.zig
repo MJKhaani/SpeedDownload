@@ -35,6 +35,13 @@ pub const Config = struct {
     jobs: *job_store.Store,
 };
 
+const EngineContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    jobs: *job_store.Store,
+    active_workers: std.atomic.Value(u32) = .init(0),
+};
+
 pub const ServerIdentity = struct {
     engine_version: []const u8,
     engine_instance_id: []const u8,
@@ -52,6 +59,7 @@ pub const Error = error{
 /// Serve clients sequentially. Each accepted connection gets a fresh protocol
 /// session, and is authenticated before its first frame is processed.
 pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
+    var engine = EngineContext{ .allocator = allocator, .io = config.jobs.io, .jobs = config.jobs };
     var paths = try makePaths(allocator, config);
     defer paths.deinit(allocator);
 
@@ -80,11 +88,11 @@ pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
     while (true) {
         const client = c.accept(listener, null, null);
         if (client < 0) continue;
-        handleClient(allocator, client, config.server, config.jobs) catch {};
+        handleClient(allocator, client, config.server, &engine) catch {};
     }
 }
 
-fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity, jobs: *job_store.Store) !void {
+fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity, engine: *EngineContext) !void {
     defer _ = c.close(client);
     if (builtin.os.tag == .macos) {
         var enabled: c_int = 1;
@@ -92,11 +100,11 @@ fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIden
             return;
     }
     if (!try peerIsCurrentUser(client)) return;
-    try serveConnection(allocator, client, server, jobs);
+    try serveConnection(allocator, client, server, engine);
 }
 
-fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdentity, jobs: *job_store.Store) !void {
-    var session = protocol.Session{ .dispatch = dispatchMethod, .context = @ptrCast(jobs) };
+fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdentity, engine: *EngineContext) !void {
+    var session = protocol.Session{ .dispatch = dispatchMethod, .context = @ptrCast(engine) };
     var header: [4]u8 = undefined;
     const request_frame = try allocator.alloc(u8, frame.header_bytes + frame.max_payload_bytes);
     defer allocator.free(request_frame);
@@ -138,7 +146,8 @@ fn dispatchMethod(
     params: ?std.json.Value,
     context: ?*anyopaque,
 ) anyerror!?[]u8 {
-    const jobs: *job_store.Store = @ptrCast(@alignCast(context orelse return error.MissingDispatcherContext));
+    const engine: *EngineContext = @ptrCast(@alignCast(context orelse return error.MissingDispatcherContext));
+    const jobs = engine.jobs;
     if (std.mem.eql(u8, method, "jobs.list")) {
         const page = parseListPage(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         if (request_id) |id| return @as(?[]u8, try jobs.listJson(id, page.offset, page.limit));
@@ -147,6 +156,7 @@ fn dispatchMethod(
     if (std.mem.eql(u8, method, "jobs.control")) {
         const control = parseJobControl(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         const id = request_id orelse return null;
+        if (control.action == .start) return startDownload(allocator, id, control, engine);
         const response = jobs.controlJson(id, control.job_id, control.action, control.expected_revision) catch |err| {
             if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
             if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
@@ -160,24 +170,93 @@ fn dispatchMethod(
     const input = parseAddInput(params orelse return dispatchError(allocator, request_id, -32602, "Invalid params")) catch {
         return dispatchError(allocator, request_id, -32602, "Invalid params");
     };
-    const added = jobs.add(input) catch |err| {
+    const id = request_id orelse return null;
+    return jobs.addJson(id, input) catch |err| {
         if (request_id == null) return null;
         if (err == error.InvalidJob) return dispatchError(allocator, request_id, -32010, "Invalid download request");
         if (err == error.InvalidDestination) return dispatchError(allocator, request_id, -32014, "Destination must be an existing writable directory");
         if (err == error.IdempotencyConflict) return dispatchError(allocator, request_id, -32011, "Idempotency key was already used for another request");
         return dispatchError(allocator, request_id, -32020, "Could not save the download request");
     };
-    const id = request_id orelse return null;
-    return @as(?[]u8, try std.json.Stringify.valueAlloc(allocator, .{
-        .jsonrpc = "2.0",
-        .id = id,
-        .result = .{
-            .job_id = added.job.id,
-            .state = added.job.state,
-            .revision = "1",
-            .duplicate = added.duplicate,
-        },
-    }, .{}));
+}
+
+fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, control: JobControl, engine: *EngineContext) anyerror!?[]u8 {
+    if (engine.active_workers.cmpxchgStrong(0, 1, .acquire, .monotonic) != null)
+        return dispatchError(allocator, request_id, -32016, "Another download is already active");
+
+    const response = engine.jobs.controlJson(request_id, control.job_id, .start, control.expected_revision) catch |err| {
+        engine.active_workers.store(0, .release);
+        if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+        if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
+        if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
+        return dispatchError(allocator, request_id, -32020, "Could not save the download request");
+    };
+    const task = engine.jobs.copyDownloadTask(control.job_id) catch |err| {
+        engine.jobs.finishDownload(control.job_id, false, "Could not prepare the download") catch {};
+        engine.active_workers.store(0, .release);
+        allocator.free(response);
+        return dispatchError(allocator, request_id, if (err == error.JobNotFound) -32012 else -32020, "Could not prepare the download");
+    };
+    var thread = std.Thread.spawn(.{}, runDownloadWorker, .{ engine, task }) catch {
+        task.deinit(engine.allocator);
+        engine.active_workers.store(0, .release);
+        engine.jobs.finishDownload(control.job_id, false, "Worker thread could not be started") catch {};
+        allocator.free(response);
+        return dispatchError(allocator, request_id, -32020, "Could not start the download worker");
+    };
+    thread.detach();
+    return response;
+}
+
+fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) void {
+    defer engine.active_workers.store(0, .release);
+    defer task.deinit(engine.allocator);
+    const destination = buildDestination(engine.allocator, task) catch {
+        engine.jobs.finishDownload(task.id, false, "Could not create a safe destination path") catch {};
+        return;
+    };
+    defer engine.allocator.free(destination);
+
+    const download_module = @import("../protocols/http/download.zig");
+    var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id };
+    download_module.downloadWithProgress(engine.allocator, engine.io, task.url, destination, null, updateDownloadProgress, @ptrCast(&progress)) catch |err| {
+        const error_message = std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
+        defer if (!std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
+        engine.jobs.finishDownload(task.id, false, error_message) catch {};
+        return;
+    };
+    engine.jobs.finishDownload(task.id, true, null) catch {};
+}
+
+const DownloadProgressContext = struct { engine: *EngineContext, job_id: []const u8 };
+
+fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64) void {
+    const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    progress.engine.jobs.updateProgress(progress.job_id, completed, total);
+}
+
+fn buildDestination(allocator: std.mem.Allocator, task: job_store.Store.DownloadTask) ![]u8 {
+    var filename: []const u8 = undefined;
+    if (task.name) |name| {
+        filename = name;
+    } else {
+        const uri = try std.Uri.parse(task.url);
+        const raw_path = switch (uri.path) {
+            .raw => |value| value,
+            .percent_encoded => |value| value,
+        };
+        const last_slash = std.mem.lastIndexOfScalar(u8, raw_path, '/');
+        const candidate = if (last_slash) |index| raw_path[index + 1 ..] else raw_path;
+        if (candidate.len > 0 and !std.mem.eql(u8, candidate, ".") and !std.mem.eql(u8, candidate, "..") and
+            std.mem.indexOfAny(u8, candidate, "/\\\x00") == null)
+        {
+            filename = candidate;
+        } else {
+            var fallback: [48]u8 = undefined;
+            filename = try std.fmt.bufPrint(&fallback, "download-{s}.bin", .{task.id[0..8]});
+        }
+    }
+    return std.fs.path.join(allocator, &.{ task.destination, filename });
 }
 
 const JobControl = struct { job_id: []const u8, action: job_store.Store.Action, expected_revision: u64 };

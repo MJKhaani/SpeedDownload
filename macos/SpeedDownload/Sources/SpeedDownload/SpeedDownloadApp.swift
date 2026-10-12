@@ -9,7 +9,14 @@ struct SpeedDownloadApp: App {
             DashboardView()
                 .environmentObject(engine)
                 .frame(minWidth: 820, minHeight: 560)
-                .task { await engine.connect() }
+                .task {
+                    await engine.connect()
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled else { break }
+                        await engine.refreshJobs()
+                    }
+                }
         }
         .defaultSize(width: 1040, height: 700)
         .commands {

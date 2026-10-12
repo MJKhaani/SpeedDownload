@@ -16,7 +16,7 @@ Speed Download is a free, open-source download manager in active development. It
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID, and persistent `jobs.add`/`jobs.list`/`jobs.control` RPCs. `speed-download engine` starts the early engine listener. The native SwiftUI macOS client connects to the engine, lists saved jobs, adds queued jobs, and can pause, resume, or cancel jobs that have not started. Transfer workers are not connected yet. Windows and Linux clients and IPC runtime validation remain pending; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a sequential macOS/Linux Unix-domain socket adapter that checks the connecting user's UID, and persistent job RPCs. `speed-download engine` starts the engine listener. The engine runs one HTTP(S) transfer worker at a time using the CLI downloader's redirect validation, safe resume journal, and atomic no-replace publication. The native SwiftUI macOS client connects to the engine, lists saved jobs, starts downloads, displays byte progress, and supports queue pause/resume/cancel. Active-transfer pause/cancel, parallel transfers, and live event subscriptions are not implemented. Windows and Linux clients and IPC runtime validation remain pending; see [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 
@@ -40,7 +40,7 @@ Job records are saved atomically under `~/Library/Application Support/Speed Down
 
 Build the macOS SwiftUI client from `macos/SpeedDownload` with `swift build -c release`. Run the `SpeedDownload` executable after starting the engine.
 
-The CLI currently supports a single HTTP(S) transfer with redirects, strict response validation, safe resume for credential-free URLs when the server provides a known length and strong ETag, and optional `--sha256 <64-hex-digits>` verification before publishing the final file. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. The core also has a host-aware queue selection policy, but it is not connected to durable jobs or transfer workers. The CLI does not yet provide a persistent job queue, user-directed pause/cancel, parallel ranges, or IPC integration. Follow [`Agent.md`](Agent.md) when contributing.
+The HTTP(S) transfer routine validates redirects and responses, resumes only with a known length and strong ETag, and publishes the final file without replacing an existing destination. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. The CLI supports optional `--sha256 <64-hex-digits>` verification. The engine connects durable jobs to this routine with one active worker; the host-aware multi-job scheduler, active-worker pause/cancel, parallel ranges, and CLI job controls are still pending. Follow [`Agent.md`](Agent.md) when contributing.
 
 ## License
 
