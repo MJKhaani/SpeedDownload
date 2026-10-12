@@ -6,7 +6,7 @@
 
 ## Current evidence
 
-Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume. Automated local fixtures cover redirects, overwrite protection, status/encoding rejection, interrupted transfer recovery, changed ETags, and redirect-target changes. There is no Capy checkout or GUI build manifest. Network access was unavailable during this assessment, so upstream state could not be re-queried. The project specification and `Agent.md` record the 2026-10-11 upstream review: Capy identifies Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. Zig 0.17.0 has not been proven compatible with Capy and is only used for independent core code.
+Zig 0.17.0 builds the portable core module and a single-stream HTTP(S) CLI with checkpointed resume and optional SHA-256 verification. Automated local fixtures cover redirects, overwrite protection, status/encoding rejection, interrupted transfer recovery, changed ETags, redirect-target changes, and matching/mismatching checksums. There is no Capy checkout or GUI build manifest. Network access was unavailable during this assessment, so upstream state could not be re-queried. The project specification and `Agent.md` record the 2026-10-11 upstream review: Capy identifies Zig 0.14.1, describes itself as pre-production, lists macOS backends as planned, and does not certify Windows ARM64. Zig 0.17.0 has not been proven compatible with Capy and is only used for independent core code.
 
 ## Target matrix
 

@@ -5,16 +5,26 @@ const download = @import("protocols/http/download.zig").download;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
-        std.debug.print("Usage: odm <http(s)-url> <destination>\n", .{});
+    if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
+        std.debug.print("Usage: odm [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
         return;
     }
-    if (args.len != 3) {
-        std.debug.print("Usage: odm <http(s)-url> <destination>\n", .{});
+    var expected_sha256: ?[32]u8 = null;
+    var url_index: usize = 1;
+    if (args.len == 5 and std.mem.eql(u8, args[1], "--sha256")) {
+        var digest: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&digest, args[2]) catch {
+            std.debug.print("odm: --sha256 requires exactly 64 hexadecimal digits\n", .{});
+            return error.InvalidChecksum;
+        };
+        expected_sha256 = digest;
+        url_index = 3;
+    } else if (args.len != 3) {
+        std.debug.print("Usage: odm [--sha256 <64-hex-digits>] <http(s)-url> <destination>\n", .{});
         return error.InvalidArguments;
     }
 
-    download(init.gpa, init.io, args[1], args[2]) catch |err| {
+    download(init.gpa, init.io, args[url_index], args[url_index + 1], expected_sha256) catch |err| {
         std.debug.print("odm: {s}\n", .{errorMessage(err)});
         return err;
     };
@@ -39,6 +49,8 @@ fn errorMessage(err: anyerror) []const u8 {
         "the server returned an encoded body; only identity responses are safe"
     else if (err == error.ResponseLengthMismatch)
         "the response ended before the declared file length"
+    else if (err == error.ExpectedChecksumMismatch)
+        "SHA-256 mismatch; the file was not published at its destination"
     else if (err == error.InvalidResumeJournal)
         "resume metadata is invalid; move or remove the .part and .part.odm files to restart"
     else if (err == error.InvalidFullResponse)

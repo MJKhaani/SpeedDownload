@@ -1,6 +1,7 @@
 """Local-only HTTP CLI integration checks; requires no external service."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 from pathlib import Path
 import re
 import socket
@@ -108,9 +109,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def run(binary: str, url: str, destination: Path) -> subprocess.CompletedProcess:
+def run(binary: str, url: str, destination: Path, *options: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [binary, url, str(destination)],
+        [binary, *options, url, str(destination)],
         capture_output=True,
         timeout=10,
         check=False,
@@ -133,6 +134,22 @@ def main() -> None:
             assert result.returncode == 0, result.stderr.decode(errors="replace")
             assert successful_path.read_bytes() == PAYLOAD
             assert not Path(str(successful_path) + ".part").exists()
+
+            checksum_path = Path(tmp) / "checksum.bin"
+            expected_digest = hashlib.sha256(PAYLOAD).hexdigest()
+            verified = run(binary, base_url + "/download", checksum_path, "--sha256", expected_digest)
+            assert verified.returncode == 0, verified.stderr.decode(errors="replace")
+            assert checksum_path.read_bytes() == PAYLOAD
+
+            mismatch_path = Path(tmp) / "checksum-mismatch.bin"
+            mismatch = run(binary, base_url + "/download", mismatch_path, "--sha256", "0" * 64)
+            assert mismatch.returncode != 0
+            assert b"SHA-256 mismatch" in mismatch.stderr
+            assert not mismatch_path.exists()
+
+            malformed_checksum = run(binary, base_url + "/download", Path(tmp) / "malformed.bin", "--sha256", "not-a-digest")
+            assert malformed_checksum.returncode != 0
+            assert b"exactly 64 hexadecimal digits" in malformed_checksum.stderr
 
             overwrite = run(binary, base_url + "/download", successful_path)
             assert overwrite.returncode != 0
@@ -162,7 +179,8 @@ def main() -> None:
                 f"stderr={interrupted.stderr.decode(errors='replace')}"
             )
 
-            resumed = run(binary, base_url + "/resume", resume_path)
+            resumed_digest = hashlib.sha256(LARGE_PAYLOAD).hexdigest()
+            resumed = run(binary, base_url + "/resume", resume_path, "--sha256", resumed_digest)
             assert resumed.returncode == 0, resumed.stderr.decode(errors="replace")
             assert ranged_requests["/resume"] == 1
             assert resume_path.read_bytes() == LARGE_PAYLOAD

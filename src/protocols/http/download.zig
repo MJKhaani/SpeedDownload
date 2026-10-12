@@ -25,6 +25,7 @@ pub const DownloadError = error{
     InvalidContentRange,
     ResumeUnsafeForUrl,
     ResponseLengthMismatch,
+    ExpectedChecksumMismatch,
 };
 
 /// Describes an HTTP byte range. `end_inclusive` follows RFC 9110 wire syntax.
@@ -84,7 +85,7 @@ const checkpoint_interval = 1024 * 1024;
 /// returns a full 200, the old partial is truncated before the new body is used.
 /// A concurrent process could still create the final path between the
 /// existence check and rename; callers should serialize operations by path.
-pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []const u8) !void {
+pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8) !void {
     const uri = try std.Uri.parse(url);
     if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
         return DownloadError.UnsupportedScheme;
@@ -133,7 +134,7 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
     const file = if (part_exists)
         try cwd.openFile(io, part_path, .{ .mode = .read_write, .allow_directory = false })
     else
-        try cwd.createFile(io, part_path, .{ .exclusive = true, .truncate = false });
+        try cwd.createFile(io, part_path, .{ .exclusive = true, .truncate = false, .read = true });
     var file_open = true;
     var completed_successfully = false;
     var preserve_partial = part_exists;
@@ -216,6 +217,7 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
             return DownloadError.RepresentationChanged;
         }
         if (saved.completed == saved.total) {
+            try verifySha256(io, file, expected_sha256);
             try file.sync(io);
             file.close(io);
             file_open = false;
@@ -299,11 +301,29 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
     if (response_total) |total| {
         if (file_writer.pos != total) return DownloadError.ResponseLengthMismatch;
     }
+    try verifySha256(io, file, expected_sha256);
     file.close(io);
     file_open = false;
     try Io.Dir.rename(cwd, part_path, cwd, destination, io);
     completed_successfully = true;
     cwd.deleteFile(io, journal_path) catch {};
+}
+
+fn verifySha256(io: Io, file: Io.File, expected: ?[32]u8) !void {
+    const wanted = expected orelse return;
+    var buffer: [32 * 1024]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    try reader.seekTo(0);
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var chunk: [32 * 1024]u8 = undefined;
+    while (true) {
+        const count = try reader.interface.readSliceShort(&chunk);
+        if (count == 0) break;
+        hasher.update(chunk[0..count]);
+    }
+    var actual: [32]u8 = undefined;
+    hasher.final(&actual);
+    if (!std.mem.eql(u8, &actual, &wanted)) return DownloadError.ExpectedChecksumMismatch;
 }
 
 fn resumeSafe(uri: std.Uri) bool {
@@ -476,7 +496,7 @@ const CheckpointWriter = struct {
 test "rejects unsupported schemes without creating files" {
     try std.testing.expectError(
         DownloadError.UnsupportedScheme,
-        download(std.testing.allocator, Io.Threaded.global_single_threaded.io(), "ftp://example.invalid/file", "unused-test-output"),
+        download(std.testing.allocator, Io.Threaded.global_single_threaded.io(), "ftp://example.invalid/file", "unused-test-output", null),
     );
 }
 
