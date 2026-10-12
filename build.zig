@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const core = b.addModule("odm_core", .{
+    const core = b.addModule("speed_download_core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -50,4 +50,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(speed_download);
+
+    const ipc_primitives = b.addObject(.{
+        .name = "speed-download-ipc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipc/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const ipc_step = b.step("ipc", "Compile the local IPC protocol primitives");
+    ipc_step.dependOn(&ipc_primitives.step);
 }

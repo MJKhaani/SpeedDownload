@@ -16,7 +16,7 @@ Speed Download is a free, open-source download manager in active development. It
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The native GUI architecture and local IPC contract are adopted, but implementation remains pending. The first integration milestone is a Zig engine IPC server and one client per platform that can connect, list jobs, subscribe to progress, and reconnect after either process restarts. Platform support remains unvalidated; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The native GUI architecture and local IPC contract are adopted. The Zig code now has bounded JSON frame encoding/decoding and a framed `engine.hello` handshake with feature negotiation; OS transports, peer authentication, method dispatch, durable jobs, and native clients remain pending. Platform support remains unvalidated; see [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 
@@ -28,6 +28,7 @@ zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download
 zig test src/core/root.zig
 zig test src/core/queue.zig
 zig test src/protocols/http/download.zig
+zig build ipc
 python3 tests/integration/http_cli.py zig-out/bin/speed-download
 zig-out/bin/speed-download --help
 ```

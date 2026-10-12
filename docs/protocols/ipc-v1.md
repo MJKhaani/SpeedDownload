@@ -1,11 +1,13 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; confirm through phase-0 prototypes
+- **Status:** Draft normative contract; frame decoding and the `engine.hello` handshake are implemented, while OS transports and later method dispatch remain pending
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
 
 ## 1. Contract overview
+
+The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, and `root.zig` composes them into the framed first-message handshake. These primitives do not open sockets or named pipes, authenticate peers, or dispatch later methods. The repository exposes `zig build ipc` for compiling this module.
 
 The engine is an **independent single-instance per-user daemon**. Client processes make duplex requests and subscriptions to it; the engine has the only writable copy of download history, jobs, and transfer workers.
 
