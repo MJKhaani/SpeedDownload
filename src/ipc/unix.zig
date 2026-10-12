@@ -118,6 +118,10 @@ fn handleClientThread(allocator: std.mem.Allocator, client: c.fd_t, server: Serv
 
 fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIdentity, engine: *EngineContext) !void {
     defer _ = c.close(client);
+    var timeout = c.timeval{ .sec = 30, .usec = 0 };
+    if (c.setsockopt(client, c.SOL.SOCKET, c.SO.RCVTIMEO, &timeout, @sizeOf(c.timeval)) != 0 or
+        c.setsockopt(client, c.SOL.SOCKET, c.SO.SNDTIMEO, &timeout, @sizeOf(c.timeval)) != 0)
+        return Error.SystemCallFailed;
     if (builtin.os.tag == .macos) {
         var enabled: c_int = 1;
         if (c.setsockopt(client, c.SOL.SOCKET, c.SO.NOSIGPIPE, &enabled, @sizeOf(c_int)) != 0)
