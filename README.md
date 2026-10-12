@@ -40,7 +40,7 @@ Job records are saved atomically under `~/Library/Application Support/Speed Down
 
 Build the macOS SwiftUI client from `macos/SpeedDownload` with `swift build -c release`. Run the `SpeedDownload` executable after starting the engine.
 
-The HTTP(S) transfer routine validates redirects and responses, resumes only with a known length and strong ETag, and publishes the final file without replacing an existing destination. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. The CLI supports optional `--sha256 <64-hex-digits>` verification. The engine connects durable jobs to this routine with one active worker; the host-aware multi-job scheduler, active-worker pause/cancel, parallel ranges, and CLI job controls are still pending. Follow [`Agent.md`](Agent.md) when contributing.
+The HTTP(S) transfer routine validates redirects and responses, resumes only with a known length and strong ETag, and publishes the final file without replacing an existing destination. It stores a versioned journal beside the `.part` file and only resumes bytes covered by a durable checkpoint. The CLI supports optional `--sha256 <64-hex-digits>` verification. The engine runs multiple jobs concurrently through a host-aware scheduler, with cooperative pause/cancel and durable progress checkpoints. A bounded half-open range extent planner now provides the core split/cursor model for future multipart work, but HTTP range probing, concurrent segment writers, and a crash-safe segment journal are not implemented yet. CLI job controls and Windows/Linux GUI clients remain pending. Follow [`Agent.md`](Agent.md) when contributing.
 
 ## License
 
