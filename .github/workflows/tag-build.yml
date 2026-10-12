@@ -34,8 +34,8 @@ jobs:
         if: steps.manifest.outputs.present == 'true'
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.14.1
+          version: 0.17.0
 
-      - name: Build project
+      - name: Build and validate core
         if: steps.manifest.outputs.present == 'true'
-        run: zig build
+        run: zig build test
