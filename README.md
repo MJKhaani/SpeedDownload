@@ -4,7 +4,7 @@
   <img src="Resources/logo.png" alt="Speed Download logo" width="180">
 </p>
 
-Speed Download is a free, open-source download manager in active development. Its Zig core currently provides a headless HTTP(S) CLI prototype with interruption recovery and an early local IPC protocol implementation. An early SwiftUI client is available for macOS; WinUI 3 and GTK 4 clients are planned.
+Speed Download is a free, open-source download manager in active development. Its Zig core provides a headless HTTP(S) downloader with interruption recovery, validated parallel ranges, and a local IPC engine. Native SwiftUI (macOS), GTK 4 (Linux), and WinUI 3 (Windows) client source is present; the Linux and Windows clients and all platform runtime integrations still need builds and validation.
 
 ## Project status
 
@@ -13,10 +13,12 @@ Speed Download is a free, open-source download manager in active development. It
 - Platform feasibility: [`docs/support-matrix.md`](docs/support-matrix.md)
 - Core state rules: [`docs/download-state-machine.md`](docs/download-state-machine.md)
 - Native GUI and local IPC decision: [`docs/adr/0001-native-guis-local-ipc.md`](docs/adr/0001-native-guis-local-ipc.md)
+- Linux GTK 4 client: [`linux/SpeedDownload/README.md`](linux/SpeedDownload/README.md)
+- Windows WinUI 3 client: [`windows/SpeedDownload/README.md`](windows/SpeedDownload/README.md)
 - IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
 - License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
 
-The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a macOS/Linux Unix-domain socket adapter that authenticates the connecting user's UID and serves up to 32 concurrent client sessions, and persistent job RPCs. `speed-download engine` starts the engine listener. Starting a queued HTTP(S) job drains the queue through a host-aware scheduler with up to four jobs globally and two per host; range-capable jobs may use up to four validated HTTP requests each. The HTTP driver uses redirect and representation checks, strong-ETag range resume, synced segment checkpoints, and atomic no-replace publication. The native SwiftUI macOS client connects to the engine, lists saved jobs, starts downloads, displays byte progress, and supports queue and active-transfer pause/resume/cancel. Active controls are cooperative and take effect when the current network read returns. The client retries the handshake and reloads the job snapshot when the engine disconnects. Dynamic reallocation during a transfer and live event subscriptions are not implemented. Windows and Linux clients and IPC runtime validation remain pending; see [`docs/support-matrix.md`](docs/support-matrix.md).
+The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, a macOS/Linux Unix-domain socket adapter that authenticates the connecting user's UID and serves up to 32 concurrent client sessions, and persistent job RPCs. `speed-download engine` starts the engine listener. Starting a queued HTTP(S) job drains the queue through a host-aware scheduler with up to four jobs globally and two per host; range-capable jobs may use up to four validated HTTP requests each. The HTTP driver uses redirect and representation checks, strong-ETag range resume, synced segment checkpoints, and atomic no-replace publication. Native SwiftUI, GTK 4, and WinUI 3 client source now covers job listing, add, controls, and progress snapshots. The macOS client connects to the current engine; Linux uses the current Unix socket contract. The Windows named-pipe server is not implemented, so its client cannot connect yet. Dynamic reallocation during a transfer and live event subscriptions are not implemented; all clients still poll for updates. See [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## Build
 

@@ -53,6 +53,42 @@ jobs:
         working-directory: macos/SpeedDownload
         run: swift build --configuration release
 
+      - name: Build native Linux GTK GUI
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev
+          cmake -S linux/SpeedDownload -B linux/SpeedDownload/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build linux/SpeedDownload/build --parallel
+
+      - name: Retain native Linux GUI build
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: speed-download-linux-gtk-${{ github.ref_name }}
+          path: linux/SpeedDownload/build/speed-download-gtk
+          if-no-files-found: error
+
+      - name: Set up .NET for WinUI
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build native Windows WinUI GUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
+
+      - name: Retain native Windows GUI build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: speed-download-windows-winui-${{ github.ref_name }}
+          path: windows/SpeedDownload/publish
+          if-no-files-found: error
+
       - name: Retain native macOS GUI build
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4

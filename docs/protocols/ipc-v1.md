@@ -1,6 +1,6 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, sequential macOS/Linux Unix transport with same-UID checks, and initial persistent `jobs.add`/`jobs.list` RPCs are implemented. The listener is reachable via `speed-download engine`; job RPCs record queued metadata only and do not start transfers. Windows named pipes and remaining job methods are pending.
+- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, macOS/Linux Unix transport with same-UID checks, and persistent `jobs.add`/`jobs.list`/`jobs.control` RPCs are implemented. The listener is reachable via `speed-download engine`; `jobs.control` starts, pauses, resumes, retries, and cancels jobs. Linux GTK and Windows WinUI client source is present. Windows named-pipe server support, event subscriptions, and native client/runtime validation remain pending.
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
@@ -21,7 +21,7 @@ The engine is an **independent single-instance per-user daemon**. Client process
 
 | OS | Local stream | Example endpoint | Identity/permissions |
 |---|---|---|---|
-| Windows | Named Pipe (`PIPE_TYPE_BYTE` / `PIPE_READMODE_BYTE`) | `\\.\pipe\SpeedDownload-<private-user-scope>` | Explicit private DACL, no Everyone/anonymous, `PIPE_REJECT_REMOTE_CLIENTS`, user/session scope and no untrusted pre-creation. |
+| Windows | Named Pipe (`PIPE_TYPE_BYTE` / `PIPE_READMODE_BYTE`) | `\\.\pipe\SpeedDownload-<user-SID>-<session-id>` | Explicit private DACL, no Everyone/anonymous, `PIPE_REJECT_REMOTE_CLIENTS`, user/session scope and no untrusted pre-creation. The WinUI client source uses this name; the Zig server adapter remains pending. |
 | macOS | `AF_UNIX / SOCK_STREAM` | private short runtime path `<private-runtime>/engine.sock` | Check runtime directory ownership/mode; UID via `getpeereid`; keep under `sun_path` limit. |
 | Linux | `AF_UNIX / SOCK_STREAM` | `$XDG_RUNTIME_DIR/speed-download/engine.sock` | `0700` directory, `0600` socket where effective, `SO_PEERCRED` UID check. |
 

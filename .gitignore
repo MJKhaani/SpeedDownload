@@ -8,3 +8,8 @@ zig-cache/
 *.exe
 *.dSYM/
 coverage/
+macos/SpeedDownload/.build/
+linux/SpeedDownload/build/
+windows/SpeedDownload/bin/
+windows/SpeedDownload/obj/
+windows/SpeedDownload/publish/
