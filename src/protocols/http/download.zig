@@ -108,6 +108,44 @@ pub fn downloadWithProgress(
     progress_callback: ?ProgressCallback,
     progress_context: ?*anyopaque,
 ) !void {
+    const ranged = @import("ranged_download.zig");
+    const range_completed = ranged.downloadIfSupported(
+        allocator,
+        io,
+        url,
+        destination,
+        expected_sha256,
+        progress_callback,
+        progress_context,
+    ) catch |err| {
+        if (err == ranged.Error.InvalidSegmentResponse or err == ranged.Error.RepresentationChanged) {
+            discardRangePartial(allocator, io, destination) catch {};
+        } else return err;
+        return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context);
+    };
+    if (range_completed) return;
+    return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context);
+}
+
+fn discardRangePartial(allocator: Allocator, io: Io, destination: []const u8) !void {
+    const part_path = try std.fmt.allocPrint(allocator, "{s}.part", .{destination});
+    defer allocator.free(part_path);
+    const range_journal = try std.fmt.allocPrint(allocator, "{s}.sdr", .{part_path});
+    defer allocator.free(range_journal);
+    const cwd = Io.Dir.cwd();
+    cwd.deleteFile(io, part_path) catch {};
+    cwd.deleteFile(io, range_journal) catch {};
+}
+
+fn downloadSingleStreamWithProgress(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    progress_callback: ?ProgressCallback,
+    progress_context: ?*anyopaque,
+) !void {
     const uri = try std.Uri.parse(url);
     if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
         return DownloadError.UnsupportedScheme;
@@ -337,7 +375,7 @@ pub fn downloadWithProgress(
     cwd.deleteFile(io, journal_path) catch {};
 }
 
-fn verifySha256(io: Io, file: Io.File, expected: ?[32]u8) !void {
+pub fn verifySha256(io: Io, file: Io.File, expected: ?[32]u8) !void {
     const wanted = expected orelse return;
     var buffer: [32 * 1024]u8 = undefined;
     var reader = file.reader(io, &buffer);
@@ -354,7 +392,7 @@ fn verifySha256(io: Io, file: Io.File, expected: ?[32]u8) !void {
     if (!std.mem.eql(u8, &actual, &wanted)) return DownloadError.ExpectedChecksumMismatch;
 }
 
-fn publishNoReplace(dir: Io.Dir, io: Io, part_path: []const u8, destination: []const u8) !void {
+pub fn publishNoReplace(dir: Io.Dir, io: Io, part_path: []const u8, destination: []const u8) !void {
     Io.Dir.renamePreserve(dir, part_path, dir, destination, io) catch |err| return switch (err) {
         error.PathAlreadyExists => DownloadError.DestinationExists,
         else => err,

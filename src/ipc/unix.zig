@@ -316,9 +316,12 @@ fn deletePartial(engine: *EngineContext, destination: []const u8) void {
     defer engine.allocator.free(part_path);
     const journal_path = std.fmt.allocPrint(engine.allocator, "{s}.odm", .{part_path}) catch return;
     defer engine.allocator.free(journal_path);
+    const segment_journal_path = std.fmt.allocPrint(engine.allocator, "{s}.sdr", .{part_path}) catch return;
+    defer engine.allocator.free(segment_journal_path);
     const cwd = std.Io.Dir.cwd();
     cwd.deleteFile(engine.io, part_path) catch {};
     cwd.deleteFile(engine.io, journal_path) catch {};
+    cwd.deleteFile(engine.io, segment_journal_path) catch {};
 }
 
 const DownloadProgressContext = struct { engine: *EngineContext, job_id: []const u8 };

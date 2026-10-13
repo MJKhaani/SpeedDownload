@@ -1,8 +1,12 @@
 # HTTP multipart range allocation
 
-This document describes the range-planning foundation currently in the engine.
-The production HTTP downloader still uses its single-stream path; multipart
-network requests and the durable per-segment journal are not connected yet.
+This document describes the bounded HTTP range path in the engine. Eligible
+HTTP(S) downloads now probe with `Range: bytes=0-0`, then issue up to four
+concurrent segment requests when the server proves range support and returns a
+strong ETag. Other downloads use the existing single-stream path. Work is only
+split when each new extent can retain at least 4 MiB. The segment
+journal is atomically replaced after a whole extent has been synced; a crash
+mid-extent causes that extent to be fetched again.
 
 ## Interval invariants
 
@@ -27,9 +31,12 @@ Each worker advances a durable cursor monotonically inside its assigned
 interval. Aggregate completed bytes are the sum of durable prefixes. The
 versioned codec in `src/protocols/http/segment_journal.zig` records
 representation identity, interval ownership, and cursors, and rejects gaps,
-overlaps, invalid validators, and malformed state. It is not yet wired to file
-syncing or atomic journal replacement, so planner cursors are still in-memory
-only and must not be presented as crash-safe.
+overlaps, invalid validators, and malformed state. The driver syncs the part
+file before advancing a segment cursor and atomically replaces the journal.
+Checkpoints currently occur at segment completion, so in-flight segment bytes
+are safely redownloaded after interruption. The worker count is fixed at four
+or fewer for each transfer; splitting is performed before requests start, and
+dynamic work stealing or subdivision during a transfer remains future work.
 
 ## Required integration policy
 
