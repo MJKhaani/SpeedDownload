@@ -201,6 +201,27 @@ pub fn dispatchMethod(
         if (control.action == .retry) scheduleQueued(engine);
         return @as(?[]u8, response);
     }
+    if (std.mem.eql(u8, method, "jobs.reorder")) {
+        const input = parseJobReorder(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const id = request_id orelse return null;
+        return jobs.reorderJson(id, input.job_id, input.position, input.expected_revision) catch |err| {
+            if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+            if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Only queued or paused jobs can be reordered");
+            if (err == error.InvalidQueuePosition) return dispatchError(allocator, request_id, -32018, "Queue position is out of range");
+            if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
+            return dispatchError(allocator, request_id, -32020, "Could not save the download request");
+        };
+    }
+    if (std.mem.eql(u8, method, "jobs.delete")) {
+        const input = parseJobDelete(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const id = request_id orelse return null;
+        return jobs.deleteJson(id, input.job_id, input.expected_revision, input.delete_partial) catch |err| {
+            if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+            if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32017, "An active job cannot be deleted");
+            if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
+            return dispatchError(allocator, request_id, -32020, "Could not save the download request");
+        };
+    }
     if (!std.mem.eql(u8, method, "jobs.add")) return null;
 
     const input = parseAddInput(params orelse return dispatchError(allocator, request_id, -32602, "Invalid params")) catch {
@@ -356,6 +377,37 @@ fn buildDestination(allocator: std.mem.Allocator, task: job_store.Store.Download
 }
 
 const JobControl = struct { job_id: []const u8, action: job_store.Store.Action, expected_revision: u64 };
+
+const JobReorder = struct { job_id: []const u8, position: usize, expected_revision: u64 };
+
+fn parseJobReorder(params: ?std.json.Value) !JobReorder {
+    const value = params orelse return error.InvalidParams;
+    if (value != .object) return error.InvalidParams;
+    const job_id = stringField(value.object, "job_id") orelse return error.InvalidParams;
+    const revision_text = stringField(value.object, "expected_revision") orelse return error.InvalidParams;
+    const position_value = value.object.get("position") orelse return error.InvalidParams;
+    if (position_value != .integer or position_value.integer < 0) return error.InvalidParams;
+    return .{
+        .job_id = job_id,
+        .position = std.math.cast(usize, position_value.integer) orelse return error.InvalidParams,
+        .expected_revision = try std.fmt.parseInt(u64, revision_text, 10),
+    };
+}
+
+const JobDelete = struct { job_id: []const u8, expected_revision: u64, delete_partial: bool = false };
+
+fn parseJobDelete(params: ?std.json.Value) !JobDelete {
+    const value = params orelse return error.InvalidParams;
+    if (value != .object) return error.InvalidParams;
+    const job_id = stringField(value.object, "job_id") orelse return error.InvalidParams;
+    const revision_text = stringField(value.object, "expected_revision") orelse return error.InvalidParams;
+    const partial_value = value.object.get("delete_partial");
+    const delete_partial = if (partial_value) |flag| blk: {
+        if (flag != .bool) return error.InvalidParams;
+        break :blk flag.bool;
+    } else false;
+    return .{ .job_id = job_id, .expected_revision = try std.fmt.parseInt(u64, revision_text, 10), .delete_partial = delete_partial };
+}
 
 fn parseJobControl(params: ?std.json.Value) !JobControl {
     const value = params orelse return error.InvalidParams;

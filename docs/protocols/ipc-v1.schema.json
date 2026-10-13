@@ -7,7 +7,9 @@
     { "$ref": "#/$defs/hello" },
     { "$ref": "#/$defs/jobsList" },
     { "$ref": "#/$defs/jobsAdd" },
-    { "$ref": "#/$defs/jobsControl" }
+    { "$ref": "#/$defs/jobsControl" },
+    { "$ref": "#/$defs/jobsReorder" },
+    { "$ref": "#/$defs/jobsDelete" }
   ],
   "$defs": {
     "requestBase": {
@@ -115,6 +117,32 @@
             }
           }
         }
+      ]
+    },
+    "jobsReorder": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.reorder" },
+          "params": { "type": "object", "required": ["job_id", "position", "expected_revision"], "properties": {
+            "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "position": { "type": "integer", "minimum": 0 },
+            "expected_revision": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+          }, "additionalProperties": false }
+        } }
+      ]
+    },
+    "jobsDelete": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.delete" },
+          "params": { "type": "object", "required": ["job_id", "expected_revision"], "properties": {
+            "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "expected_revision": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "delete_partial": { "type": "boolean", "default": false }
+          }, "additionalProperties": false }
+        } }
       ]
     }
   }

@@ -49,9 +49,11 @@ speed-download rpc list
 speed-download rpc add https://example.com/archive.zip "$HOME/Downloads" "archive.zip"
 speed-download rpc control <job-id> start <revision>
 speed-download rpc control <job-id> pause <revision>
+speed-download rpc reorder <job-id> <zero-based-position> <revision>
+speed-download rpc delete <job-id> <revision> [--delete-partial]
 ```
 
-`rpc list` prints one JSON-RPC response containing up to 50 jobs. `rpc add` accepts an existing destination folder and an optional filename. `rpc control` requires the current job revision shown by `rpc list`; refresh the list after a stale-revision error.
+`rpc list` prints one JSON-RPC response containing up to 50 jobs. `rpc add` accepts an existing destination folder and an optional filename. `rpc control`, `rpc reorder`, and `rpc delete` require the current job revision shown by `rpc list`; refresh the list after a stale-revision error. Reordering applies to queued, paused, or retry-wait jobs. Deleting removes the job record and leaves completed downloads untouched. `--delete-partial` also removes partial data for an inactive job.
 
 Build the macOS SwiftUI client from `macos/SpeedDownload` with `swift build -c release`. Run the `SpeedDownload` executable after starting the engine.
 

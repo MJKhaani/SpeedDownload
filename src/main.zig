@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        std.debug.print("Usage: speed-download [engine | rpc <list|add|control> ... | [--sha256 <64-hex-digits>] <http(s)-url> <destination>]\n", .{});
+        std.debug.print("Usage: speed-download [engine | rpc <list|add|control|reorder|delete> ... | [--sha256 <64-hex-digits>] <http(s)-url> <destination>]\n", .{});
         return;
     }
     var expected_sha256: ?[32]u8 = null;
@@ -67,8 +67,26 @@ fn runRpc(init: std.process.Init, args: []const []const u8) !void {
             .action = args[4],
             .expected_revision = args[5],
         }, .{});
+    } else if (std.mem.eql(u8, args[2], "reorder") and args.len == 6) {
+        method = "jobs.reorder";
+        const position = try std.fmt.parseInt(i64, args[4], 10);
+        if (position < 0) return error.InvalidRpcArguments;
+        params = try std.json.Stringify.valueAlloc(allocator, .{
+            .job_id = args[3],
+            .position = position,
+            .expected_revision = args[5],
+        }, .{});
+    } else if (std.mem.eql(u8, args[2], "delete") and (args.len == 5 or args.len == 6)) {
+        method = "jobs.delete";
+        const delete_partial = args.len == 6 and std.mem.eql(u8, args[5], "--delete-partial");
+        if (args.len == 6 and !delete_partial) return error.InvalidRpcArguments;
+        params = try std.json.Stringify.valueAlloc(allocator, .{
+            .job_id = args[3],
+            .expected_revision = args[4],
+            .delete_partial = delete_partial,
+        }, .{});
     } else {
-        std.debug.print("Usage: speed-download rpc list\n       speed-download rpc add <http(s)-url> <destination-folder> [name]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n", .{});
+        std.debug.print("Usage: speed-download rpc list\n       speed-download rpc add <http(s)-url> <destination-folder> [name]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n       speed-download rpc reorder <job-id> <position> <revision>\n       speed-download rpc delete <job-id> <revision> [--delete-partial]\n", .{});
         return error.InvalidRpcArguments;
     }
     defer allocator.free(params);

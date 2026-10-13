@@ -189,6 +189,78 @@ pub const Store = struct {
         }, .{});
     }
 
+    pub fn reorderJson(self: *Store, request_id: std.json.Value, job_id: []const u8, position: usize, expected_revision: u64) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var old_index: ?usize = null;
+        for (self.jobs.items, 0..) |*job, index| {
+            if (std.mem.eql(u8, job.id, job_id)) {
+                old_index = index;
+                if (job.revision != expected_revision) return error.StaleJobRevision;
+                switch (job.state) {
+                    .queued, .scheduled, .paused, .retry_wait => {},
+                    else => return error.InvalidJobControl,
+                }
+                break;
+            }
+        }
+        const from = old_index orelse return error.JobNotFound;
+        if (position >= self.jobs.items.len) return error.InvalidQueuePosition;
+        if (from != position) {
+            const job = self.jobs.orderedRemove(from);
+            try self.jobs.insert(self.allocator, position, job);
+        }
+        const job = &self.jobs.items[position];
+        const previous_revision = job.revision;
+        job.revision = std.math.add(u64, job.revision, 1) catch {
+            if (from != position) {
+                const moved = self.jobs.orderedRemove(position);
+                self.jobs.insert(self.allocator, from, moved) catch unreachable;
+            }
+            return error.RevisionOverflow;
+        };
+        self.persist() catch |err| {
+            job.revision = previous_revision;
+            if (from != position) {
+                const moved = self.jobs.orderedRemove(position);
+                self.jobs.insert(self.allocator, from, moved) catch unreachable;
+            }
+            return err;
+        };
+        const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
+        defer self.allocator.free(revision);
+        return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
+            .job_id = job.id, .position = position, .revision = revision,
+        } }, .{});
+    }
+
+    pub fn deleteJson(self: *Store, request_id: std.json.Value, job_id: []const u8, expected_revision: u64, delete_partial: bool) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var index: ?usize = null;
+        for (self.jobs.items, 0..) |job, i| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.revision != expected_revision) return error.StaleJobRevision;
+            switch (job.state) {
+                .resolving, .connecting, .downloading, .verifying => return error.InvalidJobControl,
+                else => {},
+            }
+            if (delete_partial) try self.deletePartialFilesStrict(job);
+            index = i;
+            break;
+        }
+        const remove_at = index orelse return error.JobNotFound;
+        const removed = self.jobs.orderedRemove(remove_at);
+        self.persist() catch |err| {
+            self.jobs.insert(self.allocator, remove_at, removed) catch unreachable;
+            return err;
+        };
+        self.freeJob(removed);
+        return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
+            .job_id = job_id, .deleted = true, .partial_files_deleted = delete_partial,
+        } }, .{});
+    }
+
     pub const Action = enum { pause, @"resume", cancel, start, retry };
 
     fn controlUnlocked(self: *Store, job_id: []const u8, action: Action, expected_revision: u64) !*const Job {
@@ -294,7 +366,7 @@ pub const Store = struct {
                 .id = @intCast(index),
                 .host = hostString(uri) orelse "",
                 .priority = job.priority,
-                .sequence = @intCast(index + 1),
+                .sequence = @intCast(index),
                 .state = std.meta.stringToEnum(CoreState, @tagName(job.state)).?,
             });
         }
@@ -667,9 +739,27 @@ pub const Store = struct {
         defer self.allocator.free(part_path);
         const journal_path = try std.fmt.allocPrint(self.allocator, "{s}.odm", .{part_path});
         defer self.allocator.free(journal_path);
+        const segment_journal = try std.fmt.allocPrint(self.allocator, "{s}.sdr", .{part_path});
+        defer self.allocator.free(segment_journal);
         const cwd = std.Io.Dir.cwd();
         cwd.deleteFile(self.io, part_path) catch {};
         cwd.deleteFile(self.io, journal_path) catch {};
+        cwd.deleteFile(self.io, segment_journal) catch {};
+    }
+
+    fn deletePartialFilesStrict(self: *Store, job: Job) !void {
+        const destination = try self.destinationPath(job);
+        defer self.allocator.free(destination);
+        const part_path = try std.fmt.allocPrint(self.allocator, "{s}.part", .{destination});
+        defer self.allocator.free(part_path);
+        const journal_path = try std.fmt.allocPrint(self.allocator, "{s}.odm", .{part_path});
+        defer self.allocator.free(journal_path);
+        const segment_journal = try std.fmt.allocPrint(self.allocator, "{s}.sdr", .{part_path});
+        defer self.allocator.free(segment_journal);
+        const cwd = std.Io.Dir.cwd();
+        try deleteFileIfPresent(cwd, self.io, part_path);
+        try deleteFileIfPresent(cwd, self.io, journal_path);
+        try deleteFileIfPresent(cwd, self.io, segment_journal);
     }
 
     fn destinationPath(self: *Store, job: Job) ![]u8 {
@@ -757,4 +847,11 @@ fn getString(object: std.json.ObjectMap, key: []const u8) ![]const u8 {
 
 fn redactUrl(url: []const u8) []const u8 {
     return url;
+}
+
+fn deleteFileIfPresent(dir: std.Io.Dir, io: std.Io, path: []const u8) !void {
+    dir.deleteFile(io, path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
 }
