@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const ranges = @import("ranges.zig");
+const Io = std.Io;
 
 pub const Error = error{
     InvalidJournal,
@@ -25,6 +26,7 @@ const magic = "SDRANGE1";
 const fixed_size = magic.len + 32 + 32 + 8 + 2 + 2 + 4;
 const segment_size = 4 + 8 + 8 + 8 + 1;
 const max_etag_length = 1024;
+const max_encoded_size = fixed_size + max_etag_length + ranges.max_segments * segment_size;
 
 /// Encodes a representation-bound snapshot in a deterministic format.
 pub fn encode(allocator: std.mem.Allocator, snapshot: Snapshot) ![]u8 {
@@ -114,6 +116,44 @@ pub fn decode(allocator: std.mem.Allocator, input: []const u8) !Snapshot {
     const snapshot = Snapshot{ .source_hash = source_hash, .target_hash = target_hash, .etag = etag, .map = map };
     validate(snapshot) catch return Error.InvalidJournal;
     return snapshot;
+}
+
+/// Atomically saves a snapshot. The encoded file is flushed and synced before
+/// rename; callers must sync corresponding segment data before calling this.
+pub fn saveAtomic(allocator: std.mem.Allocator, io: Io, path: []const u8, snapshot: Snapshot) !void {
+    const encoded = try encode(allocator, snapshot);
+    defer allocator.free(encoded);
+
+    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(temp_path);
+    const cwd = Io.Dir.cwd();
+    cwd.deleteFile(io, temp_path) catch {};
+    const file = try cwd.createFile(io, temp_path, .{ .exclusive = true, .truncate = false });
+    var is_open = true;
+    defer {
+        if (is_open) file.close(io);
+        cwd.deleteFile(io, temp_path) catch {};
+    }
+
+    var buffer: [1024]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    try writer.interface.writeAll(encoded);
+    try writer.flush();
+    try file.sync(io);
+    file.close(io);
+    is_open = false;
+    try Io.Dir.rename(cwd, temp_path, cwd, path, io);
+}
+
+/// Loads an optional snapshot while bounding memory use and validating every
+/// field. The returned ETag is owned by the caller.
+pub fn load(allocator: std.mem.Allocator, io: Io, path: []const u8) !?Snapshot {
+    const bytes = Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(max_encoded_size)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return try decode(allocator, bytes);
 }
 
 fn validate(snapshot: Snapshot) Error!void {
