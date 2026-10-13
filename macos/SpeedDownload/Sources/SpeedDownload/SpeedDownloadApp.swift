@@ -1,8 +1,13 @@
+import AppKit
 import SwiftUI
 
 @main
 struct SpeedDownloadApp: App {
     @StateObject private var engine = EngineModel()
+
+    init() {
+        NSApplication.shared.setActivationPolicy(.regular)
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -10,6 +15,7 @@ struct SpeedDownloadApp: App {
                 .environmentObject(engine)
                 .frame(minWidth: 820, minHeight: 560)
                 .task {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
                     await engine.connect()
                     while !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(2))
