@@ -50,8 +50,7 @@ jobs:
 
       - name: Build native macOS GUI
         if: runner.os == 'macOS'
-        working-directory: macos/SpeedDownload
-        run: swift build --configuration release
+        run: bash macos/SpeedDownload/package-app.sh "dist/Speed Download.app"
 
       - name: Build native Linux GTK GUI
         if: runner.os == 'Linux'
@@ -61,13 +60,14 @@ jobs:
           sudo apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev
           cmake -S linux/SpeedDownload -B linux/SpeedDownload/build -DCMAKE_BUILD_TYPE=Release
           cmake --build linux/SpeedDownload/build --parallel
+          cmake --install linux/SpeedDownload/build --prefix "$GITHUB_WORKSPACE/linux/SpeedDownload/dist"
 
       - name: Retain native Linux GUI build
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: speed-download-linux-gtk-${{ github.ref_name }}
-          path: linux/SpeedDownload/build/speed-download-gtk
+          path: linux/SpeedDownload/dist/bin
           if-no-files-found: error
 
       - name: Set up .NET for WinUI
@@ -94,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: speed-download-macos-gui-${{ github.ref_name }}
-          path: macos/SpeedDownload/.build/release/SpeedDownload
+          path: dist/Speed Download.app
           if-no-files-found: error
 
       - name: Retain native CLI build

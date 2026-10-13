@@ -31,6 +31,8 @@ typedef struct {
     GtkLabel *connection_status;
     GtkLabel *message_status;
     gboolean refresh_in_flight;
+    gboolean engine_launch_attempted;
+    GSubprocess *engine_process;
 } AppState;
 
 typedef struct {
@@ -42,6 +44,57 @@ typedef struct {
 static void on_job_action(GtkButton *button, gpointer user_data);
 static gboolean refresh_jobs(AppState *app);
 static const gchar *json_string(JsonObject *object, const gchar *key);
+static void ensure_engine_running(AppState *app);
+static void set_message(AppState *app, const gchar *text, gboolean error);
+
+static gchar *engine_executable_path(void) {
+    const gchar *override = g_getenv("SPEED_DOWNLOAD_ENGINE_PATH");
+    if (override != NULL && g_file_test(override, G_FILE_TEST_IS_EXECUTABLE)) return g_strdup(override);
+
+    gchar *self = g_file_read_link("/proc/self/exe", NULL);
+    if (self != NULL) {
+        gchar *directory = g_path_get_dirname(self);
+        gchar *sibling = g_build_filename(directory, "speed-download", NULL);
+        g_free(directory);
+        g_free(self);
+        if (g_file_test(sibling, G_FILE_TEST_IS_EXECUTABLE)) return sibling;
+        g_free(sibling);
+    }
+    gchar *from_path = g_find_program_in_path("speed-download");
+    if (from_path != NULL) return from_path;
+
+    gchar *cwd = g_get_current_dir();
+    gchar *development = g_build_filename(cwd, "zig-out", "bin", "speed-download", NULL);
+    g_free(cwd);
+    if (g_file_test(development, G_FILE_TEST_IS_EXECUTABLE)) return development;
+    g_free(development);
+    return NULL;
+}
+
+static void ensure_engine_running(AppState *app) {
+    if (app->engine_process != NULL && g_subprocess_get_if_exited(app->engine_process)) {
+        g_clear_object(&app->engine_process);
+        app->engine_launch_attempted = FALSE;
+    }
+    if (app->engine_launch_attempted) return;
+    app->engine_launch_attempted = TRUE;
+    gchar *executable = engine_executable_path();
+    if (executable == NULL) {
+        set_message(app, "The Speed Download engine was not found. Install it beside this app or set SPEED_DOWNLOAD_ENGINE_PATH.", TRUE);
+        return;
+    }
+    const gchar *arguments[] = { executable, "engine", NULL };
+    GSubprocessLauncher *launcher = g_subprocess_launcher_new(
+        G_SUBPROCESS_FLAGS_STDOUT_SILENCE | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+    GError *error = NULL;
+    app->engine_process = g_subprocess_launcher_spawnv(launcher, arguments, &error);
+    if (app->engine_process == NULL) {
+        set_message(app, error->message, TRUE);
+        g_clear_error(&error);
+    }
+    g_object_unref(launcher);
+    g_free(executable);
+}
 
 static void download_job_free(gpointer data) {
     DownloadJob *job = data;
@@ -495,6 +548,7 @@ static void rpc_finished(GObject *source_object, GAsyncResult *result, gpointer 
         gtk_label_set_text(app->connection_status, "Engine disconnected");
         set_message(app, error->message, TRUE);
         g_clear_error(&error);
+        if (request->refresh) ensure_engine_running(app);
         if (!request->refresh) refresh_jobs(app);
         return;
     }

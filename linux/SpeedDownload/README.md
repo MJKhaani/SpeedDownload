@@ -9,11 +9,16 @@ Dependencies: GTK 4, JSON-GLib, CMake, a C11 compiler, and the Speed Download
 engine.
 
 ```sh
+mkdir -p ../../zig-out/bin
+zig build-exe ../../src/main.zig -lc -femit-bin=../../zig-out/bin/speed-download
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+cmake --install build --prefix "$HOME/.local"
 ```
 
-Start the engine with `speed-download engine`, then run
-`./build/speed-download-gtk`. The client looks for
-`$XDG_RUNTIME_DIR/speed-download/engine.sock`. The GTK client is source-complete
-but has not yet been built or runtime-validated on a Linux desktop.
+Run `./build/speed-download-gtk`. If the engine is not already running, the GTK
+client starts `speed-download engine` from `SPEED_DOWNLOAD_ENGINE_PATH`, beside
+the GTK executable, or from `PATH`, in that order. Install both executables in
+the same `bin` directory, or set `SPEED_DOWNLOAD_ENGINE_PATH`. The engine uses
+`$XDG_RUNTIME_DIR/speed-download/engine.sock` and its standard per-user state
+directory. The GUI retries connection while the engine starts.

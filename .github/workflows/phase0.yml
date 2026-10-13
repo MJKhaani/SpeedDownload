@@ -52,8 +52,7 @@ jobs:
 
       - name: Build native SwiftUI client
         if: runner.os == 'macOS'
-        working-directory: macos/SpeedDownload
-        run: swift build --configuration release
+        run: bash macos/SpeedDownload/package-app.sh "dist/Speed Download.app"
 
       - name: Install GTK build dependencies
         if: runner.os == 'Linux'

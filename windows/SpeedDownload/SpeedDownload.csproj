@@ -14,4 +14,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
   </ItemGroup>
+  <ItemGroup Condition="Exists('..\..\zig-out\bin\speed-download.exe')">
+    <Content Include="..\..\zig-out\bin\speed-download.exe">
+      <Link>speed-download.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

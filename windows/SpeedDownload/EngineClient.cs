@@ -10,6 +10,8 @@ internal sealed class EngineClient
 {
     private const int MaxFrameSize = 1_048_576;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private bool _engineLaunchAttempted;
+    private System.Diagnostics.Process? _engineProcess;
 
     private static string PipeName
     {
@@ -22,6 +24,25 @@ internal sealed class EngineClient
     }
 
     public async Task<IReadOnlyList<DownloadJob>> ListJobsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await ListJobsCoreAsync(cancellationToken);
+        }
+        catch (Exception initialError) when (!cancellationToken.IsCancellationRequested)
+        {
+            EnsureEngineRunning();
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(250, cancellationToken);
+                try { return await ListJobsCoreAsync(cancellationToken); }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested) { }
+            }
+            throw new InvalidOperationException("Could not connect to the Speed Download engine after trying to start it.", initialError);
+        }
+    }
+
+    private async Task<IReadOnlyList<DownloadJob>> ListJobsCoreAsync(CancellationToken cancellationToken)
     {
         var jobs = new List<DownloadJob>();
         var offset = 0;
@@ -37,6 +58,36 @@ internal sealed class EngineClient
                 throw new InvalidDataException("The engine returned an invalid job-list cursor.");
             offset = next;
         }
+    }
+
+    private void EnsureEngineRunning()
+    {
+        if (_engineProcess is { HasExited: true })
+        {
+            _engineProcess.Dispose();
+            _engineProcess = null;
+            _engineLaunchAttempted = false;
+        }
+        if (_engineLaunchAttempted) return;
+        _engineLaunchAttempted = true;
+        var overridePath = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_ENGINE_PATH");
+        var candidates = new[]
+        {
+            overridePath,
+            Path.Combine(AppContext.BaseDirectory, "speed-download.exe"),
+            Path.Combine(AppContext.BaseDirectory, "engine", "speed-download.exe"),
+        };
+        var executable = candidates.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
+        if (executable is null) throw new FileNotFoundException("The Speed Download engine was not found beside the app. Set SPEED_DOWNLOAD_ENGINE_PATH to its location.");
+        _engineProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = executable,
+            Arguments = "engine",
+            WorkingDirectory = Path.GetDirectoryName(executable)!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        if (_engineProcess is null) throw new InvalidOperationException("Windows did not start the Speed Download engine.");
     }
 
     public async Task AddJobAsync(string url, string? name, string destination, int priority, CancellationToken cancellationToken = default)

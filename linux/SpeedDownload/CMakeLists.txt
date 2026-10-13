@@ -13,3 +13,5 @@ add_executable(speed-download-gtk src/main.c)
 target_link_libraries(speed-download-gtk PRIVATE PkgConfig::GTK4 PkgConfig::JSON_GLIB)
 target_compile_options(speed-download-gtk PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS speed-download-gtk RUNTIME DESTINATION bin)
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../../zig-out/bin/speed-download"
+        DESTINATION bin OPTIONAL)
