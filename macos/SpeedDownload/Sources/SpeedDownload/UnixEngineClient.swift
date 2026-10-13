@@ -72,12 +72,13 @@ struct UnixEngineClient: Sendable {
         var jobs: [DownloadJob] = []
         var offset = 0
         while true {
-            let response: JobListResult = try request(
+            let envelope: RPCEnvelope<JobListResult> = try request(
                 fd: fd,
                 id: "jobs-list-\(UUID().uuidString)",
                 method: "jobs.list",
                 params: ["offset": offset, "limit": 50]
             )
+            guard let response = envelope.result else { throw ClientError.invalidResponse }
             jobs.append(contentsOf: response.jobs)
             guard let nextOffset = response.nextOffset else { return jobs }
             guard let next = Int(nextOffset), next > offset else { throw ClientError.invalidResponse }
@@ -98,24 +99,28 @@ struct UnixEngineClient: Sendable {
         if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             params["name"] = name
         }
-        return try request(
+        let envelope: RPCEnvelope<AddJobResult> = try request(
             fd: fd,
             id: "jobs-add-\(UUID().uuidString)",
             method: "jobs.add",
             params: params
         )
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return result
     }
 
     func controlJob(jobID: String, action: String, expectedRevision: String) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         _ = try negotiate(fd: fd)
-        return try request(
+        let envelope: RPCEnvelope<AddJobResult> = try request(
             fd: fd,
             id: "jobs-control-\(UUID().uuidString)",
             method: "jobs.control",
             params: ["job_id": jobID, "action": action, "expected_revision": expectedRevision]
         )
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return result
     }
 
     static func isRevisionConflict(_ error: Error) -> Bool {

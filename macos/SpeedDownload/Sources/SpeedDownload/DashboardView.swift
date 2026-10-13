@@ -379,7 +379,7 @@ private struct AddDownloadView: View {
         }
         let folderPath = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         var isDirectory: ObjCBool = false
-        guard folderPath.hasPrefix("/"), FileManager.default.fileExists(atPath: folderPath, isDirectory: &isDirectory), isDirectory.bool else {
+        guard folderPath.hasPrefix("/"), FileManager.default.fileExists(atPath: folderPath, isDirectory: &isDirectory), isDirectory.boolValue else {
             validationError = "Choose an existing folder for downloaded files."
             return
         }
