@@ -24,10 +24,12 @@ and `[2560, 4096)`. The original worker keeps its existing id and the new worker
 gets the tail id; no already-completed bytes are reassigned.
 
 Each worker advances a durable cursor monotonically inside its assigned
-interval. Aggregate completed bytes are the sum of durable prefixes. These
-planner cursors are in-memory only at this stage: they must not be presented as
-crash-safe until the segment journal records representation identity, interval
-ownership, and synced cursors atomically.
+interval. Aggregate completed bytes are the sum of durable prefixes. The
+versioned codec in `src/protocols/http/segment_journal.zig` records
+representation identity, interval ownership, and cursors, and rejects gaps,
+overlaps, invalid validators, and malformed state. It is not yet wired to file
+syncing or atomic journal replacement, so planner cursors are still in-memory
+only and must not be presented as crash-safe.
 
 ## Required integration policy
 

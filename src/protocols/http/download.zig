@@ -13,6 +13,13 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const http = std.http;
 
+/// Range-planning primitives used by the future multipart HTTP driver.
+pub const range_allocator = @import("ranges.zig");
+
+/// Versioned segment snapshot codec. The filesystem layer must sync segment
+/// data before atomically replacing a journal encoded by this module.
+pub const segment_journal = @import("segment_journal.zig");
+
 pub const DownloadError = error{
     UnsupportedScheme,
     DestinationExists,
