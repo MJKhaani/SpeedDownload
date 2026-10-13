@@ -10,8 +10,12 @@ pub fn main(init: std.process.Init) !void {
         try runEngine(init);
         return;
     }
+    if (args.len >= 3 and std.mem.eql(u8, args[1], "rpc")) {
+        try runRpc(init, args);
+        return;
+    }
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        std.debug.print("Usage: speed-download [engine | [--sha256 <64-hex-digits>] <http(s)-url> <destination>]\n", .{});
+        std.debug.print("Usage: speed-download [engine | rpc <list|add|control> ... | [--sha256 <64-hex-digits>] <http(s)-url> <destination>]\n", .{});
         return;
     }
     var expected_sha256: ?[32]u8 = null;
@@ -33,6 +37,45 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("speed-download: {s}\n", .{errorMessage(err)});
         return err;
     };
+}
+
+fn runRpc(init: std.process.Init, args: []const []const u8) !void {
+    const allocator = init.gpa;
+    var params: []u8 = undefined;
+    var method: []const u8 = undefined;
+    if (std.mem.eql(u8, args[2], "list") and args.len == 3) {
+        method = "jobs.list";
+        params = try allocator.dupe(u8, "{\"offset\":0,\"limit\":50}");
+    } else if (std.mem.eql(u8, args[2], "add") and (args.len == 5 or args.len == 6)) {
+        method = "jobs.add";
+        var key_bytes: [16]u8 = undefined;
+        try init.io.randomSecure(&key_bytes);
+        var key_buffer: [36]u8 = undefined;
+        const idempotency_key = formatUuid(&key_buffer, key_bytes);
+        const name: ?[]const u8 = if (args.len == 6) args[5] else null;
+        params = try std.json.Stringify.valueAlloc(allocator, .{
+            .url = args[3],
+            .destination = args[4],
+            .name = name,
+            .idempotency_key = idempotency_key,
+            .priority = @as(i32, 0),
+        }, .{});
+    } else if (std.mem.eql(u8, args[2], "control") and args.len == 6) {
+        method = "jobs.control";
+        params = try std.json.Stringify.valueAlloc(allocator, .{
+            .job_id = args[3],
+            .action = args[4],
+            .expected_revision = args[5],
+        }, .{});
+    } else {
+        std.debug.print("Usage: speed-download rpc list\n       speed-download rpc add <http(s)-url> <destination-folder> [name]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n", .{});
+        return error.InvalidRpcArguments;
+    }
+    defer allocator.free(params);
+    const response = try @import("ipc/client.zig").call(allocator, init, method, params);
+    defer allocator.free(response);
+    try std.Io.File.stdout().writeStreamingAll(init.io, response);
+    try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
 }
 
 fn runEngine(init: std.process.Init) !void {

@@ -6,6 +6,7 @@ const std = @import("std");
 const frame = @import("frame.zig");
 const protocol = @import("root.zig");
 const job_store = @import("../core/job_store.zig");
+const posix_stat = @import("../core/posix_stat.zig");
 
 const c = std.c;
 const SocketPath = [*:0]const u8;
@@ -15,9 +16,6 @@ const max_ipc_clients = 32;
 extern "c" fn socket(domain: c_int, socket_type: c_int, protocol_number: c_int) c_int;
 const getErrno = @extern(*const fn () callconv(.c) *c_int, .{
     .name = if (builtin.os.tag == .macos) "__error" else "__errno_location",
-});
-const lstat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
-    .name = if (builtin.os.tag == .macos) "lstat$INODE64" else "lstat",
 });
 extern "c" fn getpid() c_int;
 
@@ -81,9 +79,8 @@ fn serveUnix(allocator: std.mem.Allocator, config: Config) !void {
         std.debug.print("speed-download: IPC bind failed (errno {d})\n", .{getErrno().*});
         return Error.SystemCallFailed;
     }
-    var bound_info: c.Stat = undefined;
-    if (lstat(paths.socket_z, &bound_info) != 0) return Error.SystemCallFailed;
-    defer unlinkIfSame(paths.socket_z, bound_info.dev, bound_info.ino);
+    const bound_info = posix_stat.get(paths.socket_z, false) orelse return Error.SystemCallFailed;
+    defer unlinkIfSame(paths.socket_z, bound_info.device, bound_info.inode);
     if (c.chmod(paths.socket_z, 0o600) != 0) return Error.SystemCallFailed;
     if (c.listen(listener, 16) != 0) return Error.SystemCallFailed;
 
@@ -520,9 +517,9 @@ fn validComponent(value: []const u8) bool {
 fn validatePrivateDirectory(path: []const u8) !void {
     const path_z = std.heap.page_allocator.dupeSentinel(u8, path, 0) catch return Error.InvalidPath;
     defer std.heap.page_allocator.free(path_z);
-    var base_info: c.Stat = undefined;
-    if (lstat(path_z, &base_info) != 0 or base_info.uid != c.getuid() or
-        base_info.mode & c.S.IFMT != c.S.IFDIR or base_info.mode & 0o077 != 0)
+    const base_info = posix_stat.get(path_z, false) orelse return Error.UnsafeRuntimeDirectory;
+    if (base_info.uid != posix_stat.currentUid() or
+        !posix_stat.isDirectory(base_info) or base_info.mode & 0o077 != 0)
         return Error.UnsafeRuntimeDirectory;
 }
 
@@ -530,30 +527,29 @@ fn ensurePrivateDirectory(path: []const u8) !void {
     const path_z = std.heap.page_allocator.dupeSentinel(u8, path, 0) catch return Error.InvalidPath;
     defer std.heap.page_allocator.free(path_z);
     if (c.mkdir(path_z, 0o700) == 0) return;
-    var info: c.Stat = undefined;
-    if (lstat(path_z, &info) != 0 or info.uid != c.getuid() or
-        info.mode & c.S.IFMT != c.S.IFDIR or info.mode & 0o077 != 0)
+    const info = posix_stat.get(path_z, false) orelse return Error.UnsafeRuntimeDirectory;
+    if (info.uid != posix_stat.currentUid() or
+        !posix_stat.isDirectory(info) or info.mode & 0o077 != 0)
         return Error.UnsafeRuntimeDirectory;
 }
 
 fn pathExists(path: []const u8) bool {
     const path_z = std.heap.page_allocator.dupeSentinel(u8, path, 0) catch return true;
     defer std.heap.page_allocator.free(path_z);
-    var stat: c.Stat = undefined;
-    return lstat(path_z, &stat) == 0;
+    return posix_stat.get(path_z, false) != null;
 }
 
-fn unlinkIfSame(path: SocketPath, device: c.dev_t, inode: c.ino_t) void {
-    var current: c.Stat = undefined;
-    if (lstat(path, &current) == 0 and current.dev == device and current.ino == inode)
-        _ = c.unlink(path);
+fn unlinkIfSame(path: SocketPath, device: u64, inode: u64) void {
+    if (posix_stat.get(path, false)) |current| {
+        if (current.device == device and current.inode == inode) _ = c.unlink(path);
+    }
 }
 
 fn makeAddress(path: []const u8) !c.sockaddr.un {
     var address: c.sockaddr.un = undefined;
     const address_bytes: *[@sizeOf(c.sockaddr.un)]u8 = @ptrCast(&address);
     @memset(address_bytes, 0);
-    address.len = @sizeOf(c.sockaddr.un);
+    if (comptime builtin.os.tag == .macos) address.len = @sizeOf(c.sockaddr.un);
     address.family = c.AF.UNIX;
     if (path.len >= @min(address.path.len, max_socket_path_bytes)) return Error.InvalidPath;
     if (builtin.os.tag == .macos) address.len = @intCast(@offsetOf(c.sockaddr.un, "path") + path.len + 1);

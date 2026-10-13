@@ -5,16 +5,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = std.c;
+const posix_stat = @import("posix_stat.zig");
 const queue_policy = @import("queue.zig");
 const CoreState = @import("root.zig").State;
 
-const lstat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
-    .name = if (builtin.os.tag == .macos) "lstat$INODE64" else "lstat",
-});
-const statPath = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{
-    .name = if (builtin.os.tag == .macos) "stat$INODE64" else "stat",
-});
-extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 extern "c" fn chmod(path: [*:0]const u8, mode: c.mode_t) c_int;
 
 pub const State = enum { queued, scheduled, resolving, connecting, downloading, paused, retry_wait, verifying, completed, failed, canceled };
@@ -68,9 +62,9 @@ pub const Store = struct {
         if (comptime builtin.os.tag != .windows) {
             const path_z = try allocator.dupeSentinel(u8, directory_path, 0);
             defer allocator.free(path_z);
-            var posix_stat: c.Stat = undefined;
-            if (lstat(path_z, &posix_stat) != 0 or posix_stat.uid != c.getuid() or
-                posix_stat.mode & c.S.IFMT != c.S.IFDIR or chmod(path_z, 0o700) != 0)
+            const directory_info = posix_stat.get(path_z, false) orelse return error.UnsafeStoreDirectory;
+            if (directory_info.uid != posix_stat.currentUid() or !posix_stat.isDirectory(directory_info) or
+                chmod(path_z, 0o700) != 0)
                 return error.UnsafeStoreDirectory;
         }
 
@@ -550,9 +544,8 @@ pub const Store = struct {
         if (comptime builtin.os.tag != .windows) {
             const path_z = try self.allocator.dupeSentinel(u8, self.file_path, 0);
             defer self.allocator.free(path_z);
-            var existing_stat: c.Stat = undefined;
-            if (lstat(path_z, &existing_stat) == 0) {
-                if (existing_stat.uid != c.getuid() or existing_stat.mode & c.S.IFMT != c.S.IFREG)
+            if (posix_stat.get(path_z, false)) |existing_stat| {
+                if (existing_stat.uid != posix_stat.currentUid() or !posix_stat.isRegularFile(existing_stat))
                     return error.UnsafeJobStoreFile;
                 if (chmod(path_z, 0o600) != 0) return error.UnsafeJobStoreFile;
             }

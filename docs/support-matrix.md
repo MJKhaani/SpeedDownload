@@ -1,7 +1,7 @@
 # Platform Support and Feasibility Matrix
 
 **Status date:** 2026-10-13
-**Current project phase:** Phase 0 feasibility; native CI gates are configured, awaiting first green native runs and GUI smoke evidence
+**Current project phase:** Phase 1 core MVP implementation; Phase 0 native CI results remain unavailable
 **Meaning:** “Not validated” means no native build/runtime evidence is available. Cross-compilation alone cannot change a target to supported.
 
 ## Current evidence
@@ -37,3 +37,7 @@ No target is currently supported or release-certified. For each target, record e
 - [ ] Launch each native GUI against its runner's engine and confirm connected status, visible progress, disconnect/reconnect, and engine restart.
 - [ ] Mark only those tested GUI/OS targets experimental or verified with recorded runner versions; x86/ARM64 targets remain blocked pending their own native evidence.
 - Record results in [`adr/0001-native-guis-local-ipc.md`](adr/0001-native-guis-local-ipc.md) and keep target statuses evidence-based.
+
+## Phase 1 status
+
+The headless engine, persistent job store, HTTP(S) downloader with safe resume, and RPC CLI (`rpc list`, `rpc add`, `rpc control`) are implemented. Local macOS and x86_64 Windows compile checks pass. Phase 1 still requires the native integration suite to run green on its supported engine targets and complete verification of crash recovery, overwrite protection, pause/resume/cancel, TLS behavior, and large-file handling. HTTP(S) runtime and integration checks were previously recorded on macOS in the core module check; this session deferred rerunning those checks.
