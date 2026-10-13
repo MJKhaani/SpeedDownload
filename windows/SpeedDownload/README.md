@@ -10,6 +10,8 @@ Build on Windows with the .NET 10 SDK and Windows App SDK 2.4:
 dotnet publish .\SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true
 ```
 
-The Zig engine's Windows named-pipe listener and pipe ACLs are not implemented
-yet, so this client cannot connect to the current engine. The project has not
-been built or runtime-validated on Windows.
+The Zig engine includes a Windows named-pipe listener at
+`\\.\pipe\SpeedDownload-<user-SID>-<session-id>`, with a private user/SYSTEM
+DACL and remote-client rejection. The engine cross-compiles from macOS for
+x86_64 Windows; the WinUI project and pipe runtime have not yet been built or
+validated on Windows.

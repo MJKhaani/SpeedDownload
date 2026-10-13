@@ -36,7 +36,33 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn runEngine(init: std.process.Init) !void {
-    if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) {
+    if (comptime builtin.os.tag == .windows) {
+        const windows_ipc = @import("ipc/windows.zig");
+        const JobStore = @import("core/job_store.zig").Store;
+        const local_app_data = init.environ_map.get("LOCALAPPDATA") orelse return error.StateDirectoryUnavailable;
+        const state_directory = if (init.environ_map.get("SPEED_DOWNLOAD_STATE_DIR")) |override|
+            try init.gpa.dupe(u8, override)
+        else
+            try std.fs.path.join(init.gpa, &.{ local_app_data, "Speed Download" });
+        defer init.gpa.free(state_directory);
+        var jobs = try JobStore.open(init.gpa, init.io, state_directory);
+        defer jobs.deinit();
+
+        var instance_bytes: [16]u8 = undefined;
+        try init.io.randomSecure(&instance_bytes);
+        var instance_id_buffer: [36]u8 = undefined;
+        const instance_id = formatUuid(&instance_id_buffer, instance_bytes);
+        const features = [_][]const u8{};
+        std.debug.print("Speed Download engine starting; named pipe is scoped to this user session\n", .{});
+        try windows_ipc.serve(init.gpa, .{
+            .jobs = &jobs,
+            .server = .{
+                .engine_version = "0.1.0",
+                .engine_instance_id = instance_id,
+                .supported_features = &features,
+            },
+        });
+    } else if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) {
         return error.EngineTransportUnavailable;
     } else {
         const unix_ipc = @import("ipc/unix.zig");

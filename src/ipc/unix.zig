@@ -12,11 +12,6 @@ const SocketPath = [*:0]const u8;
 const max_socket_path_bytes = if (builtin.os.tag == .macos) 104 else 108;
 const max_ipc_clients = 32;
 
-comptime {
-    if (builtin.os.tag != .macos and builtin.os.tag != .linux)
-        @compileError("IPC Unix transport supports macOS and Linux only");
-}
-
 extern "c" fn socket(domain: c_int, socket_type: c_int, protocol_number: c_int) c_int;
 const getErrno = @extern(*const fn () callconv(.c) *c_int, .{
     .name = if (builtin.os.tag == .macos) "__error" else "__errno_location",
@@ -36,7 +31,7 @@ pub const Config = struct {
     jobs: *job_store.Store,
 };
 
-const EngineContext = struct {
+pub const EngineContext = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     jobs: *job_store.Store,
@@ -61,6 +56,11 @@ pub const Error = error{
 /// Serve clients sequentially. Each accepted connection gets a fresh protocol
 /// session, and is authenticated before its first frame is processed.
 pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
+    if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) return error.TransportUnavailable;
+    return serveUnix(allocator, config);
+}
+
+fn serveUnix(allocator: std.mem.Allocator, config: Config) !void {
     var engine = EngineContext{ .allocator = allocator, .io = config.jobs.io, .jobs = config.jobs };
     var paths = try makePaths(allocator, config);
     defer paths.deinit(allocator);
@@ -167,7 +167,7 @@ fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdent
     }
 }
 
-fn dispatchMethod(
+pub fn dispatchMethod(
     allocator: std.mem.Allocator,
     request_id: ?std.json.Value,
     method: []const u8,

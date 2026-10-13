@@ -61,13 +61,18 @@ pub const Store = struct {
     pub fn open(allocator: std.mem.Allocator, io: std.Io, directory_path: []const u8) !Store {
         if (!std.fs.path.isAbsolute(directory_path)) return error.InvalidStorePath;
         try std.Io.Dir.cwd().createDirPath(io, directory_path);
-        const path_z = try allocator.dupeSentinel(u8, directory_path, 0);
-        defer allocator.free(path_z);
-        var directory_stat: c.Stat = undefined;
-        if (lstat(path_z, &directory_stat) != 0 or directory_stat.uid != c.getuid() or
-            directory_stat.mode & c.S.IFMT != c.S.IFDIR)
-            return error.UnsafeStoreDirectory;
-        if (chmod(path_z, 0o700) != 0) return error.UnsafeStoreDirectory;
+        var directory = try std.Io.Dir.openDirAbsolute(io, directory_path, .{});
+        defer directory.close(io);
+        const directory_stat = try directory.stat(io);
+        if (directory_stat.kind != .directory) return error.UnsafeStoreDirectory;
+        if (comptime builtin.os.tag != .windows) {
+            const path_z = try allocator.dupeSentinel(u8, directory_path, 0);
+            defer allocator.free(path_z);
+            var posix_stat: c.Stat = undefined;
+            if (lstat(path_z, &posix_stat) != 0 or posix_stat.uid != c.getuid() or
+                posix_stat.mode & c.S.IFMT != c.S.IFDIR or chmod(path_z, 0o700) != 0)
+                return error.UnsafeStoreDirectory;
+        }
 
         const file_path = try std.fs.path.join(allocator, &.{ directory_path, "jobs.json" });
         errdefer allocator.free(file_path);
@@ -93,7 +98,7 @@ pub const Store = struct {
     }
 
     fn addUnlocked(self: *Store, input: AddInput) !AddResult {
-        try validateInput(input);
+        try validateInput(self.io, input);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.idempotency_key, input.idempotency_key)) continue;
             if (sameInput(job, input)) return .{ .job = job, .duplicate = true };
@@ -542,13 +547,15 @@ pub const Store = struct {
     }
 
     fn load(self: *Store) !void {
-        const path_z = try self.allocator.dupeSentinel(u8, self.file_path, 0);
-        defer self.allocator.free(path_z);
-        var existing_stat: c.Stat = undefined;
-        if (lstat(path_z, &existing_stat) == 0) {
-            if (existing_stat.uid != c.getuid() or existing_stat.mode & c.S.IFMT != c.S.IFREG)
-                return error.UnsafeJobStoreFile;
-            if (chmod(path_z, 0o600) != 0) return error.UnsafeJobStoreFile;
+        if (comptime builtin.os.tag != .windows) {
+            const path_z = try self.allocator.dupeSentinel(u8, self.file_path, 0);
+            defer self.allocator.free(path_z);
+            var existing_stat: c.Stat = undefined;
+            if (lstat(path_z, &existing_stat) == 0) {
+                if (existing_stat.uid != c.getuid() or existing_stat.mode & c.S.IFMT != c.S.IFREG)
+                    return error.UnsafeJobStoreFile;
+                if (chmod(path_z, 0o600) != 0) return error.UnsafeJobStoreFile;
+            }
         }
         var file = std.Io.Dir.openFileAbsolute(self.io, self.file_path, .{ .follow_symlinks = false }) catch |err| switch (err) {
             error.FileNotFound => return,
@@ -651,7 +658,7 @@ pub const Store = struct {
         }, .{});
         defer self.allocator.free(data);
         var atomic = try std.Io.Dir.createFileAtomic(.cwd(), self.io, self.file_path, .{
-            .permissions = std.Io.File.Permissions.fromMode(0o600),
+            .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o600),
             .make_path = true,
             .replace = true,
         });
@@ -715,7 +722,7 @@ fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
     return try std.fmt.allocPrint(allocator, "{d}", .{value});
 }
 
-fn validateInput(input: AddInput) !void {
+fn validateInput(io: std.Io, input: AddInput) !void {
     if (input.url.len == 0 or input.url.len > 8192) return error.InvalidJob;
     if (input.priority < -100 or input.priority > 100) return error.InvalidJob;
     const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
@@ -726,12 +733,10 @@ fn validateInput(input: AddInput) !void {
     if (input.destination.len == 0 or input.destination.len > 4096 or
         std.mem.indexOfScalar(u8, input.destination, 0) != null) return error.InvalidJob;
     if (!std.fs.path.isAbsolute(input.destination)) return error.InvalidDestination;
-    const destination_z = try std.heap.page_allocator.dupeSentinel(u8, input.destination, 0);
-    defer std.heap.page_allocator.free(destination_z);
-    var destination_stat: c.Stat = undefined;
-    if (statPath(destination_z, &destination_stat) != 0 or
-        destination_stat.mode & c.S.IFMT != c.S.IFDIR or
-        access(destination_z, c.W_OK | c.X_OK) != 0)
+    const destination_stat = std.Io.Dir.cwd().statFile(io, input.destination, .{}) catch
+        return error.InvalidDestination;
+    if (destination_stat.kind != .directory) return error.InvalidDestination;
+    std.Io.Dir.accessAbsolute(io, input.destination, .{ .write = true, .execute = true }) catch
         return error.InvalidDestination;
     if (input.idempotency_key.len == 0 or input.idempotency_key.len > 128 or
         !std.unicode.utf8ValidateSlice(input.idempotency_key)) return error.InvalidJob;

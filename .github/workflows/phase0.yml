@@ -1,0 +1,79 @@
+name: Phase 0 native and IPC feasibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-platform:
+    name: Native build and IPC smoke on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build native engine
+        shell: bash
+        run: |
+          mkdir -p zig-out/bin
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download.exe
+          else
+            zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download
+          fi
+
+      - name: Run native IPC, reconnect, progress, transfer, and recovery smoke
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
+          else
+            python tests/integration/ipc_engine.py zig-out/bin/speed-download
+          fi
+
+      - name: Build native SwiftUI client
+        if: runner.os == 'macOS'
+        working-directory: macos/SpeedDownload
+        run: swift build --configuration release
+
+      - name: Install GTK build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev
+
+      - name: Build native GTK client
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S linux/SpeedDownload -B linux/SpeedDownload/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build linux/SpeedDownload/build --parallel
+
+      - name: Set up .NET for WinUI
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build native WinUI client
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish

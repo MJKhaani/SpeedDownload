@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MJKhaani/SpeedDownload/blob/main/docs/protocols/ipc-v1.schema.json",
+  "title": "Speed Download IPC v1 requests",
+  "description": "JSON payload schemas carried inside the 4-byte little-endian IPC frame. This schema covers client requests; transport framing and per-connection handshake ordering are specified in ipc-v1.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/jobsList" },
+    { "$ref": "#/$defs/jobsAdd" },
+    { "$ref": "#/$defs/jobsControl" }
+  ],
+  "$defs": {
+    "requestBase": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "integer" }] },
+        "method": { "type": "string" },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "hello": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "engine.hello" },
+            "params": {
+              "type": "object",
+              "required": ["protocol", "client", "features"],
+              "properties": {
+                "protocol": {
+                  "type": "object",
+                  "required": ["major", "minor"],
+                  "properties": {
+                    "major": { "const": 1 },
+                    "minor": { "type": "integer", "minimum": 0 }
+                  },
+                  "additionalProperties": false
+                },
+                "client": {
+                  "type": "object",
+                  "required": ["kind", "version"],
+                  "properties": {
+                    "kind": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "version": { "type": "string", "minLength": 1, "maxLength": 128 }
+                  },
+                  "additionalProperties": false
+                },
+                "features": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 128 }, "uniqueItems": true }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "jobsList": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "jobs.list" },
+            "params": {
+              "type": "object",
+              "properties": {
+                "offset": { "type": "integer", "minimum": 0 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "jobsAdd": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "jobs.add" },
+            "params": {
+              "type": "object",
+              "required": ["url", "destination", "idempotency_key"],
+              "properties": {
+                "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
+                "name": { "type": ["string", "null"], "maxLength": 255 },
+                "destination": { "type": "string", "minLength": 1, "maxLength": 4096 },
+                "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "priority": { "type": "integer", "minimum": -100, "maximum": 100 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "jobsControl": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "properties": {
+            "method": { "const": "jobs.control" },
+            "params": {
+              "type": "object",
+              "required": ["job_id", "action", "expected_revision"],
+              "properties": {
+                "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "action": { "enum": ["start", "pause", "resume", "retry", "cancel"] },
+                "expected_revision": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}
