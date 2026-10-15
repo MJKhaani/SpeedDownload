@@ -6,6 +6,10 @@
 
 Speed Download is a free, open-source download manager in active development. Its Zig core provides a headless HTTP(S) downloader with interruption recovery, validated parallel ranges, and a local IPC engine. Native SwiftUI (macOS), GTK 4 (Linux), and WinUI 3 (Windows) client source is present; the Linux and Windows clients and all platform runtime integrations still need builds and validation.
 
+## macOS client
+
+![Speed Download macOS client showing transfers and the inspector](Resources/macos-client.png)
+
 ## Project status
 
 - Product requirements and release gates: [`PROJECT.md`](PROJECT.md)
