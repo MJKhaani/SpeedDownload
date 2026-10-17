@@ -7,9 +7,10 @@ offsets, file and piece counts, piece length, and SHA-1 info
 hash as JSON. It does not add a transfer, contact a tracker or peer, or write
 downloaded files.
 
-For a **single-file** v1 torrent with HTTP(S) or UDP trackers in `announce`
+For a v1 torrent with HTTP(S) or UDP trackers in `announce`
 or `announce-list`, the CLI can transfer its payload with
-`speed-download torrent-download <file.torrent> <destination-file>`. It uses
+`speed-download torrent-download <file.torrent> <destination>`. A multi-file
+destination is a directory named by the caller. It uses
 the same SHA-1 piece verification, out-of-order placement, restart rehashing,
 and no-replace publication as `magnet-download`. It reads the `.torrent` from
 the local filesystem. On macOS, Add Download can choose a `.torrent` file
@@ -23,7 +24,12 @@ The parser accepts up to 32 distinct usable tracker URLs and ignores the
 primary `announce` when an `announce-list` is present, following
 [BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in
 file order; within-tier shuffling and successful-tracker promotion are not
-implemented. Multi-file torrents remain unsupported for transfer. Inspection
+implemented. Multi-file downloads assemble the verified flat piece spool into
+a private staging directory, then publish the complete tree without replacing
+an existing destination. A piece that crosses file boundaries is copied into
+both files only after its SHA-1 hash is verified. A stale staging directory is
+removed on retry only when its ownership marker matches the destination.
+Inspection
 rejects a file layout where one file path is also a parent directory of another.
 
 The engine also inspects BitTorrent v1 magnet URIs with
@@ -60,10 +66,10 @@ attempt after pause or restart creates a new session identity.
 DHT is not supported. It does not
 download payload pieces or seed.
 
-The initial single-file transfer path accepts a v1 magnet URI through the
+The transfer path accepts a v1 magnet URI through the
 macOS Add Download dialog or `jobs.add` IPC. The CLI can also use
 `speed-download magnet-download '<magnet-uri>' <destination-file>`. The engine
-retrieves metadata, accepts a single-file v1 torrent, discovers peers from
+retrieves metadata, accepts single- and multi-file v1 torrents, discovers peers from
 `x.pe`, HTTP(S) compact IPv4/IPv6 or dictionary tracker replies, or UDP compact IPv4/IPv6
 tracker replies, and requests 16 KiB blocks
 from TCP peers. It verifies each complete piece against the metainfo SHA-1
@@ -82,7 +88,7 @@ or fails. Piece requests are sequential within each connection, and peers
 are contacted sequentially rather than concurrently.
 
 This is an early compatibility slice. It requests blocks sequentially and
-does not upload or seed. Multi-file torrents, DHT,
+does not upload or seed. File selection, DHT,
 peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a
@@ -106,5 +112,5 @@ Before torrent data can be written, the target platform must also check for
 case-insensitive and Unicode-normalized path collisions against its actual
 filesystem. This read-only inspector does not perform that filesystem check.
 
-Broader tracker/DHT discovery, multi-file path mapping and file selection,
+Broader tracker/DHT discovery, file selection,
 seeding, upload accounting, and swarm interoperability remain incomplete.

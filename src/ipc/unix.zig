@@ -284,7 +284,8 @@ pub fn dispatchMethod(
             const path = source.pathAlloc(arena.allocator(), url) catch break :blk error.InvalidTorrentSource;
             const bytes = std.Io.Dir.readFileAlloc(.cwd(), engine.io, path, arena.allocator(), .limited(torrent.max_metainfo_bytes)) catch break :blk error.InvalidTorrentSource;
             const info = torrent.inspect(arena.allocator(), bytes) catch break :blk error.InvalidTorrentSource;
-            if (!info.single_file) break :blk error.MultiFileTorrentNotYetSupported;
+            const map = torrent.inspectFileMap(arena.allocator(), bytes) catch break :blk error.InvalidTorrentSource;
+            defer map.deinit(arena.allocator());
             const total = std.fmt.allocPrint(arena.allocator(), "{d}", .{info.total_bytes}) catch break :blk error.OutOfMemory;
             const result: http_probe.Result = .{ .final_url = "torrent-file:", .suggested_name = info.name, .total_bytes = total, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Torrent file accepted. The engine verifies each piece and resumes verified pieces." };
             break :blk result;

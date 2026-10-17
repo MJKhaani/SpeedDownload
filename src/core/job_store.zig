@@ -359,8 +359,8 @@ pub const Store = struct {
         defer self.allocator.free(original);
         const bytes = try std.Io.Dir.readFileAlloc(.cwd(), self.io, original, self.allocator, .limited(torrent.max_metainfo_bytes));
         defer self.allocator.free(bytes);
-        const info = try torrent.inspect(self.allocator, bytes);
-        if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
+        const map = try torrent.inspectFileMap(self.allocator, bytes);
+        defer map.deinit(self.allocator);
         const path = try self.torrentSnapshotPath(self.allocator, job_id);
         errdefer self.allocator.free(path);
         var atomic = try std.Io.Dir.createFileAtomic(.cwd(), self.io, path, .{
@@ -1551,8 +1551,9 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
         const torrent = @import("../protocols/torrent/metainfo.zig");
         const bytes = std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(torrent.max_metainfo_bytes)) catch return error.InvalidJob;
         defer allocator.free(bytes);
-        const info = torrent.inspect(allocator, bytes) catch return error.InvalidJob;
-        if (!info.single_file or input.name == null) return error.InvalidJob;
+        const map = torrent.inspectFileMap(allocator, bytes) catch return error.InvalidJob;
+        defer map.deinit(allocator);
+        if (input.name == null) return error.InvalidJob;
     } else {
         const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
         if ((!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https") and

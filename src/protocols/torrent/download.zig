@@ -1,6 +1,7 @@
-//! Initial BitTorrent v1 single-file transfer path. Each independently placed
+//! BitTorrent v1 transfer path. Each independently placed
 //! piece matches its metainfo SHA-1; all partial pieces are rehashed on restart
-//! before any byte is trusted.
+//! before any byte is trusted. Multi-file payloads use a flat verified spool
+//! so pieces crossing file boundaries can resume safely.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -33,14 +34,14 @@ pub fn download(
     @memcpy(wrapped[7 .. 7 + fetched.info.len], fetched.info);
     wrapped[wrapped.len - 1] = 'e';
     const info = try metainfo.inspect(allocator, wrapped);
-    // Even a one-entry multi-file torrent needs a directory root and path map.
-    if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
+    const map = try metainfo.inspectFileMap(allocator, wrapped);
+    defer map.deinit(allocator);
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
-    try transferValidated(allocator, io, info, &link, fetched.peer, destination, expected_sha256, callback, context, &session);
+    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, callback, context, &session);
 }
 
-/// Download a validated single-file v1 `.torrent` using its tracker tiers.
-/// The destination is a full file path and is never replaced on completion.
+/// Download a validated v1 `.torrent` using its tracker tiers. The destination
+/// is a full file path for single-file torrents or a directory for multi-file.
 pub fn downloadTorrentFile(
     allocator: Allocator,
     io: Io,
@@ -53,7 +54,8 @@ pub fn downloadTorrentFile(
     const bytes = try Io.Dir.readFileAlloc(.cwd(), io, torrent_path, allocator, .limited(metainfo.max_metainfo_bytes));
     defer allocator.free(bytes);
     const info = try metainfo.inspect(allocator, bytes);
-    if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
+    const map = try metainfo.inspectFileMap(allocator, bytes);
+    defer map.deinit(allocator);
     const trackers = try metainfo.trackerUrls(allocator, info);
     const peers = allocator.alloc([]u8, 0) catch |err| {
         for (trackers) |tracker| allocator.free(tracker);
@@ -63,7 +65,7 @@ pub fn downloadTorrentFile(
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
     defer link.deinit(allocator);
     const session = try metadata.Session.init(io);
-    try transferValidated(allocator, io, info, &link, null, destination, expected_sha256, callback, context, &session);
+    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, callback, context, &session);
 }
 
 /// Queue worker entry point for a desktop-selected local torrent source URL.
@@ -77,6 +79,7 @@ fn transferValidated(
     allocator: Allocator,
     io: Io,
     info: metainfo.Result,
+    map: metainfo.FileMap,
     link: *const magnet.Result,
     first_peer: ?[]const u8,
     destination: []const u8,
@@ -139,9 +142,67 @@ fn transferValidated(
     try file.sync(io);
     if (callback) |report| if (context) |ctx| try report(ctx, info.total_bytes, info.total_bytes, true);
     try http_download.verifySha256(io, file, expected_sha256);
-    file.close(io);
-    file_open = false;
-    try http_download.publishNoReplace(cwd, io, part_path, destination);
+    if (info.single_file) {
+        file.close(io);
+        file_open = false;
+        try http_download.publishNoReplace(cwd, io, part_path, destination);
+    } else {
+        try publishFileTree(allocator, io, file, map, info.info_hash, destination);
+        file.close(io);
+        file_open = false;
+        cwd.deleteFile(io, part_path) catch {};
+    }
+}
+
+fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.FileMap, info_hash: [20]u8, destination: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    const stage = try std.fmt.allocPrint(allocator, "{s}.part-tree", .{destination});
+    defer allocator.free(stage);
+    // A previous interrupted materialization may be removed only when its
+    // ownership marker matches this exact torrent.
+    const marker = try std.fmt.allocPrint(allocator, "{s}/.speed-download-stage", .{stage});
+    defer allocator.free(marker);
+    if (cwd.statFile(io, stage, .{})) |_| {
+        const owner = try cwd.readFileAlloc(io, marker, allocator, .limited(4096));
+        defer allocator.free(owner);
+        if (!std.mem.eql(u8, owner, &info_hash)) return error.ForeignStagingDirectory;
+        try cwd.deleteTree(io, stage);
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    try cwd.createDir(io, stage, Io.File.Permissions.fromMode(0o700));
+    var stage_owned = true;
+    errdefer if (stage_owned) cwd.deleteTree(io, stage) catch {};
+    {
+        const marker_file = try cwd.createFile(io, marker, .{ .exclusive = true, .permissions = Io.File.Permissions.fromMode(0o600) });
+        defer marker_file.close(io);
+        try marker_file.writeStreamingAll(io, &info_hash);
+        try marker_file.sync(io);
+    }
+    var buffer: [64 * 1024]u8 = undefined;
+    for (map.files) |entry| {
+        if (std.mem.eql(u8, entry.path, ".speed-download-stage") or std.mem.startsWith(u8, entry.path, ".speed-download-stage/")) return error.ReservedTorrentPath;
+        const relative = try std.fs.path.join(allocator, &.{ stage, entry.path });
+        defer allocator.free(relative);
+        if (std.fs.path.dirname(relative)) |parent| try cwd.createDirPath(io, parent);
+        const output = try cwd.createFile(io, relative, .{ .exclusive = true, .permissions = Io.File.Permissions.fromMode(0o600), .resolve_beneath = true });
+        errdefer output.close(io);
+        var copied: u64 = 0;
+        while (copied < entry.length) {
+            const amount: usize = @intCast(@min(buffer.len, entry.length - copied));
+            if (try spool.readPositionalAll(io, buffer[0..amount], entry.offset + copied) != amount) return error.ShortPartialFileRead;
+            try output.writeStreamingAll(io, buffer[0..amount]);
+            copied += amount;
+        }
+        try output.sync(io);
+        output.close(io);
+    }
+    try Io.Dir.renamePreserve(cwd, stage, cwd, destination, io);
+    stage_owned = false;
+    const published_marker = try std.fmt.allocPrint(allocator, "{s}/.speed-download-stage", .{destination});
+    defer allocator.free(published_marker);
+    cwd.deleteFile(io, published_marker) catch {};
 }
 
 fn pieceOffset(info: metainfo.Result, index: u64) !u64 {
