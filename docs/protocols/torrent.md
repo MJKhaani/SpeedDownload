@@ -44,6 +44,11 @@ pause/cancel controls, progress, and optional whole-file SHA-256 check apply.
 The engine first requests payload pieces from the peer that supplied the
 metadata. If that peer cannot continue, it announces the verified downloaded
 byte count and remaining size to trackers and tries other discovered peers.
+For each TCP peer, BITFIELD and HAVE messages record which pieces it reports;
+the engine moves to another peer when the next required piece is known to be
+missing. A peer that sends no bitfield leaves availability unknown until a
+piece request succeeds or fails. Requests are still sequential, so a swarm
+with complementary partial peers may not complete.
 
 This is an early compatibility slice. It requests blocks sequentially and
 does not upload or seed. Multi-file torrents, DHT, IPv6 compact

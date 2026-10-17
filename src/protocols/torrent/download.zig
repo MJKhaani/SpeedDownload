@@ -169,18 +169,25 @@ fn transferFromPeer(
 
     var choked = true;
     var frame_buffer: [128 * 1024]u8 = undefined;
+    var availability: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
+    var bitfield_known = false;
     while (next_piece.* < info.piece_count) {
         const piece_index = next_piece.*;
         const size = try pieceBytes(info, piece_index);
         var cursor: usize = 0;
         var unchoke_messages: usize = 0;
+        var has_piece: ?bool = if (pieceInBitfield(&availability, piece_index)) true else if (bitfield_known) false else null;
+        if (has_piece == false) return error.PeerMissingPiece;
         while (cursor < size) {
             while (choked) {
                 unchoke_messages += 1;
                 if (unchoke_messages > 128) return error.PeerChoked;
                 const frame = try readFrame(io, stream, &frame_buffer);
+                try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
+                if (has_piece == false) return error.PeerMissingPiece;
                 if (frame.len == 1 and frame[0] == 1) choked = false;
             }
+            if (has_piece == false) return error.PeerMissingPiece;
             const amount = @min(block_size, size - cursor);
             var request: [17]u8 = .{ 0, 0, 0, 13, 6 } ++ @as([12]u8, @splat(0));
             std.mem.writeInt(u32, request[5..9], @intCast(piece_index), .big);
@@ -194,6 +201,8 @@ fn transferFromPeer(
                 if (messages > 128) return error.PeerPieceUnavailable;
                 const frame = try readFrame(io, stream, &frame_buffer);
                 if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
+                try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
+                if (has_piece == false) return error.PeerMissingPiece;
                 if (frame.len != amount + 9 or frame[0] != 7) continue;
                 const index = std.mem.readInt(u32, frame[1..5], .big);
                 const begin = std.mem.readInt(u32, frame[5..9], .big);
@@ -214,6 +223,37 @@ fn transferFromPeer(
         next_piece.* += 1;
         if (callback) |report| if (context) |ctx| try report(ctx, @min(try pieceOffset(info, next_piece.*), info.total_bytes), info.total_bytes, true);
     }
+}
+
+// A missing bitfield leaves availability unknown; a received bitfield is
+// authoritative for the current piece until a later HAVE announces it.
+fn updateAvailability(frame: []const u8, piece_index: u64, piece_count: u64, bitfield: []u8, bitfield_known: *bool, has_piece: *?bool) !void {
+    if (frame.len == 0) return;
+    switch (frame[0]) {
+        4 => {
+            if (frame.len != 5) return error.InvalidPeerHave;
+            const announced = std.mem.readInt(u32, frame[1..5], .big);
+            if (announced >= piece_count) return error.InvalidPeerHave;
+            bitfield[@as(usize, @intCast(announced / 8))] |= @as(u8, 0x80) >> @as(u3, @intCast(announced % 8));
+            if (announced == piece_index) has_piece.* = true;
+        },
+        5 => {
+            const bitfield_len = std.math.divCeil(u64, piece_count, 8) catch return error.InvalidTorrentPieces;
+            if (frame.len != bitfield_len + 1 or bitfield_len > bitfield.len or bitfield_known.*) return error.InvalidPeerBitfield;
+            const spare: u3 = @intCast((8 - piece_count % 8) % 8);
+            if (spare != 0 and frame[frame.len - 1] & ((@as(u8, 1) << spare) - 1) != 0) return error.InvalidPeerBitfield;
+            @memcpy(bitfield[0..@intCast(bitfield_len)], frame[1..]);
+            bitfield_known.* = true;
+            has_piece.* = pieceInBitfield(bitfield, piece_index);
+        },
+        else => {},
+    }
+}
+
+fn pieceInBitfield(bitfield: []const u8, piece_index: u64) bool {
+    const index: usize = @intCast(piece_index / 8);
+    const bit: u3 = @intCast(piece_index % 8);
+    return bitfield[index] & (@as(u8, 0x80) >> bit) != 0;
 }
 
 fn readExact(io: Io, stream: Io.net.Stream, output: []u8) !void {
