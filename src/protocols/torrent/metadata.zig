@@ -9,6 +9,18 @@ const block_size = 16 * 1024;
 const max_message = 128 * 1024;
 const timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
 
+pub const Session = struct {
+    peer_id: [20]u8,
+    key: [4]u8,
+
+    pub fn init(io: Io) !Session {
+        var result: Session = undefined;
+        try io.randomSecure(&result.peer_id);
+        try io.randomSecure(&result.key);
+        return result;
+    }
+};
+
 pub fn fetch(allocator: Allocator, io: Io, link: *const magnet.Result) ![]u8 {
     const found = try fetchWithSource(allocator, io, link);
     allocator.free(found.peer);
@@ -28,9 +40,14 @@ pub const Fetched = struct {
 /// Fetch hash-verified metadata and retain the peer that supplied it. Both
 /// owned slices must be released by the caller.
 pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result) !Fetched {
+    const session = try Session.init(io);
+    return fetchWithSourceSession(allocator, io, link, &session);
+}
+
+pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.Result, session: *const Session) !Fetched {
     var last_error: anyerror = error.NoReachablePeer;
     for (link.peers) |peer| {
-        const bytes = fetchPeer(allocator, io, peer, link.info_hash) catch |err| {
+        const bytes = fetchPeer(allocator, io, peer, link.info_hash, session) catch |err| {
             last_error = err;
             continue;
         };
@@ -39,7 +56,7 @@ pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result)
     }
     for (link.trackers) |tracker| {
         const parsed = std.Uri.parse(tracker) catch continue;
-        const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1) catch |err| {
+        const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session) catch |err| {
             last_error = err;
             continue;
         };
@@ -48,7 +65,7 @@ pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result)
             allocator.free(peers);
         }
         for (peers) |peer| {
-            const bytes = fetchPeer(allocator, io, peer, link.info_hash) catch |err| {
+            const bytes = fetchPeer(allocator, io, peer, link.info_hash, session) catch |err| {
                 last_error = err;
                 continue;
             };
@@ -62,35 +79,43 @@ pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result)
 /// Discover compact tracker peers for a transfer. `downloaded` counts verified
 /// payload bytes; `total_bytes` comes from hash-verified torrent metadata.
 /// The caller owns every returned address and the outer slice.
-pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, downloaded: u64, total_bytes: u64) ![][]u8 {
+pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, downloaded: u64, total_bytes: u64, session: *const Session) ![][]u8 {
     if (downloaded > total_bytes) return error.InvalidTorrentProgress;
     var peers: std.ArrayList([]u8) = .empty;
     errdefer {
         for (peers.items) |peer| allocator.free(peer);
         peers.deinit(allocator);
     }
-    for (link.peers) |peer| try peers.append(allocator, try allocator.dupe(u8, peer));
+    for (link.peers) |peer| {
+        const owned = try allocator.dupe(u8, peer);
+        peers.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+    }
     for (link.trackers) |tracker| {
         const parsed = std.Uri.parse(tracker) catch continue;
-        const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded) catch continue;
+        const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session) catch continue;
         defer allocator.free(discovered);
-        for (discovered) |peer| {
-            if (peers.items.len >= 80) {
-                allocator.free(peer);
-            } else try peers.append(allocator, peer);
-        }
+        const take = @min(discovered.len, 80 - peers.items.len);
+        peers.ensureUnusedCapacity(allocator, take) catch |err| {
+            for (discovered) |peer| allocator.free(peer);
+            return err;
+        };
+        for (discovered[0..take]) |peer| peers.appendAssumeCapacity(peer);
+        for (discovered[take..]) |peer| allocator.free(peer);
     }
     return peers.toOwnedSlice(allocator);
 }
 
-fn discoverTrackerPeers(allocator: Allocator, io: Io, tracker: []const u8, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64) ![][]u8 {
-    if (std.ascii.eqlIgnoreCase(uri.scheme, "udp")) return discoverUdpPeers(allocator, io, uri, info_hash, downloaded, left);
+fn discoverTrackerPeers(allocator: Allocator, io: Io, tracker: []const u8, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64, session: *const Session) ![][]u8 {
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "udp")) return discoverUdpPeers(allocator, io, uri, info_hash, downloaded, left, session);
     if (std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https"))
-        return discoverHttpPeers(allocator, io, tracker, info_hash, downloaded, left);
+        return discoverHttpPeers(allocator, io, tracker, info_hash, downloaded, left, session);
     return error.UnsupportedTrackerScheme;
 }
 
-fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64) ![][]u8 {
+fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64, session: *const Session) ![][]u8 {
     if (uri.user != null or uri.password != null or uri.fragment != null) return error.InvalidTracker;
     const port = uri.port orelse return error.InvalidTracker;
     if (port == 0) return error.InvalidTracker;
@@ -126,10 +151,6 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
         } else |_| {}
     }
     if (ipv4 == null and ipv6 == null) return error.TrackerAddressUnavailable;
-    var peer_id: [20]u8 = undefined;
-    try io.randomSecure(&peer_id);
-    var key_bytes: [4]u8 = undefined;
-    try io.randomSecure(&key_bytes);
     var peers: std.ArrayList([]u8) = .empty;
     errdefer {
         for (peers.items) |peer| allocator.free(peer);
@@ -140,7 +161,7 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
     const addresses: [2]?Io.net.IpAddress = .{ ipv4, ipv6 };
     for (addresses) |maybe_address| {
         const address = maybe_address orelse continue;
-        const found = discoverUdpPeersAtAddress(allocator, io, address, info_hash, downloaded, left, peer_id, key_bytes) catch |err| {
+        const found = discoverUdpPeersAtAddress(allocator, io, address, info_hash, downloaded, left, session) catch |err| {
             last_error = err;
             continue;
         };
@@ -160,7 +181,7 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
     return peers.toOwnedSlice(allocator);
 }
 
-fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAddress, info_hash: [20]u8, downloaded: u64, left: u64, peer_id: [20]u8, key_bytes: [4]u8) ![][]u8 {
+fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAddress, info_hash: [20]u8, downloaded: u64, left: u64, session: *const Session) ![][]u8 {
     const local: Io.net.IpAddress = switch (address) {
         .ip4 => .{ .ip4 = .unspecified(0) },
         .ip6 => .{ .ip6 = .unspecified(0) },
@@ -191,11 +212,11 @@ fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAdd
     std.mem.writeInt(u32, announce[8..12], 1, .big);
     std.mem.writeInt(u32, announce[12..16], announce_transaction, .big);
     @memcpy(announce[16..36], &info_hash);
-    @memcpy(announce[36..56], &peer_id);
+    @memcpy(announce[36..56], &session.peer_id);
     std.mem.writeInt(u64, announce[56..64], downloaded, .big);
     std.mem.writeInt(u64, announce[64..72], left, .big);
     std.mem.writeInt(u32, announce[80..84], 2, .big); // started
-    @memcpy(announce[88..92], &key_bytes);
+    @memcpy(announce[88..92], &session.key);
     std.mem.writeInt(u32, announce[92..96], 50, .big);
     try socket.sendTimeout(io, &address, &announce, udp_timeout);
     const received = try socket.receiveTimeout(io, &response_buffer, udp_timeout);
@@ -211,14 +232,12 @@ fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAdd
         peersFromCompact6(allocator, received.data[20..]);
 }
 
-fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_hash: [20]u8, downloaded: u64, left: u64) ![][]u8 {
-    var peer_id: [20]u8 = undefined;
-    try io.randomSecure(&peer_id);
+fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_hash: [20]u8, downloaded: u64, left: u64, session: *const Session) ![][]u8 {
     const encoded_hash = percentEncode(&info_hash);
-    const encoded_peer = percentEncode(&peer_id);
+    const encoded_peer = percentEncode(&session.peer_id);
     const separator: []const u8 = if (std.mem.indexOfScalar(u8, tracker, '?') == null) "?" else "&";
-    const url = try std.fmt.allocPrint(allocator, "{s}{s}info_hash={s}&peer_id={s}&port=0&uploaded=0&downloaded={d}&left={d}&compact=1&numwant=50", .{
-        tracker, separator, &encoded_hash, &encoded_peer, downloaded, left,
+    const url = try std.fmt.allocPrint(allocator, "{s}{s}info_hash={s}&peer_id={s}&key={d}&port=0&uploaded=0&downloaded={d}&left={d}&compact=1&numwant=50", .{
+        tracker, separator, &encoded_hash, &encoded_peer, std.mem.readInt(u32, &session.key, .big), downloaded, left,
     });
     defer allocator.free(url);
     const uri = std.Uri.parse(url) catch return error.InvalidTracker;
@@ -406,7 +425,7 @@ fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
     return peers;
 }
 
-fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u8) ![]u8 {
+fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u8, session: *const Session) ![]u8 {
     const separator = std.mem.lastIndexOfScalar(u8, address, ':') orelse return error.InvalidPeerAddress;
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
     const host = address[0..separator];
@@ -431,7 +450,7 @@ fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u
     @memcpy(hello[1..20], "BitTorrent protocol");
     hello[25] = 0x10;
     @memcpy(hello[28..48], &info_hash);
-    try io.randomSecure(hello[48..68]);
+    @memcpy(hello[48..68], &session.peer_id);
     try wire.send(&hello);
     var response: [68]u8 = undefined;
     try wire.readExact(&response);

@@ -24,7 +24,8 @@ pub fn download(
 ) !void {
     var link = try magnet.inspect(allocator, url);
     defer link.deinit(allocator);
-    const fetched = try metadata.fetchWithSource(allocator, io, &link);
+    const session = try metadata.Session.init(io);
+    const fetched = try metadata.fetchWithSourceSession(allocator, io, &link, &session);
     defer fetched.deinit(allocator);
     const wrapped = try allocator.alloc(u8, fetched.info.len + "d4:info".len + 1);
     defer allocator.free(wrapped);
@@ -35,7 +36,7 @@ pub fn download(
     // Even a one-entry multi-file torrent needs a directory root and path map.
     if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
-    try transferValidated(allocator, io, info, &link, fetched.peer, destination, expected_sha256, callback, context);
+    try transferValidated(allocator, io, info, &link, fetched.peer, destination, expected_sha256, callback, context, &session);
 }
 
 /// Download a validated single-file v1 `.torrent` using its tracker tiers.
@@ -61,7 +62,8 @@ pub fn downloadTorrentFile(
     };
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
     defer link.deinit(allocator);
-    try transferValidated(allocator, io, info, &link, null, destination, expected_sha256, callback, context);
+    const session = try metadata.Session.init(io);
+    try transferValidated(allocator, io, info, &link, null, destination, expected_sha256, callback, context, &session);
 }
 
 /// Queue worker entry point for a desktop-selected local torrent source URL.
@@ -81,6 +83,7 @@ fn transferValidated(
     expected_sha256: ?[32]u8,
     callback: ?ProgressCallback,
     context: ?*anyopaque,
+    session: *const metadata.Session,
 ) !void {
     const cwd = Io.Dir.cwd();
     if (cwd.statFile(io, destination, .{})) |_| return error.DestinationExists else |err| switch (err) {
@@ -110,20 +113,20 @@ fn transferValidated(
     if (remaining != 0) {
         var last_error: anyerror = error.NoPeerHasPieces;
         if (first_peer) |peer| {
-            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
+            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session) catch |err| {
                 if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                 last_error = err;
             };
         }
         if (remaining != 0) {
-            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, info.total_bytes);
+            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, info.total_bytes, session);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);
             }
             for (peers) |peer| {
                 if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
-                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
+                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session) catch |err| {
                     if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                     last_error = err;
                     continue;
@@ -182,6 +185,7 @@ fn transferFromPeer(
     verified_bytes: *u64,
     callback: ?ProgressCallback,
     context: ?*anyopaque,
+    session: *const metadata.Session,
 ) !void {
     const separator = std.mem.lastIndexOfScalar(u8, address, ':') orelse return error.InvalidPeerAddress;
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
@@ -205,7 +209,7 @@ fn transferFromPeer(
     hello[0] = 19;
     @memcpy(hello[1..20], "BitTorrent protocol");
     @memcpy(hello[28..48], &info.info_hash);
-    try io.randomSecure(hello[48..68]);
+    @memcpy(hello[48..68], &session.peer_id);
     try socket_writer.interface.writeAll(&hello);
     try socket_writer.interface.flush();
     var response: [68]u8 = undefined;

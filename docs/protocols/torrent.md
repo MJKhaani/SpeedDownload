@@ -50,6 +50,9 @@ HTTP(S) trackers may return compact IPv4 `peers`, IPv6 `peers6`, or BEP 3
 accepts IPv4 and IPv6 responses according to the tracker socket's address
 family. For dual-stack hostnames, it announces to one address of each family
 with the same peer ID and key, and keeps peers from either successful response.
+Each transfer attempt also reuses that peer ID and key across metadata
+discovery, HTTP(S)/UDP tracker announces, and TCP peer handshakes. A new
+attempt after pause or restart creates a new session identity.
 DHT is not supported. It does not
 download payload pieces or seed.
 
