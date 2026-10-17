@@ -2,7 +2,8 @@
 
 The engine can inspect a local BitTorrent v1 `.torrent` file with
 `speed-download torrent-info <file.torrent>`. The command prints its name,
-tracker, total bytes, file and piece counts, piece length, and SHA-1 info
+tracker, total bytes, validated relative file paths with lengths and byte
+offsets, file and piece counts, piece length, and SHA-1 info
 hash as JSON. It does not add a transfer, contact a tracker or peer, or write
 downloaded files.
 
@@ -22,7 +23,8 @@ The parser accepts up to 32 distinct usable tracker URLs and ignores the
 primary `announce` when an `announce-list` is present, following
 [BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in
 file order; within-tier shuffling and successful-tracker promotion are not
-implemented. Multi-file torrents remain unsupported for transfer.
+implemented. Multi-file torrents remain unsupported for transfer. Inspection
+rejects a file layout where one file path is also a parent directory of another.
 
 The engine also inspects BitTorrent v1 magnet URIs with
 `speed-download magnet-info 'magnet:?xt=urn:btih:…&dn=…&tr=…&x.pe=host:port'`.

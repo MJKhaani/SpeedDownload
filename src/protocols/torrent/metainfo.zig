@@ -21,6 +21,23 @@ pub const Result = struct {
     info_hash: [20]u8,
 };
 
+pub const FileEntry = struct {
+    path: []u8,
+    length: u64,
+    offset: u64,
+};
+
+pub const FileMap = struct {
+    root_name: []const u8,
+    files: []FileEntry,
+    total_bytes: u64,
+
+    pub fn deinit(self: FileMap, allocator: Allocator) void {
+        for (self.files) |file| allocator.free(file.path);
+        allocator.free(self.files);
+    }
+};
+
 const Cursor = struct {
     bytes: []const u8,
     position: usize = 0,
@@ -274,6 +291,138 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
         .piece_hashes = piece_hashes,
         .info_hash = info_hash,
     };
+}
+
+/// Return a validated, owned mapping from torrent byte offsets to portable
+/// relative paths. The root name remains borrowed from `bytes`.
+pub fn inspectFileMap(allocator: Allocator, bytes: []const u8) !FileMap {
+    const info = try inspect(allocator, bytes);
+    var files: std.ArrayList(FileEntry) = .empty;
+    errdefer {
+        for (files.items) |file| allocator.free(file.path);
+        files.deinit(allocator);
+    }
+    if (info.single_file) {
+        const path = try allocator.dupe(u8, info.name);
+        errdefer allocator.free(path);
+        try files.append(allocator, .{
+            .path = path,
+            .length = info.total_bytes,
+            .offset = 0,
+        });
+    } else {
+        var cursor: Cursor = .{ .bytes = bytes };
+        try cursor.take('d');
+        while (cursor.position < bytes.len and bytes[cursor.position] != 'e') {
+            const key = try cursor.string();
+            if (!std.mem.eql(u8, key, "info")) {
+                try cursor.skip(1);
+                continue;
+            }
+            try cursor.take('d');
+            while (cursor.position < bytes.len and bytes[cursor.position] != 'e') {
+                const info_key = try cursor.string();
+                if (std.mem.eql(u8, info_key, "files")) {
+                    try parseFileMapEntries(allocator, &cursor, &files);
+                } else try cursor.skip(2);
+            }
+            try cursor.take('e');
+        }
+        try cursor.take('e');
+    }
+    if (files.items.len != info.file_count) return error.InvalidTorrentFile;
+    var expected_offset: u64 = 0;
+    for (files.items) |file| {
+        if (file.offset != expected_offset) return error.InvalidTorrentFile;
+        expected_offset = std.math.add(u64, expected_offset, file.length) catch return error.TorrentSizeOverflow;
+    }
+    if (expected_offset != info.total_bytes) return error.InvalidTorrentFile;
+    try validateFileDirectoryLayout(allocator, files.items);
+    return .{ .root_name = info.name, .files = try files.toOwnedSlice(allocator), .total_bytes = info.total_bytes };
+}
+
+fn parseFileMapEntries(allocator: Allocator, cursor: *Cursor, files: *std.ArrayList(FileEntry)) !void {
+    try cursor.take('l');
+    var offset: u64 = 0;
+    while (cursor.position < cursor.bytes.len and cursor.bytes[cursor.position] != 'e') {
+        if (files.items.len >= max_files) return error.TorrentTooManyFiles;
+        try cursor.take('d');
+        var length: ?u64 = null;
+        var path: ?[]u8 = null;
+        errdefer if (path) |value| allocator.free(value);
+        while (cursor.position < cursor.bytes.len and cursor.bytes[cursor.position] != 'e') {
+            const key = try cursor.string();
+            if (std.mem.eql(u8, key, "length")) {
+                const value = try cursor.integer();
+                if (value < 0) return error.InvalidTorrentLength;
+                length = @intCast(value);
+            } else if (std.mem.eql(u8, key, "path")) {
+                path = try parseFileMapPath(allocator, cursor);
+            } else try cursor.skip(2);
+        }
+        try cursor.take('e');
+        const file_path = path orelse return error.InvalidTorrentFile;
+        const file_length = length orelse return error.InvalidTorrentFile;
+        try files.append(allocator, .{ .path = file_path, .length = file_length, .offset = offset });
+        path = null;
+        offset = std.math.add(u64, offset, file_length) catch return error.TorrentSizeOverflow;
+    }
+    try cursor.take('e');
+}
+
+fn parseFileMapPath(allocator: Allocator, cursor: *Cursor) ![]u8 {
+    try cursor.take('l');
+    var components: std.ArrayList([]const u8) = .empty;
+    defer components.deinit(allocator);
+    var total_length: usize = 0;
+    while (cursor.position < cursor.bytes.len and cursor.bytes[cursor.position] != 'e') {
+        if (components.items.len >= 64) return error.TorrentPathTooDeep;
+        const component = try cursor.string();
+        if (!safeComponent(component)) return error.UnsafeTorrentPath;
+        total_length = try std.math.add(usize, total_length, component.len + @intFromBool(components.items.len != 0));
+        try components.append(allocator, component);
+    }
+    try cursor.take('e');
+    if (components.items.len == 0) return error.UnsafeTorrentPath;
+    const path = try allocator.alloc(u8, total_length);
+    var position: usize = 0;
+    for (components.items, 0..) |component, index| {
+        if (index != 0) {
+            path[position] = '/';
+            position += 1;
+        }
+        @memcpy(path[position..][0..component.len], component);
+        position += component.len;
+    }
+    return path;
+}
+
+fn validateFileDirectoryLayout(allocator: Allocator, files: []const FileEntry) !void {
+    var file_paths = std.StringHashMap(void).init(allocator);
+    defer file_paths.deinit();
+    var directory_paths = std.StringHashMap(void).init(allocator);
+    defer directory_paths.deinit();
+    var directory_keys: std.ArrayList([]u8) = .empty;
+    defer {
+        for (directory_keys.items) |path| allocator.free(path);
+        directory_keys.deinit(allocator);
+    }
+    for (files) |file| {
+        if (file_paths.contains(file.path) or directory_paths.contains(file.path)) return error.ConflictingTorrentPath;
+        var offset: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, file.path, offset, '/')) |slash| {
+            const parent = file.path[0..slash];
+            if (file_paths.contains(parent)) return error.ConflictingTorrentPath;
+            if (!directory_paths.contains(parent)) {
+                const owned = try allocator.dupe(u8, parent);
+                errdefer allocator.free(owned);
+                try directory_paths.put(owned, {});
+                try directory_keys.append(allocator, owned);
+            }
+            offset = slash + 1;
+        }
+        try file_paths.put(file.path, {});
+    }
 }
 
 /// Return owned tracker URLs from BEP 12 tiers, or the primary announce URL

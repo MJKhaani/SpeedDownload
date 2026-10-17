@@ -72,6 +72,8 @@ fn runTorrentInfo(init: std.process.Init, path: []const u8) !void {
     const bytes = try std.Io.Dir.readFileAlloc(.cwd(), init.io, path, init.gpa, .limited(torrent_metainfo.max_metainfo_bytes));
     defer init.gpa.free(bytes);
     const info = try torrent_metainfo.inspect(init.gpa, bytes);
+    const file_map = try torrent_metainfo.inspectFileMap(init.gpa, bytes);
+    defer file_map.deinit(init.gpa);
     var hash_hex: [40]u8 = undefined;
     const alphabet = "0123456789abcdef";
     for (info.info_hash, 0..) |byte, index| {
@@ -83,6 +85,7 @@ fn runTorrentInfo(init: std.process.Init, path: []const u8) !void {
         .announce = info.announce,
         .total_bytes = info.total_bytes,
         .file_count = info.file_count,
+        .files = file_map.files,
         .piece_length = info.piece_length,
         .piece_count = info.piece_count,
         .info_hash = &hash_hex,
