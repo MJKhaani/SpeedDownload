@@ -1,13 +1,13 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, macOS/Linux Unix transport with same-UID checks, Windows named-pipe source with a user/session DACL, and persistent `jobs.add`/`jobs.list`/`jobs.control`/`jobs.reorder`/`jobs.delete` RPCs are implemented. The listener is reachable via `speed-download engine`; `jobs.control` starts, pauses, resumes, retries, and cancels jobs. `jobs.reorder` changes the persisted FIFO position of inactive jobs; `jobs.delete` removes an inactive job record and optionally its partial data, without deleting a completed destination file. Linux GTK and Windows WinUI client source is present. Windows engine cross-compiles for x86_64; Windows runtime and native client validation remain pending. Event subscriptions are not implemented.
+- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, macOS/Linux Unix transport with same-UID checks, Windows named-pipe source with a user/session DACL, and persistent `jobs.add`/`jobs.list`/`jobs.control`/`jobs.set-bandwidth`/`jobs.reorder`/`jobs.delete` RPCs are implemented. The listener is reachable via `speed-download engine`; `jobs.control` starts, pauses, resumes, retries, and cancels jobs. `jobs.set-bandwidth` changes a saved per-job speed cap while a transfer is active; `jobs.reorder` changes the persisted FIFO position of inactive jobs; `jobs.delete` removes an inactive job record and optionally its partial data, without deleting a completed destination file. Linux GTK and Windows WinUI client source is present. Windows engine cross-compiles for x86_64; Windows runtime and native client validation remain pending. Event subscriptions are not implemented.
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
 
 ## 1. Contract overview
 
-The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, `session.zig` enforces per-connection handshake state and dispatches application methods, and `root.zig` composes framed message handling. The shared client-request schema is [`ipc-v1.schema.json`](ipc-v1.schema.json). `unix.zig` provides an AF_UNIX listener for macOS/Linux, validates private runtime-directory ownership/mode, restricts the socket to 0600, checks peer UID, refuses an existing endpoint, handles up to 32 client sessions concurrently, and applies 30-second socket read/write timeouts. `windows.zig` provides a byte-stream named pipe scoped to the current user SID and session, with a private user/SYSTEM DACL, `PIPE_REJECT_REMOTE_CLIENTS`, and first-instance ownership to prevent a second engine from sharing the endpoint. Transfer workers run independently from the listener, with a four-worker global cap and two-worker per-host cap. `core/job_store.zig` persists jobs atomically and exposes list, control, and progress snapshots; mutations are acknowledged only after persistence. To avoid persisting common inline secrets, this first implementation rejects URLs with user info, query strings, or fragments. The native CI smoke in `tests/integration/ipc_engine.py` exercises handshake, list, reconnect, live progress, transfer, and persistence after engine restart on each OS runner. Successful compilation or configured CI does not demonstrate validated OS behavior until its native job passes.
+The current Zig implementation lives in `src/ipc/`: `frame.zig` encodes and decodes bounded JSON frames, `hello.zig` validates `engine.hello` and builds the negotiated response, `session.zig` enforces per-connection handshake state and dispatches application methods, and `root.zig` composes framed message handling. The shared client-request schema is [`ipc-v1.schema.json`](ipc-v1.schema.json). `unix.zig` provides an AF_UNIX listener for macOS/Linux, validates private runtime-directory ownership/mode, restricts the socket to 0600, checks peer UID, refuses an existing endpoint, handles up to 32 client sessions concurrently, and applies 30-second socket read/write timeouts. `windows.zig` provides a byte-stream named pipe scoped to the current user SID and session, with a private user/SYSTEM DACL, `PIPE_REJECT_REMOTE_CLIENTS`, and first-instance ownership to prevent a second engine from sharing the endpoint. Transfer workers run independently from the listener, with a four-worker global cap and two-worker per-host cap. `core/job_store.zig` persists jobs atomically and exposes list, control, and progress snapshots; mutations are acknowledged only after persistence. The job store rejects URLs with user info or fragments. Query strings are retained in the private job store when present and must be treated as sensitive. The native CI smoke in `tests/integration/ipc_engine.py` exercises handshake, list, reconnect, live progress, transfer, and persistence after engine restart on each OS runner. Successful compilation or configured CI does not demonstrate validated OS behavior until its native job passes.
 
 The engine is an **independent single-instance per-user daemon**. Client processes make duplex requests and subscriptions to it; the engine has the only writable copy of download history, jobs, and transfer workers.
 
@@ -61,9 +61,11 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `engine.hello` | Version + client capabilities | Negotiated version + engine ID | First method on every connection |
 | `engine.status` | `{}` | Engine uptime/capabilities/state | No secrets, never leaks credentials |
 | `jobs.list` | Pagination/safe filters | Authoritative job summaries + revision | Bounded page size |
+| `jobs.wait` | In-memory change cursor | New cursor + changed flag, within 5 seconds | Bounded long poll; client fetches a fresh `jobs.list` snapshot when changed |
 | `jobs.get` | `job_id` | Detailed state/segments | Redacted sensitive URL metadata |
-| `jobs.add` | URL, optional name/destination/priority, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); require an absolute existing writable destination directory; validate URL and idempotent retries |
+| `jobs.add` | URL, optional name/priority/`expected_sha256`/`bandwidth_limit_bytes_per_second`, destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); `expected_sha256` is an optional 64-character hexadecimal digest checked before completion; bandwidth zero means no per-job cap; require an absolute existing writable destination directory; validate URL and idempotent retries |
 | `jobs.control` | `job_id`, action (`start`, `pause`, `resume`, `cancel`, `retry`), `expected_revision` | Updated job state/revision | Start fills scheduler slots; retry moves a failed job back to the queue; active pause/cancel persists `requested_control` and returns the still-downloading job; worker applies it at its next progress callback; reject stale revisions and per-host cap violations |
+| `jobs.set-bandwidth` | `job_id`, `expected_revision`, `bandwidth_limit_bytes_per_second` | Updated revision and limit | Persists a per-job cap and applies it to active workers at their next progress callback; zero removes the per-job cap while the global cap still applies |
 | `jobs.reorder` | `job_id`, zero-based `position`, `expected_revision` | Updated position and revision | Only queued, scheduled, paused, or retry-wait jobs; persist order atomically; reject out-of-range position and stale revision |
 | `jobs.delete` | `job_id`, `expected_revision`, optional `delete_partial` | Deleted job identifier | Reject active jobs and stale revisions; preserve completed destination files; partial file cleanup is opt-in |
 | `jobs.start` / `jobs.pause` / `jobs.resume` / `jobs.retry` | `job_id`, key, optional `expected_revision` | Updated job state/revision | Valid state transitions, idempotent operations |
@@ -76,6 +78,43 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `torrents.selectFiles` | Torrent ID/file IDs, key | Updated selection | Validate IDs/paths and prevent traversal |
 
 Final argument/result JSON Schemas must be committed and unit-tested before method implementations are treated as stable. Client-specific visual design is not part of this protocol.
+
+### 4.1 Persisted user settings
+
+`settings.get` returns the complete versioned engine-owned settings document. `settings.update` accepts the complete validated document under `params.settings`; updates are atomically persisted before acknowledgment. Schema version 2 includes `queue_schedule_slots`, a 168-element Sunday-first Boolean array, and `bandwidth_schedule_slots`, a 168-element Sunday-first array of `global_limit | limited`. Index is `day * 24 + hour`; each cell applies to the hour beginning at that hour in the user's current local time zone. `queue_schedule_enabled` and `bandwidth_schedule_enabled` determine whether the respective grid is active. The global and scheduled limited bandwidth values are decimal bytes per second; zero means unlimited. Version 1 documents migrate by retaining shared fields and filling queue cells as active and bandwidth cells as global-limit.
+
+`debug_log_enabled` is a Boolean settings field, default `false`. When enabled, the engine writes redacted action and outcome records to `engine-debug.log` in the same per-user state directory as `settings.json`. The log is capped at approximately 4 MiB and is not created while debug mode is disabled.
+
+For HTTP probes and downloads, a custom `http://` or `https://` proxy endpoint is applied to every request, including range probes and multipart workers. Proxy URLs containing credentials are rejected by settings validation. Unsupported proxy schemes fail closed rather than silently making a direct request. On macOS, `system` mode reads static HTTP and HTTPS proxy servers from `scutil --proxy` and honors simple-host, exact-host, and wildcard-host exceptions for the original request host. The lookup is cached for 30 seconds. PAC, auto-discovery, SOCKS, CIDR exceptions, redirected-host reevaluation, and headless Keychain proxy authentication remain pending; unsupported automatic configurations fail closed.
+
+`jobs.probe` and `jobs.add` also accept anonymous `ftp://` and explicit
+`ftps://` file URLs. FTPS requires certificate-validated `AUTH TLS` and
+encrypted `PROT P` data. FTP probe
+results use `http_version: "FTP"` or `"FTPS"` as the existing protocol display field and
+report `range_supported: false` and `multipart_supported: false`. FTP resume
+is reported only when the server provides `SIZE`, `MDTM`, and `REST`. The FTP
+transfer uses one passive data connection. A configured custom proxy fails
+FTP operations; system proxy mode currently leaves FTP and FTPS direct.
+Authenticated FTP, implicit FTPS, and FTP proxy transport are not available yet.
+
+The `torrents.magnet-v1-single-file` feature indicates that `jobs.probe` and
+`jobs.add` accept v1 `magnet:` links on the Unix engine. The probe returns
+`http_version: "BitTorrent"`, `status_code: 0`, an optional safe display name,
+and an unknown size until metadata arrives. A queued magnet resolves metadata
+from explicit peers or HTTP(S) tracker compact IPv4 peer lists, then transfers
+one file with per-piece SHA-1 verification. `completed_bytes` counts synced,
+verified pieces; `received_bytes` may include the current unverified piece.
+The daemon rehashes `.part` pieces before resume. Multi-file torrents, UDP
+trackers, DHT, and seeding are outside this feature. Custom proxy mode rejects
+magnet transfers rather than bypassing the configured proxy.
+
+`jobs.list` keeps `completed_bytes` as the durable resume checkpoint. While a transfer is active, it also exposes `received_bytes` for live UI progress and may expose a `total_bytes` learned from response headers before a durable checkpoint exists. These live fields are not persisted as completed data. The `workers` array includes a single connection for sequential HTTP transfers when the total size is known; its progress is also live and clears when the transfer stops. Clients should label received bytes as transfer progress rather than verified or resumable bytes.
+
+Transient connection and truncated-response errors may put a job in `retry_wait`. The summary then includes `retry_attempts` (0–3) and `retry_at_unix_ms` (a decimal millisecond timestamp string, or `null`). These fields are persisted with the job. The scheduler promotes due retries to `queued` before selecting work. Manual pause, cancel, and immediate retry remain available while waiting; integrity and destination errors do not retry automatically.
+
+The engine reevaluates the queue window every five seconds and immediately after settings changes or a new job. Outside an active window, queued jobs become scheduled and active HTTP transfers stop at the next progress callback, retaining their partial data. They resume through the normal queue when the window opens. The global download bandwidth setting is shared across HTTP workers and jobs, with the scheduled limit selected by the current local hour. A job's own cap is applied independently; both caps remain effective. A changed connection default applies when a job starts; resumed segmented transfers run no more than that many workers concurrently.
+
+`jobs.wait` is an interim change signal used by the macOS client while full `jobs.subscribe` notifications are pending. The client sends a decimal-string `cursor`; the engine waits up to five seconds and returns `{ "cursor": "...", "changed": true|false }`. A cursor of `"0"` returns the current cursor immediately. Change detection is in memory and includes live received-byte and worker updates; it does not replace persisted job revisions. The client must reset its cursor after reconnecting to a new engine instance, then fetch authoritative pages with `jobs.list`. Wait checks are coalesced to 200 ms. The 30-second IPC socket timeout bounds a stalled client separately.
 
 ## 5. Example: idempotent download creation
 

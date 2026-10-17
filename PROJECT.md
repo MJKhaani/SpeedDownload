@@ -1,6 +1,6 @@
 # Speed Download — Project Specification
 
-> **Status:** Proposed / architecture and feasibility phase  
+> **Status:** Implementation in progress; release gates remain open
 > **Product name:** Speed Download (`speed-download` CLI)
 > **Type:** Free, open-source, cross-platform desktop download manager  
 > **Core/engine language:** Zig (shared across all platforms)
@@ -93,6 +93,10 @@ Priority labels: **P0 = release-blocking core**, **P1 = first complete release**
 | DL-02 | P0 | HTTP/HTTPS transfers, redirects, TLS verification, resume | Survives interruption and verifies byte count and representation identity. |
 | DL-03 | P0 | Pause, resume, cancel, retry, reorder, delete, reveal file | Defined state transitions; no stale workers or unexpected file deletion. |
 | DL-04 | P0 | Queue with global and per-host concurrency | Caps observed in multi-job load tests; fair scheduling avoids starvation. |
+| DL-12 | P0 | User-configurable concurrent task limit | Global task concurrency is configurable and applied live by the engine; per-host fairness and safety caps remain enforced. |
+| DL-13 | P0 | Default connections per task | New tasks inherit a configurable default, bounded by server capability and safe engine limits. |
+| DL-14 | P0 | Default download folder | New tasks use the saved per-user default unless the user chooses another destination. |
+| DL-15 | P1 | Proxy policy | User can select system proxy or a custom proxy; credentials are stored only in the OS secret store. |
 | DL-05 | P0 | Crash-safe metadata + incomplete file handling | Restart reconstructs job and does not mark unverified bytes complete. |
 | DL-06 | P0 | Dynamic multipart HTTP(S) when permitted | No overlapping writable segments; fallback works with non-range servers. |
 | DL-07 | P1 | FTP downloads; FTPS where practical | Passive-mode transfers, size probing, documented resume limitations, TLS for FTPS. |
@@ -143,11 +147,23 @@ Adopt the **concept** of Internet Download Manager's [dynamic segmentation](http
 
 ### 4.5 Scheduling and bandwidth
 
+**User settings requirements:** Provide a settings surface for maximum concurrent queue tasks, default connections per task, default destination folder, system/custom proxy policy, global download bandwidth, queue start/stop schedule, and time-window bandwidth limits. All settings are engine-owned and persisted for the current OS user. Settings must load before scheduling work, validate on write, use atomic durable updates, and migrate by schema version. Never persist proxy credentials in the settings file.
+
+| OS | Per-user settings location |
+|---|---|
+| macOS | `~/Library/Application Support/Speed Download/settings.json` (mode 0600 inside a mode 0700 directory) |
+| Windows | `%LOCALAPPDATA%\Speed Download\settings.json` (user-only ACL) |
+| Linux | `$XDG_STATE_HOME/speed-download/settings.json`, or `~/.local/state/speed-download/settings.json` (mode 0600 inside a mode 0700 directory) |
+
+Settings changes are submitted through `settings.get` / `settings.update` IPC methods; native clients do not write the file directly. Proxy URLs containing credentials must be separated into a non-secret endpoint and OS secret-store reference. A bandwidth limit of zero means unlimited. The queue scheduler and bandwidth scheduler each store a weekly 7-day by 24-hour grid in the user's local time zone. Queue cells select **Active** or **Off**; bandwidth cells select **Global limit** or **Limited speed**. Each cell represents the hour beginning at its row label. Settings schema migrations preserve existing values and supply documented defaults for newly introduced grid cells.
+
+An engine debug mode is available in native client preferences and is disabled by default. When enabled, the engine records its own lifecycle, IPC actions, probe outcomes, and transfer state changes in a size-bounded per-user `engine-debug.log` beside `settings.json`. Records omit complete URLs, paths, headers, and credentials; turning the mode off stops further file writes. The engine owns this log, and GUI clients change the mode only through `settings.update`.
+
 | ID | Priority | Requirement | Acceptance criteria |
 |---|---|---|---|
 | SC-01 | P1 | Start or pause jobs at user-selected clock times | Fires correctly across sleep/wake, timezone changes, and DST transitions. |
 | SC-02 | P1 | One-time and recurring schedules | User can select days, start/end windows, and priority per queue/job. |
-| SC-03 | P1 | Bandwidth cap global/per-job, optionally per-protocol | Observed aggregate rate stays near configured cap over meaningful windows. |
+| SC-03 | P1 | Bandwidth cap global/per-job, optionally per-protocol | Observed aggregate rate stays near configured cap over meaningful windows; engine setting controls the global download cap. |
 | SC-04 | P1 | Time-window bandwidth profiles | For example daytime 2 MiB/s, night unlimited; applied without restart. |
 | SC-05 | P1 | Pause/restart behavior for missed events | Missed start after wake executes if window remains open; expired window stays paused. |
 | SC-06 | P2 | Optional network/battery/metered constraints | Policy is explained and user-overridable. |

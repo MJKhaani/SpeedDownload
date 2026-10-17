@@ -1,6 +1,9 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Dispatching;
+using ContextMenuStrip = System.Windows.Forms.ContextMenuStrip;
+using Icon = System.Drawing.Icon;
+using NotifyIcon = System.Windows.Forms.NotifyIcon;
 
 namespace SpeedDownload;
 
@@ -9,16 +12,32 @@ public sealed partial class MainWindow : Window
     private readonly EngineClient _engine = new();
     private readonly DispatcherQueueTimer _refreshTimer;
     private bool _refreshInFlight;
+    private List<DownloadJob> _allJobs = [];
+    private string _category = "Active Transfers";
+    private readonly NotifyIcon _trayIcon;
 
     public MainWindow()
     {
         InitializeComponent();
+        var trayMenu = new ContextMenuStrip();
+        trayMenu.Items.Add("Open Speed Download", null, (_, _) => Activate());
+        trayMenu.Items.Add("Quit", null, (_, _) => Environment.Exit(0));
+        _trayIcon = new NotifyIcon
+        {
+            Icon = new Icon(Path.Combine(AppContext.BaseDirectory, "SpeedDownload.ico")),
+            Text = "Speed Download",
+            ContextMenuStrip = trayMenu,
+            Visible = true,
+        };
+        _trayIcon.DoubleClick += (_, _) => Activate();
+        Closed += (_, _) => _trayIcon.Dispose();
         _refreshTimer = DispatcherQueue.CreateTimer();
         _refreshTimer.Interval = TimeSpan.FromSeconds(2);
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _refreshTimer.Start();
         _ = RefreshAsync();
     }
+
 
     private async Task RefreshAsync()
     {
@@ -27,7 +46,9 @@ public sealed partial class MainWindow : Window
         try
         {
             var jobs = await _engine.ListJobsAsync();
-            JobsList.ItemsSource = jobs;
+            _allJobs = jobs;
+            ApplyFilter();
+            UpdateSummary();
             ConnectionStatus.Text = "Engine connected";
             MessageBar.IsOpen = false;
         }
@@ -43,6 +64,55 @@ public sealed partial class MainWindow : Window
     }
 
     private async void OnRefresh(object sender, RoutedEventArgs e) => await RefreshAsync();
+
+    private void OnNavigationItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
+    {
+        if (args.IsSettingsInvoked) return;
+        if (args.InvokedItemContainer is NavigationViewItem item && item.Tag is string tag)
+        {
+            _category = tag;
+            SectionTitle.Text = tag;
+            ApplyFilter();
+        }
+    }
+
+    private void OnSearchTextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args) => ApplyFilter();
+
+    private void ApplyFilter()
+    {
+        IEnumerable<DownloadJob> jobs = _category switch
+        {
+            "Queue" => _allJobs.Where(job => job.State is "queued" or "scheduled" or "paused" or "retry_wait"),
+            "Active Transfers" => _allJobs.Where(job => job.State == "downloading"),
+            "Completed" => _allJobs.Where(job => job.State == "completed"),
+            "Failed" => _allJobs.Where(job => job.State is "failed" or "canceled"),
+            _ => _allJobs,
+        };
+        var query = SearchBox?.Text?.Trim();
+        if (!string.IsNullOrEmpty(query)) jobs = jobs.Where(job => job.Title.Contains(query, StringComparison.OrdinalIgnoreCase) || job.Url.Contains(query, StringComparison.OrdinalIgnoreCase));
+        var currentSelection = JobsList.SelectedItem as DownloadJob;
+        JobsList.ItemsSource = jobs.ToList();
+        if (currentSelection is not null)
+            JobsList.SelectedItem = _allJobs.FirstOrDefault(job => job.JobId == currentSelection.JobId && jobs.Any(filtered => filtered.JobId == job.JobId));
+        UpdateDetails(JobsList.SelectedItem as DownloadJob);
+    }
+
+    private void OnJobSelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateDetails(JobsList.SelectedItem as DownloadJob);
+
+    private void UpdateDetails(DownloadJob? job)
+    {
+        DetailTitle.Text = job?.Title ?? "Select a transfer";
+        DetailState.Text = job?.State ?? "—";
+        DetailUrl.Text = job?.Url ?? "—";
+        DetailDestination.Text = job?.Destination ?? "—";
+        DetailProgress.Text = job is null ? "" : job.Total > 0 ? $"{job.ProgressText} · {job.Progress:0.#}%" : job.State == "downloading" ? "Waiting for the server to report file size…" : "";
+        DetailError.Text = job?.ErrorMessage ?? "";
+    }
+
+    private void UpdateSummary()
+    {
+        QueueSummary.Text = $"{_allJobs.Count(job => job.State == "downloading")} active · {_allJobs.Count(job => job.State is "queued" or "scheduled")} queued";
+    }
 
     private async void OnJobAction(object sender, RoutedEventArgs e)
     {

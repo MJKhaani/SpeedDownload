@@ -87,6 +87,27 @@ pub const ExtentMap = struct {
         return tail;
     }
 
+    /// Split only the range whose owner has just synced its durable cursor.
+    /// The caller must keep that owner idle until the updated map is saved.
+    pub fn splitAtCheckpoint(self: *ExtentMap, id: u32, minimum_piece_size: u64) RangeError!Segment {
+        if (minimum_piece_size == 0) return RangeError.InvalidInterval;
+        if (self.len == max_segments or self.next_id == std.math.maxInt(u32)) return RangeError.NoSplittableInterval;
+        const index = self.findIndex(id) orelse return RangeError.InvalidInterval;
+        const segment = self.segments[index];
+        if (segment.state != .active) return RangeError.NoSplittableInterval;
+        const pieces = splitTail(.{ .start = segment.cursor, .end = segment.end }, minimum_piece_size) catch return RangeError.NoSplittableInterval;
+        self.segments[index].end = pieces.head.end;
+        const tail = Segment{ .id = self.next_id, .start = pieces.tail.start, .cursor = pieces.tail.start, .end = pieces.tail.end };
+        self.next_id += 1;
+        self.segments[self.len] = tail;
+        self.len += 1;
+        return tail;
+    }
+
+    pub fn segmentEnd(self: *const ExtentMap, id: u32) RangeError!u64 {
+        return self.segments[self.findIndex(id) orelse return RangeError.InvalidInterval].end;
+    }
+
     /// Advances a worker's durable cursor. Cursors cannot move backwards or
     /// escape the segment it owns.
     pub fn advance(self: *ExtentMap, id: u32, durable_cursor: u64) RangeError!void {

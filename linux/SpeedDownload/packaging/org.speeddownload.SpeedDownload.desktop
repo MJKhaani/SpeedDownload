@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Speed Download
+Comment=Manage and monitor your downloads
+Exec=speed-download-gtk
+Icon=org.speeddownload.SpeedDownload
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+StartupNotify=true
+DBusActivatable=true

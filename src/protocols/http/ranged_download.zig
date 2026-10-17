@@ -8,12 +8,15 @@ const std = @import("std");
 const http = std.http;
 const ranges = @import("ranges.zig");
 const segment_journal = @import("segment_journal.zig");
+const proxy = @import("proxy.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const ProgressCallback = *const fn (context: *anyopaque, completed: u64, total: ?u64, durable: bool) anyerror!void;
-const max_workers = 4;
+pub const WorkerProgressCallback = *const fn (context: *anyopaque, worker_id: u32, start: u64, end: u64, downloaded: u64) anyerror!void;
+const max_workers = 32;
 const minimum_segment_size: u64 = 4 * 1024 * 1024;
+const checkpoint_interval: u64 = 4 * 1024 * 1024;
 const parallel_threshold: u64 = 2 * minimum_segment_size;
 const checkpoint_suffix = ".sdr";
 
@@ -45,9 +48,15 @@ pub fn downloadIfSupported(
     expected_sha256: ?[32]u8,
     progress_callback: ?ProgressCallback,
     progress_context: ?*anyopaque,
+    worker_callback: ?WorkerProgressCallback,
+    worker_context: ?*anyopaque,
+    requested_connections: u8,
+    proxy_policy: proxy.Policy,
+    retry_hint: ?*@import("retry_after.zig").Hint,
 ) !bool {
-    const uri = std.Uri.parse(url) catch return false;
-    if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or !resumeSafe(uri)) return false;
+    var uri = std.Uri.parse(url) catch return false;
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) uri.scheme = "http" else if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) uri.scheme = "https" else return false;
+    if (!resumeSafe(uri)) return false;
 
     const cwd = Io.Dir.cwd();
     if (cwd.statFile(io, destination, .{})) |_| return error.DestinationExists else |err| switch (err) {
@@ -75,7 +84,7 @@ pub fn downloadIfSupported(
         if (!std.mem.eql(u8, &source_hash, &prior.?.source_hash)) return Error.InvalidSegmentJournal;
     }
 
-    var probe = probeRanges(allocator, io, uri) catch |err| switch (err) {
+    var probe = probeRanges(allocator, io, uri, proxy_policy, retry_hint) catch |err| switch (err) {
         Error.InvalidProbe => {
             if (is_resume) return Error.RepresentationChanged;
             return false;
@@ -99,10 +108,14 @@ pub fn downloadIfSupported(
     var source_hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(url, &source_hash, .{});
     var map = if (prior) |snapshot| snapshot.map else try ranges.ExtentMap.init(probe.total);
-    if (prior == null) {
-        while (map.len < max_workers) {
-            _ = map.splitLargest(minimum_segment_size) catch break;
-        }
+    const connection_limit = @min(max_workers, @as(usize, @max(requested_connections, 1)));
+    const target_segments = @min(ranges.max_segments, connection_limit * 2);
+    var map_changed = prior == null;
+    while (map.len < target_segments) {
+        _ = map.splitLargest(minimum_segment_size) catch break;
+        map_changed = true;
+    }
+    if (map_changed) {
         try segment_journal.saveAtomic(allocator, io, journal_path, .{
             .source_hash = source_hash,
             .target_hash = probe.target_hash,
@@ -157,24 +170,40 @@ pub fn downloadIfSupported(
         .map = map,
         .callback = progress_callback,
         .callback_context = progress_context,
+        .worker_callback = worker_callback,
+        .worker_context = worker_context,
+        .proxy_policy = proxy_policy,
+        .retry_hint = retry_hint,
+        .connection_limit = connection_limit,
     };
 
     var contexts: [max_workers]WorkerContext = undefined;
     var threads: [max_workers]std.Thread = undefined;
     var thread_count: usize = 0;
     var spawn_failed = false;
-    for (shared.map.segments[0..shared.map.len]) |*segment| {
-        if (segment.state == .complete) continue;
-        contexts[thread_count] = .{ .shared = &shared, .segment = segment.*, .slot = thread_count };
+    const incomplete_count = blk: {
+        var count: usize = 0;
+        for (shared.map.segments[0..shared.map.len]) |segment| if (segment.state == .active) {
+            count += 1;
+        };
+        break :blk count;
+    };
+    while (thread_count < (if (incomplete_count == 0) @as(usize, 0) else connection_limit)) : (thread_count += 1) {
+        contexts[thread_count] = .{ .shared = &shared, .slot = thread_count };
         threads[thread_count] = std.Thread.spawn(.{}, runWorker, .{&contexts[thread_count]}) catch {
-            shared.results[thread_count] = Error.WorkerSpawnFailed;
             spawn_failed = true;
+            shared.failed.store(true, .release);
             break;
         };
-        thread_count += 1;
     }
     for (threads[0..thread_count]) |thread| thread.join();
     if (spawn_failed) return Error.WorkerSpawnFailed;
+    for (shared.results[0..thread_count]) |result| if (result) |err| {
+        if (err == error.ServerBusy) return error.ServerBusy;
+    };
+    for (shared.results[0..thread_count]) |result| if (result) |err| {
+        if (err != error.PeerWorkerFailed) return err;
+    };
     for (shared.results[0..thread_count]) |result| if (result) |err| return err;
 
     if (shared.map.completedBytes() != shared.total) return Error.InvalidSegmentJournal;
@@ -203,9 +232,17 @@ const Shared = struct {
     map: ranges.ExtentMap,
     callback: ?ProgressCallback,
     callback_context: ?*anyopaque,
+    worker_callback: ?WorkerProgressCallback,
+    worker_context: ?*anyopaque,
+    proxy_policy: proxy.Policy,
+    retry_hint: ?*@import("retry_after.zig").Hint,
+    connection_limit: usize,
     mutex: Io.Mutex = .init,
-    results: [max_workers]?anyerror = .{ null, null, null, null },
-    in_flight: [max_workers]std.atomic.Value(u64) = .{ .init(0), .init(0), .init(0), .init(0) },
+    next_segment_index: usize = 0,
+    active_count: usize = 0,
+    failed: std.atomic.Value(bool) = .init(false),
+    results: [max_workers]?anyerror = @splat(null),
+    in_flight: [max_workers]std.atomic.Value(u64) = @splat(.init(0)),
 
     fn report(self: *Shared, durable: bool) !void {
         const callback = self.callback orelse return;
@@ -217,44 +254,104 @@ const Shared = struct {
         try callback(callback_context, completed, self.total, durable);
     }
 
-    fn completeSegment(self: *Shared, slot: usize, segment_id: u32, end: u64) !void {
+    fn checkpointSegment(self: *Shared, slot: usize, segment_id: u32, durable_cursor: u64) !void {
+        const completed = blk: {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            try self.map.advance(segment_id, durable_cursor);
+            self.in_flight[slot].store(0, .release);
+            try segment_journal.saveAtomic(self.allocator, self.io, self.journal_path, .{
+                .source_hash = self.source_hash,
+                .target_hash = self.target_hash,
+                .etag = self.etag,
+                .map = self.map,
+            });
+            break :blk self.map.completedBytes();
+        };
+        if (self.callback) |callback| {
+            if (self.callback_context) |callback_context| {
+                try callback(callback_context, completed, self.total, true);
+            }
+        }
+    }
+
+    const Claim = union(enum) { segment: ranges.Segment, wait, done };
+
+    fn claimSegment(self: *Shared) Claim {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        try self.map.advance(segment_id, end);
-        self.in_flight[slot].store(0, .release);
-        try segment_journal.saveAtomic(self.allocator, self.io, self.journal_path, .{
+        if (self.failed.load(.acquire)) return .done;
+        while (self.next_segment_index < self.map.len) {
+            const segment = self.map.segments[self.next_segment_index];
+            self.next_segment_index += 1;
+            if (segment.state == .active) {
+                self.active_count += 1;
+                return .{ .segment = segment };
+            }
+        }
+        return if (self.active_count == 0) .done else .wait;
+    }
+
+    fn finishSegment(self: *Shared) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.active_count -= 1;
+    }
+
+    fn splitIfIdle(self: *Shared, segment_id: u32) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const current_end = try self.map.segmentEnd(segment_id);
+        if (self.failed.load(.acquire) or self.active_count >= self.connection_limit or
+            self.next_segment_index < self.map.len) return current_end;
+        const previous_map = self.map;
+        _ = self.map.splitAtCheckpoint(segment_id, minimum_segment_size) catch return current_end;
+        segment_journal.saveAtomic(self.allocator, self.io, self.journal_path, .{
             .source_hash = self.source_hash,
             .target_hash = self.target_hash,
             .etag = self.etag,
             .map = self.map,
-        });
-        if (self.callback) |callback| {
-            if (self.callback_context) |callback_context| {
-                try callback(callback_context, self.map.completedBytes(), self.total, true);
-            }
-        }
+        }) catch |err| {
+            self.map = previous_map;
+            return err;
+        };
+        return self.map.segmentEnd(segment_id);
     }
 };
 
 const WorkerContext = struct {
     shared: *Shared,
-    segment: ranges.Segment,
     slot: usize,
 };
 
 fn runWorker(context: *WorkerContext) void {
-    runSegment(context.shared, context) catch |err| {
-        context.shared.results[context.slot] = err;
-    };
+    while (true) {
+        switch (context.shared.claimSegment()) {
+        .segment => |segment| {
+            runSegment(context.shared, context, segment) catch |err| {
+                context.shared.results[context.slot] = err;
+                context.shared.failed.store(true, .release);
+                context.shared.finishSegment();
+                return;
+            };
+            context.shared.finishSegment();
+        },
+        .wait => std.Io.sleep(context.shared.io, std.Io.Duration.fromMilliseconds(50), .awake) catch return,
+        .done => return,
+        }
+    }
 }
 
-fn runSegment(self: *Shared, context: *WorkerContext) !void {
-    const worker = context.segment;
+fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !void {
     const header_value = try ranges.formatHeader(self.allocator, .{ .start = worker.cursor, .end = worker.end }, self.total);
     defer self.allocator.free(header_value);
     var client: http.Client = .{ .allocator = self.allocator, .io = self.io };
+    var proxy_state = proxy.State.init(self.allocator);
+    defer proxy_state.deinit();
     defer client.deinit();
-    const uri = try std.Uri.parse(self.url);
+    var uri = try std.Uri.parse(self.url);
+    uri.scheme = if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) "https" else "http";
+    try proxy_state.apply(&client, self.proxy_policy, uri);
     const headers = [_]http.Header{
         .{ .name = "range", .value = header_value },
         .{ .name = "if-range", .value = self.etag },
@@ -263,10 +360,28 @@ fn runSegment(self: *Shared, context: *WorkerContext) !void {
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = &headers,
     });
-    defer request.deinit();
+    var response_truncated = false;
+    defer {
+        if (response_truncated) {
+            // A live split shortens our ownership while the server still
+            // sends the original range. Close without draining its tail.
+            request.connection.?.closing = true;
+            request.reader.state = .ready;
+        }
+        request.deinit();
+    }
     try request.sendBodiless();
     var redirect_buffer: [8 * 1024]u8 = undefined;
     var response = try request.receiveHead(&redirect_buffer);
+    // Until the exact requested body has been consumed, deinit must close
+    // rather than drain a response that may be a full 200 or an endless body.
+    response_truncated = true;
+    if (response.head.status == .too_many_requests or response.head.status == .service_unavailable) {
+        const retry_after = @import("retry_after.zig");
+        retry_after.record(self.retry_hint, responseHeader(response.head.bytes, "retry-after"), @intCast(@divTrunc(std.Io.Clock.now(.real, self.io).nanoseconds, std.time.ns_per_s)));
+        return error.ServerBusy;
+    }
+    if (response.head.status == .forbidden) return error.ParallelRangeRejected;
     if (response.head.status != .partial_content or response.head.content_encoding != .identity) return Error.InvalidSegmentResponse;
     const content_range_text = responseHeader(response.head.bytes, "content-range") orelse return Error.InvalidSegmentResponse;
     const content_range = parseContentRange(content_range_text) orelse return Error.InvalidSegmentResponse;
@@ -286,8 +401,23 @@ fn runSegment(self: *Shared, context: *WorkerContext) !void {
     var chunk_buffer: [32 * 1024]u8 = undefined;
     var body = response.reader(&reader_buffer);
     var remaining = worker.end - worker.cursor;
+    var current_end = worker.end;
     var downloaded: u64 = 0;
+    var checkpointed: u64 = 0;
+    errdefer {
+        // A pause, schedule stop, network error, or worker callback failure
+        // must leave a synced cursor for every byte we can safely retain.
+        if (downloaded > checkpointed) {
+            const synced = blk: {
+                file_writer.flush() catch break :blk false;
+                file.sync(self.io) catch break :blk false;
+                break :blk true;
+            };
+            if (synced) self.checkpointSegment(context.slot, worker.id, worker.cursor + downloaded) catch {};
+        }
+    }
     while (remaining > 0) {
+        if (self.failed.load(.acquire)) return error.PeerWorkerFailed;
         if (self.callback != null) try self.report(false);
         const amount: usize = @intCast(@min(remaining, chunk_buffer.len));
         const count = body.readSliceShort(chunk_buffer[0..amount]) catch return response.bodyErr().?;
@@ -295,37 +425,67 @@ fn runSegment(self: *Shared, context: *WorkerContext) !void {
         try file_writer.interface.writeAll(chunk_buffer[0..count]);
         remaining -= count;
         downloaded += count;
-        self.in_flight[context.slot].store(downloaded, .release);
+        self.in_flight[context.slot].store(downloaded - checkpointed, .release);
+        if (downloaded - checkpointed >= checkpoint_interval) {
+            try file_writer.flush();
+            try file.sync(self.io);
+            try self.checkpointSegment(context.slot, worker.id, worker.cursor + downloaded);
+            checkpointed = downloaded;
+            current_end = try self.splitIfIdle(worker.id);
+            remaining = current_end - (worker.cursor + downloaded);
+        }
+        if (self.worker_callback) |callback| {
+            if (self.worker_context) |callback_context|
+                try callback(callback_context, @intCast(context.slot + 1), worker.cursor, current_end, downloaded);
+        }
     }
     try file_writer.flush();
     try file.sync(self.io);
-    try self.completeSegment(context.slot, worker.id, worker.end);
+    try self.checkpointSegment(context.slot, worker.id, worker.cursor + downloaded);
+    response_truncated = current_end < worker.end;
 }
 
-fn probeRanges(allocator: Allocator, io: Io, uri: std.Uri) !Probe {
+fn probeRanges(allocator: Allocator, io: Io, uri: std.Uri, proxy_policy: proxy.Policy, retry_hint: ?*@import("retry_after.zig").Hint) !Probe {
     var client: http.Client = .{ .allocator = allocator, .io = io };
+    var proxy_state = proxy.State.init(allocator);
+    defer proxy_state.deinit();
     defer client.deinit();
+    try proxy_state.apply(&client, proxy_policy, uri);
     const headers = [_]http.Header{.{ .name = "range", .value = "bytes=0-0" }};
     var request = try client.request(.GET, uri, .{
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = &headers,
     });
-    defer request.deinit();
+    var abandon_body = false;
+    defer {
+        if (abandon_body) {
+            request.connection.?.closing = true;
+            request.reader.state = .ready;
+        }
+        request.deinit();
+    }
     try request.sendBodiless();
     var redirect_buffer: [8 * 1024]u8 = undefined;
     var response = try request.receiveHead(&redirect_buffer);
+    abandon_body = true;
+    if (response.head.status == .too_many_requests or response.head.status == .service_unavailable) {
+        const retry_after = @import("retry_after.zig");
+        retry_after.record(retry_hint, responseHeader(response.head.bytes, "retry-after"), @intCast(@divTrunc(std.Io.Clock.now(.real, io).nanoseconds, std.time.ns_per_s)));
+        return error.ServerBusy;
+    }
     if (response.head.status != .partial_content or response.head.content_encoding != .identity or response.head.content_length != 1) return Error.InvalidProbe;
     const range_text = responseHeader(response.head.bytes, "content-range") orelse return Error.InvalidProbe;
     const content_range = parseContentRange(range_text) orelse return Error.InvalidProbe;
     if (content_range.start != 0 or content_range.end_inclusive != 0 or content_range.total == null) return Error.InvalidProbe;
     const etag = responseHeader(response.head.bytes, "etag") orelse return Error.InvalidProbe;
     if (!isStrongETag(etag) or etag.len > 1024) return Error.InvalidProbe;
+    const etag_copy = try allocator.dupe(u8, etag);
+    errdefer allocator.free(etag_copy);
     var body_buffer: [1]u8 = undefined;
     var body = response.reader(&body_buffer);
     const count = body.readSliceShort(&body_buffer) catch return response.bodyErr().?;
     if (count != 1) return Error.InvalidProbe;
-    const etag_copy = try allocator.dupe(u8, etag);
-    errdefer allocator.free(etag_copy);
+    abandon_body = false;
     return .{ .total = content_range.total.?, .etag = etag_copy, .target_hash = try uriHash(allocator, request.uri) };
 }
 
@@ -337,7 +497,9 @@ fn fileExists(io: Io, path: []const u8) !bool {
 }
 
 fn resumeSafe(uri: std.Uri) bool {
-    return uri.user == null and uri.password == null and uri.query == null and uri.fragment == null;
+    // The journal binds the exact source URL (including its query) to a strong
+    // ETag. A query string therefore does not make a verified range unsafe.
+    return uri.user == null and uri.password == null and uri.fragment == null;
 }
 
 fn isStrongETag(value: []const u8) bool {
@@ -364,12 +526,19 @@ fn parseContentRange(value: []const u8) ?ContentRange {
 }
 
 fn responseHeader(bytes: []const u8, name: []const u8) ?[]const u8 {
-    var iter = http.HeaderIterator.init(bytes);
+    if (bytes.len < 2) return null;
+    const status_end = std.mem.indexOf(u8, bytes, "\r\n") orelse return null;
+    var cursor = status_end + 2;
     var found: ?[]const u8 = null;
-    while (iter.next()) |header| {
-        if (!std.ascii.eqlIgnoreCase(header.name, name)) continue;
+    while (cursor + 2 <= bytes.len) {
+        const relative_end = std.mem.indexOfPos(u8, bytes, cursor, "\r\n") orelse return null;
+        if (relative_end == cursor) return found;
+        const line = bytes[cursor..relative_end];
+        cursor = relative_end + 2;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..colon], " \t"), name)) continue;
         if (found != null) return null;
-        found = header.value;
+        found = std.mem.trim(u8, line[colon + 1 ..], " \t");
     }
     return found;
 }

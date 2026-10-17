@@ -5,6 +5,7 @@ struct HelloResult: Sendable {
     let engineVersion: String
     let engineInstanceID: String
     let sessionID: String
+    let supportedFeatures: [String]
 }
 
 struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
@@ -15,10 +16,16 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let state: String
     let revision: String
     let errorMessage: String?
+    let retryAttempts: Int?
+    let retryAtUnixMS: String?
     let completedBytes: String?
+    let receivedBytes: String?
     let totalBytes: String?
     let requestedControl: String?
     let priority: Int?
+    let bandwidthLimitBytesPerSecond: UInt64?
+    let expectedSHA256: String?
+    let workers: [DownloadWorker]?
 
     var id: String { jobID }
 
@@ -26,10 +33,30 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         case jobID = "job_id"
         case url, name, destination, state, revision
         case errorMessage = "error_message"
+        case retryAttempts = "retry_attempts"
+        case retryAtUnixMS = "retry_at_unix_ms"
         case completedBytes = "completed_bytes"
+        case receivedBytes = "received_bytes"
         case totalBytes = "total_bytes"
         case requestedControl = "requested_control"
         case priority
+        case bandwidthLimitBytesPerSecond = "bandwidth_limit_bytes_per_second"
+        case expectedSHA256 = "expected_sha256"
+        case workers
+    }
+}
+
+struct DownloadWorker: Decodable, Sendable, Equatable, Identifiable {
+    let workerID: UInt32
+    let start: UInt64
+    let end: UInt64
+    let downloaded: UInt64
+
+    var id: UInt32 { workerID }
+
+    enum CodingKeys: String, CodingKey {
+        case workerID = "worker_id"
+        case start, end, downloaded
     }
 }
 
@@ -44,6 +71,37 @@ struct JobListResult: Decodable, Sendable {
     }
 }
 
+struct JobChangeResult: Decodable, Sendable {
+    let cursor: String
+    let changed: Bool
+}
+
+struct DownloadProbe: Decodable, Sendable {
+    let finalURL: String
+    let suggestedName: String
+    let totalBytes: String?
+    let statusCode: Int
+    let httpVersion: String
+    let contentType: String?
+    let rangeSupported: Bool
+    let resumeSupported: Bool
+    let multipartSupported: Bool
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case finalURL = "final_url"
+        case suggestedName = "suggested_name"
+        case totalBytes = "total_bytes"
+        case statusCode = "status_code"
+        case httpVersion = "http_version"
+        case contentType = "content_type"
+        case rangeSupported = "range_supported"
+        case resumeSupported = "resume_supported"
+        case multipartSupported = "multipart_supported"
+        case message
+    }
+}
+
 struct AddJobResult: Decodable, Sendable {
     let jobID: String
     let state: String
@@ -54,6 +112,61 @@ struct AddJobResult: Decodable, Sendable {
         case jobID = "job_id"
         case state, revision, duplicate
     }
+}
+
+private struct SetJobBandwidthResult: Decodable, Sendable {
+    let jobID: String
+    let revision: String
+    let bandwidthLimitBytesPerSecond: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case revision
+        case bandwidthLimitBytesPerSecond = "bandwidth_limit_bytes_per_second"
+    }
+}
+
+private struct DeleteJobResult: Decodable, Sendable {
+    let deleted: Bool
+}
+
+struct EngineSettings: Codable, Sendable, Equatable {
+    var schemaVersion = 2
+    var maxConcurrentTasks = 4
+    var defaultConnectionsPerTask = 4
+    var multipartMode: String? = nil
+    var defaultDownloadFolder = ""
+    var proxyMode = "system"
+    var proxyURL: String?
+    var bandwidthLimitBytesPerSecond: UInt64 = 0
+    var queueScheduleEnabled = false
+    var queueScheduleSlots: [Bool] = Array(repeating: true, count: 168)
+    var bandwidthScheduleEnabled = false
+    var scheduledBandwidthLimitBytesPerSecond: UInt64 = 0
+    var bandwidthScheduleSlots: [BandwidthScheduleMode] = Array(repeating: .globalLimit, count: 168)
+    var debugLogEnabled = false
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case maxConcurrentTasks = "max_concurrent_tasks"
+        case defaultConnectionsPerTask = "default_connections_per_task"
+        case multipartMode = "multipart_mode"
+        case defaultDownloadFolder = "default_download_folder"
+        case proxyMode = "proxy_mode"
+        case proxyURL = "proxy_url"
+        case bandwidthLimitBytesPerSecond = "bandwidth_limit_bytes_per_second"
+        case queueScheduleEnabled = "queue_schedule_enabled"
+        case queueScheduleSlots = "queue_schedule_slots"
+        case bandwidthScheduleEnabled = "bandwidth_schedule_enabled"
+        case scheduledBandwidthLimitBytesPerSecond = "scheduled_bandwidth_limit_bytes_per_second"
+        case bandwidthScheduleSlots = "bandwidth_schedule_slots"
+        case debugLogEnabled = "debug_log_enabled"
+    }
+}
+
+enum BandwidthScheduleMode: String, Codable, Sendable {
+    case globalLimit = "global_limit"
+    case limited
 }
 
 struct UnixEngineClient: Sendable {
@@ -86,7 +199,22 @@ struct UnixEngineClient: Sendable {
         }
     }
 
-    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0) throws -> AddJobResult {
+    func waitForJobChange(after cursor: String) throws -> JobChangeResult {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        let hello = try negotiate(fd: fd)
+        guard hello.supportedFeatures.contains("jobs.change-wait") else { throw ClientError.engineOutdated }
+        let envelope: RPCEnvelope<JobChangeResult> = try request(
+            fd: fd,
+            id: "jobs-wait-\(UUID().uuidString)",
+            method: "jobs.wait",
+            params: ["cursor": cursor]
+        )
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return result
+    }
+
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         _ = try negotiate(fd: fd)
@@ -99,12 +227,48 @@ struct UnixEngineClient: Sendable {
         if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             params["name"] = name
         }
+        if let expectedSHA256 { params["expected_sha256"] = expectedSHA256 }
         let envelope: RPCEnvelope<AddJobResult> = try request(
             fd: fd,
             id: "jobs-add-\(UUID().uuidString)",
             method: "jobs.add",
             params: params
         )
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return result
+    }
+
+    func probe(url: String) throws -> DownloadProbe {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        let hello = try negotiate(fd: fd)
+        guard hello.supportedFeatures.contains("jobs.probe"),
+              hello.supportedFeatures.contains("jobs.worker-progress"),
+              hello.supportedFeatures.contains("jobs.probe-filename-decoding") else { throw ClientError.engineOutdated }
+        let envelope: RPCEnvelope<DownloadProbe> = try request(
+            fd: fd,
+            id: "jobs-probe-\(UUID().uuidString)",
+            method: "jobs.probe",
+            params: ["url": url]
+        )
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return result
+    }
+
+    func getSettings() throws -> EngineSettings {
+        let fd = try openConnection(); defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        let envelope: RPCEnvelope<EngineSettings> = try request(fd: fd, id: "settings-get-\(UUID().uuidString)", method: "settings.get", params: [:])
+        guard let result = envelope.result else { throw ClientError.invalidResponse }
+        return result
+    }
+
+    func updateSettings(_ settings: EngineSettings) throws -> EngineSettings {
+        let fd = try openConnection(); defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        let encoded = try JSONEncoder().encode(settings)
+        let object = try JSONSerialization.jsonObject(with: encoded)
+        let envelope: RPCEnvelope<EngineSettings> = try request(fd: fd, id: "settings-update-\(UUID().uuidString)", method: "settings.update", params: ["settings": object])
         guard let result = envelope.result else { throw ClientError.invalidResponse }
         return result
     }
@@ -123,9 +287,45 @@ struct UnixEngineClient: Sendable {
         return result
     }
 
+    func setJobBandwidthLimit(jobID: String, expectedRevision: String, bytesPerSecond: UInt64) throws {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        let hello = try negotiate(fd: fd)
+        guard hello.supportedFeatures.contains("jobs.per-job-bandwidth") else { throw ClientError.engineOutdated }
+        let envelope: RPCEnvelope<SetJobBandwidthResult> = try request(
+            fd: fd,
+            id: "jobs-bandwidth-\(UUID().uuidString)",
+            method: "jobs.set-bandwidth",
+            params: [
+                "job_id": jobID,
+                "expected_revision": expectedRevision,
+                "bandwidth_limit_bytes_per_second": bytesPerSecond,
+            ]
+        )
+        guard envelope.result != nil else { throw ClientError.invalidResponse }
+    }
+
+    func deleteJob(jobID: String, expectedRevision: String, deletePartial: Bool = false) throws {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        let envelope: RPCEnvelope<DeleteJobResult> = try request(
+            fd: fd,
+            id: "jobs-delete-\(UUID().uuidString)",
+            method: "jobs.delete",
+            params: ["job_id": jobID, "expected_revision": expectedRevision, "delete_partial": deletePartial]
+        )
+        guard envelope.result?.deleted == true else { throw ClientError.invalidResponse }
+    }
+
     static func isRevisionConflict(_ error: Error) -> Bool {
         guard case ClientError.remote(_, let code, _) = error else { return false }
         return code == -32015
+    }
+
+    static func isEngineOutdated(_ error: Error) -> Bool {
+        guard case ClientError.engineOutdated = error else { return false }
+        return true
     }
 
     private func openConnection() throws -> Int32 {
@@ -150,14 +350,15 @@ struct UnixEngineClient: Sendable {
             params: [
                 "protocol": ["major": 1, "minor": 0],
                 "client": ["kind": "macos-gui", "version": "0.1.0"],
-                "features": [],
+                "features": ["jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules"],
             ]
         )
         guard let result = envelope.result else { throw ClientError.invalidResponse }
         return HelloResult(
             engineVersion: result.engineVersion,
             engineInstanceID: result.engineInstanceID,
-            sessionID: result.sessionID
+            sessionID: result.sessionID,
+            supportedFeatures: result.features
         )
     }
 
@@ -259,12 +460,14 @@ private enum HelloEnvelope {
         let engineVersion: String
         let engineInstanceID: String
         let sessionID: String
+        let features: [String]
 
         enum CodingKeys: String, CodingKey {
             case protocolVersion = "protocol"
             case engineVersion = "engine_version"
             case engineInstanceID = "engine_instance_id"
             case sessionID = "session_id"
+            case features
         }
     }
 }
@@ -275,6 +478,7 @@ private enum ClientError: LocalizedError {
     case invalidResponse
     case connectionClosed
     case socketPathTooLong
+    case engineOutdated
     case remote(method: String, code: Int, message: String)
     case posix(String)
 
@@ -285,6 +489,7 @@ private enum ClientError: LocalizedError {
         case .invalidResponse: "The engine returned an invalid RPC response."
         case .connectionClosed: "The engine closed the connection."
         case .socketPathTooLong: "The engine socket path is too long for macOS."
+        case .engineOutdated: "The running engine is outdated and does not support link inspection. Quit its previous process and reopen Speed Download."
         case .remote(let method, _, let message): "The engine rejected \(method): \(message)"
         case .posix(let message): message
         }

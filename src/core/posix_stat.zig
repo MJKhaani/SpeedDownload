@@ -51,3 +51,7 @@ pub fn isDirectory(info: Info) bool {
 pub fn isRegularFile(info: Info) bool {
     return info.mode & 0o170000 == 0o100000;
 }
+
+pub fn isSocket(info: Info) bool {
+    return info.mode & 0o170000 == 0o140000;
+}

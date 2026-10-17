@@ -13,8 +13,58 @@ extern "c" fn chmod(path: [*:0]const u8, mode: c.mode_t) c_int;
 
 pub const State = enum { queued, scheduled, resolving, connecting, downloading, paused, retry_wait, verifying, completed, failed, canceled };
 pub const StopAction = enum { pause, cancel };
-pub const max_parallel_downloads = 4;
-pub const max_parallel_downloads_per_host = 2;
+pub const default_max_parallel_downloads = 4;
+pub const default_max_parallel_downloads_per_host = 2;
+pub const max_parallel_downloads_per_host = default_max_parallel_downloads_per_host;
+pub const hours_per_week = 7 * 24;
+pub const BandwidthScheduleMode = enum { global_limit, limited };
+pub const MultipartMode = enum { off, auto, fixed };
+
+pub const Settings = struct {
+    schema_version: u32 = 2,
+    max_concurrent_tasks: u8 = default_max_parallel_downloads,
+    default_connections_per_task: u8 = 4,
+    multipart_mode: MultipartMode = .auto,
+    default_download_folder: []const u8 = "",
+    proxy_mode: ProxyMode = .system,
+    proxy_url: ?[]const u8 = null,
+    bandwidth_limit_bytes_per_second: u64 = 0,
+    queue_schedule_enabled: bool = false,
+    queue_schedule_slots: [hours_per_week]bool = @splat(true),
+    bandwidth_schedule_enabled: bool = false,
+    scheduled_bandwidth_limit_bytes_per_second: u64 = 0,
+    bandwidth_schedule_slots: [hours_per_week]BandwidthScheduleMode = @splat(.global_limit),
+    debug_log_enabled: bool = false,
+};
+
+pub const RuntimePolicy = struct {
+    max_concurrent_tasks: u8,
+    queue_schedule_enabled: bool,
+    queue_schedule_slots: [hours_per_week]bool,
+    bandwidth_limit_bytes_per_second: u64,
+    bandwidth_schedule_enabled: bool,
+    scheduled_bandwidth_limit_bytes_per_second: u64,
+    bandwidth_schedule_slots: [hours_per_week]BandwidthScheduleMode,
+
+    pub fn queueActive(self: RuntimePolicy, slot: usize) bool {
+        return !self.queue_schedule_enabled or self.queue_schedule_slots[slot];
+    }
+
+    pub fn downloadLimit(self: RuntimePolicy, slot: usize) u64 {
+        if (self.bandwidth_schedule_enabled and self.bandwidth_schedule_slots[slot] == .limited)
+            return self.scheduled_bandwidth_limit_bytes_per_second;
+        return self.bandwidth_limit_bytes_per_second;
+    }
+};
+
+pub const ProxyMode = enum { system, custom, disabled };
+
+pub const WorkerProgress = struct {
+    worker_id: u32 = 0,
+    start: u64 = 0,
+    end: u64 = 0,
+    downloaded: u64 = 0,
+};
 
 pub const Job = struct {
     id: []const u8,
@@ -22,13 +72,22 @@ pub const Job = struct {
     name: ?[]const u8,
     destination: []const u8,
     idempotency_key: []const u8,
+    expected_sha256: ?[]const u8 = null,
     state: State = .queued,
     revision: u64 = 1,
     error_message: ?[]const u8 = null,
+    retry_attempts: u8 = 0,
+    retry_at_unix_ms: ?i64 = null,
+    adaptive_connections: ?u8 = null,
     completed_bytes: u64 = 0,
     total_bytes: ?u64 = null,
+    live_received_bytes: ?u64 = null,
+    live_total_bytes: ?u64 = null,
     requested_control: ?StopAction = null,
     priority: i32 = 0,
+    bandwidth_limit_bytes_per_second: u64 = 0,
+    workers: [32]WorkerProgress = @splat(.{}),
+    worker_count: usize = 0,
 };
 
 pub const AddInput = struct {
@@ -37,6 +96,8 @@ pub const AddInput = struct {
     destination: []const u8,
     idempotency_key: []const u8,
     priority: i32 = 0,
+    bandwidth_limit_bytes_per_second: u64 = 0,
+    expected_sha256: ?[]const u8 = null,
 };
 
 pub const AddResult = struct {
@@ -49,8 +110,55 @@ pub const Store = struct {
     io: std.Io,
     directory_path: []const u8,
     file_path: []const u8,
+    settings_path: []const u8,
+    settings: Settings = .{},
     jobs: std.ArrayList(Job) = .empty,
     mutex: std.Io.Mutex = .init,
+    log_mutex: std.Io.Mutex = .init,
+    change_sequence: std.atomic.Value(u64) = .init(1),
+
+    /// In-memory cursor for bounded change waits. Clients must discard it
+    /// after an engine restart; it is not a durable job revision.
+    pub fn changeCursor(self: *const Store) u64 {
+        return self.change_sequence.load(.acquire);
+    }
+
+    /// Debug records intentionally omit URLs, paths, headers, and credentials.
+    pub fn logAction(self: *Store, event: []const u8, outcome: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        const enabled = self.settings.debug_log_enabled;
+        self.mutex.unlock(self.io);
+        if (!enabled) return;
+        self.log_mutex.lockUncancelable(self.io);
+        defer self.log_mutex.unlock(self.io);
+        const path = std.fs.path.join(self.allocator, &.{ self.directory_path, "engine-debug.log" }) catch return;
+        defer self.allocator.free(path);
+        const permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+        const file = std.Io.Dir.createFileAbsolute(self.io, path, .{
+            .truncate = false,
+            .exclusive = true,
+            .permissions = permissions,
+        }) catch |err| switch (err) {
+            error.PathAlreadyExists => std.Io.Dir.openFileAbsolute(self.io, path, .{ .mode = .read_write, .follow_symlinks = false }) catch return,
+            else => return,
+        };
+        defer file.close(self.io);
+        if (comptime builtin.os.tag != .windows) {
+            const path_z = self.allocator.dupeSentinel(u8, path, 0) catch return;
+            defer self.allocator.free(path_z);
+            const info = posix_stat.get(path_z, false) orelse return;
+            if (!posix_stat.isRegularFile(info) or info.uid != posix_stat.currentUid() or chmod(path_z, 0o600) != 0) return;
+        }
+        var length = file.length(self.io) catch return;
+        if (length > 4 * 1024 * 1024) {
+            file.setLength(self.io, 0) catch return;
+            length = 0;
+        }
+        const seconds = @divTrunc(std.Io.Clock.now(.real, self.io).nanoseconds, std.time.ns_per_s);
+        const line = std.fmt.allocPrint(self.allocator, "{d} {s} {s}\n", .{ seconds, event, outcome }) catch return;
+        defer self.allocator.free(line);
+        file.writePositionalAll(self.io, line, length) catch {};
+    }
 
     pub fn open(allocator: std.mem.Allocator, io: std.Io, directory_path: []const u8) !Store {
         if (!std.fs.path.isAbsolute(directory_path)) return error.InvalidStorePath;
@@ -70,14 +178,18 @@ pub const Store = struct {
 
         const file_path = try std.fs.path.join(allocator, &.{ directory_path, "jobs.json" });
         errdefer allocator.free(file_path);
+        const settings_path = try std.fs.path.join(allocator, &.{ directory_path, "settings.json" });
+        errdefer allocator.free(settings_path);
         var store = Store{
             .allocator = allocator,
             .io = io,
             .directory_path = try allocator.dupe(u8, directory_path),
             .file_path = file_path,
+            .settings_path = settings_path,
         };
         errdefer store.deinit();
         try store.load();
+        try store.loadSettings();
         return store;
     }
 
@@ -88,11 +200,119 @@ pub const Store = struct {
         self.jobs.deinit(self.allocator);
         self.allocator.free(self.directory_path);
         self.allocator.free(self.file_path);
+        self.freeSettings(self.settings);
+        self.allocator.free(self.settings_path);
         self.* = undefined;
     }
 
+    pub fn settingsJson(self: *Store, request_id: std.json.Value) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = self.settings }, .{});
+    }
+
+    pub fn runtimePolicy(self: *Store) RuntimePolicy {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return .{
+            .max_concurrent_tasks = self.settings.max_concurrent_tasks,
+            .queue_schedule_enabled = self.settings.queue_schedule_enabled,
+            .queue_schedule_slots = self.settings.queue_schedule_slots,
+            .bandwidth_limit_bytes_per_second = self.settings.bandwidth_limit_bytes_per_second,
+            .bandwidth_schedule_enabled = self.settings.bandwidth_schedule_enabled,
+            .scheduled_bandwidth_limit_bytes_per_second = self.settings.scheduled_bandwidth_limit_bytes_per_second,
+            .bandwidth_schedule_slots = self.settings.bandwidth_schedule_slots,
+        };
+    }
+
+    pub const OwnedProxyPolicy = struct {
+        mode: ProxyMode,
+        url: ?[]u8,
+
+        pub fn deinit(self: OwnedProxyPolicy, allocator: std.mem.Allocator) void {
+            if (self.url) |url| allocator.free(url);
+        }
+    };
+
+    /// Snapshot the current endpoint for a probe without holding the store
+    /// lock across network I/O. A running transfer retains its own snapshot.
+    pub fn copyProxyPolicy(self: *Store) !OwnedProxyPolicy {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return .{
+            .mode = self.settings.proxy_mode,
+            .url = if (self.settings.proxy_url) |url| try self.allocator.dupe(u8, url) else null,
+        };
+    }
+
+    /// Switches only queue-controlled jobs. User-paused jobs remain paused.
+    pub fn applyQueueWindow(self: *Store, active: bool) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var changed: std.ArrayList(usize) = .empty;
+        defer changed.deinit(self.allocator);
+        for (self.jobs.items, 0..) |job, index| {
+            if ((active and job.state == .scheduled) or (!active and job.state == .queued)) {
+                if (job.revision == std.math.maxInt(u64)) return error.RevisionOverflow;
+                try changed.append(self.allocator, index);
+            }
+        }
+        if (changed.items.len == 0) return;
+        for (changed.items) |index| {
+            self.jobs.items[index].state = if (active) .queued else .scheduled;
+            self.jobs.items[index].revision += 1;
+        }
+        self.persist() catch |err| {
+            for (changed.items) |index| {
+                self.jobs.items[index].state = if (active) .scheduled else .queued;
+                self.jobs.items[index].revision -= 1;
+            }
+            return err;
+        };
+    }
+
+    pub fn updateSettingsJson(self: *Store, request_id: std.json.Value, value: Settings) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try validateSettings(value);
+        const replacement = try self.duplicateSettings(value);
+        const old = self.settings;
+        self.settings = replacement;
+        self.persistSettings() catch |err| {
+            self.settings = old;
+            self.freeSettings(replacement);
+            return err;
+        };
+        self.freeSettings(old);
+        return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = self.settings }, .{});
+    }
+
+    fn duplicateSettings(self: *Store, value: Settings) !Settings {
+        return .{
+            .schema_version = 2,
+            .max_concurrent_tasks = value.max_concurrent_tasks,
+            .default_connections_per_task = value.default_connections_per_task,
+            .multipart_mode = value.multipart_mode,
+            .default_download_folder = try self.allocator.dupe(u8, value.default_download_folder),
+            .proxy_mode = value.proxy_mode,
+            .proxy_url = if (value.proxy_url) |url| try self.allocator.dupe(u8, url) else null,
+            .bandwidth_limit_bytes_per_second = value.bandwidth_limit_bytes_per_second,
+            .queue_schedule_enabled = value.queue_schedule_enabled,
+            .queue_schedule_slots = value.queue_schedule_slots,
+            .bandwidth_schedule_enabled = value.bandwidth_schedule_enabled,
+            .scheduled_bandwidth_limit_bytes_per_second = value.scheduled_bandwidth_limit_bytes_per_second,
+            .bandwidth_schedule_slots = value.bandwidth_schedule_slots,
+            .debug_log_enabled = value.debug_log_enabled,
+        };
+    }
+
+    fn freeSettings(self: *Store, value: Settings) void {
+        self.allocator.free(value.default_download_folder);
+        if (value.proxy_url) |url| self.allocator.free(url);
+    }
+
     fn addUnlocked(self: *Store, input: AddInput) !AddResult {
-        try validateInput(self.io, input);
+        try validateInput(self.allocator, self.io, input);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.idempotency_key, input.idempotency_key)) continue;
             if (sameInput(job, input)) return .{ .job = job, .duplicate = true };
@@ -100,6 +320,14 @@ pub const Store = struct {
         }
 
         const job = try self.duplicateJob(input);
+        const occupied = self.destinationOccupied(job, false) catch |err| {
+            self.freeJob(job);
+            return err;
+        };
+        if (occupied) {
+            self.freeJob(job);
+            return error.DestinationReserved;
+        }
         self.jobs.append(self.allocator, job) catch |err| {
             self.freeJob(job);
             return err;
@@ -124,17 +352,25 @@ pub const Store = struct {
             .url = redactUrl(job.url),
             .name = job.name,
             .destination = job.destination,
+            .expected_sha256 = job.expected_sha256,
             .state = job.state,
             .revision = try std.fmt.allocPrint(allocator, "{d}", .{job.revision}),
             .error_message = job.error_message,
+            .retry_attempts = job.retry_attempts,
+            .retry_at_unix_ms = if (job.retry_at_unix_ms) |value| try std.fmt.allocPrint(allocator, "{d}", .{value}) else null,
             .completed_bytes = decimalAlloc(allocator, job.completed_bytes) catch return error.OutOfMemory,
-            .total_bytes = if (job.total_bytes) |total| decimalAlloc(allocator, total) catch return error.OutOfMemory else null,
+            .received_bytes = if (job.live_received_bytes) |received| decimalAlloc(allocator, received) catch return error.OutOfMemory else null,
+            .total_bytes = if (job.live_total_bytes orelse job.total_bytes) |total| decimalAlloc(allocator, total) catch return error.OutOfMemory else null,
             .requested_control = job.requested_control,
             .priority = job.priority,
+            .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
+            .workers = job.workers[0..job.worker_count],
         });
         defer for (summaries.items) |summary| allocator.free(summary.revision);
         defer for (summaries.items) |summary| {
             allocator.free(summary.completed_bytes);
+            if (summary.retry_at_unix_ms) |value| allocator.free(value);
+            if (summary.received_bytes) |received| allocator.free(received);
             if (summary.total_bytes) |total| allocator.free(total);
         };
         const total = try std.fmt.allocPrint(allocator, "{d}", .{self.jobs.items.len});
@@ -189,6 +425,40 @@ pub const Store = struct {
         }, .{});
     }
 
+    pub fn setBandwidthLimitJson(self: *Store, request_id: std.json.Value, job_id: []const u8, expected_revision: u64, limit: u64) ![]u8 {
+        if (limit > 1_000_000_000_000) return error.InvalidJob;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.revision != expected_revision) return error.StaleJobRevision;
+            const previous_limit = job.bandwidth_limit_bytes_per_second;
+            const previous_revision = job.revision;
+            job.bandwidth_limit_bytes_per_second = limit;
+            job.revision = std.math.add(u64, job.revision, 1) catch return error.RevisionOverflow;
+            self.persist() catch |err| {
+                job.bandwidth_limit_bytes_per_second = previous_limit;
+                job.revision = previous_revision;
+                return err;
+            };
+            const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
+            defer self.allocator.free(revision);
+            return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
+                .job_id = job.id,
+                .revision = revision,
+                .bandwidth_limit_bytes_per_second = limit,
+            } }, .{});
+        }
+        return error.JobNotFound;
+    }
+
+    pub fn jobBandwidthLimit(self: *Store, job_id: []const u8) u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |job| if (std.mem.eql(u8, job.id, job_id)) return job.bandwidth_limit_bytes_per_second;
+        return 0;
+    }
+
     pub fn reorderJson(self: *Store, request_id: std.json.Value, job_id: []const u8, position: usize, expected_revision: u64) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -230,7 +500,9 @@ pub const Store = struct {
         const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
         defer self.allocator.free(revision);
         return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
-            .job_id = job.id, .position = position, .revision = revision,
+            .job_id = job.id,
+            .position = position,
+            .revision = revision,
         } }, .{});
     }
 
@@ -257,7 +529,9 @@ pub const Store = struct {
         };
         self.freeJob(removed);
         return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
-            .job_id = job_id, .deleted = true, .partial_files_deleted = delete_partial,
+            .job_id = job_id,
+            .deleted = true,
+            .partial_files_deleted = delete_partial,
         } }, .{});
     }
 
@@ -269,7 +543,7 @@ pub const Store = struct {
             if (job.revision != expected_revision) return error.StaleJobRevision;
             const next: State = switch (action) {
                 .pause => switch (job.state) {
-                    .queued, .scheduled => .paused,
+                    .queued, .scheduled, .retry_wait => .paused,
                     else => return error.InvalidJobControl,
                 },
                 .@"resume" => switch (job.state) {
@@ -283,6 +557,7 @@ pub const Store = struct {
                 .start => switch (job.state) {
                     .queued, .retry_wait => blk: {
                         if (self.activeForHost(job.url) >= max_parallel_downloads_per_host) return error.HostLimitReached;
+                        if (try self.destinationOccupied(job.*, true)) return error.DestinationReserved;
                         break :blk .downloading;
                     },
                     else => return error.InvalidJobControl,
@@ -297,6 +572,13 @@ pub const Store = struct {
             const previous_error = job.error_message;
             const previous_completed = job.completed_bytes;
             const previous_total = job.total_bytes;
+            const previous_retry_attempts = job.retry_attempts;
+            const previous_retry_at = job.retry_at_unix_ms;
+            const previous_adaptive_connections = job.adaptive_connections;
+            const previous_live_received = job.live_received_bytes;
+            const previous_live_total = job.live_total_bytes;
+            const previous_worker_count = job.worker_count;
+            const previous_requested_control = job.requested_control;
             job.state = next;
             job.revision = std.math.add(u64, job.revision, 1) catch {
                 job.state = previous;
@@ -304,16 +586,29 @@ pub const Store = struct {
             };
             if (action == .start) {
                 job.error_message = null;
-                job.completed_bytes = 0;
-                job.total_bytes = null;
+                // Keep the last durable count visible until the downloader
+                // validates its journal and reports the resumed position.
+                job.live_received_bytes = null;
+                job.live_total_bytes = null;
+                job.worker_count = 0;
                 job.requested_control = null;
             }
+            if (action == .retry or action == .@"resume") job.retry_attempts = 0;
+            if (action == .retry) job.adaptive_connections = null;
+            if (next != .retry_wait) job.retry_at_unix_ms = null;
             self.persist() catch |err| {
                 job.state = previous;
                 job.revision = previous_revision;
                 job.error_message = previous_error;
                 job.completed_bytes = previous_completed;
                 job.total_bytes = previous_total;
+                job.retry_attempts = previous_retry_attempts;
+                job.retry_at_unix_ms = previous_retry_at;
+                job.adaptive_connections = previous_adaptive_connections;
+                job.live_received_bytes = previous_live_received;
+                job.live_total_bytes = previous_live_total;
+                job.worker_count = previous_worker_count;
+                job.requested_control = previous_requested_control;
                 return err;
             };
             if (action == .start) if (previous_error) |value| self.allocator.free(value);
@@ -327,12 +622,17 @@ pub const Store = struct {
         url: []u8,
         name: ?[]u8,
         destination: []u8,
+        connections: u8,
+        proxy_mode: ProxyMode,
+        proxy_url: ?[]u8,
+        expected_sha256: ?[32]u8,
 
         pub fn deinit(self: DownloadTask, allocator: std.mem.Allocator) void {
             allocator.free(self.id);
             allocator.free(self.url);
             if (self.name) |name| allocator.free(name);
             allocator.free(self.destination);
+            if (self.proxy_url) |url| allocator.free(url);
         }
     };
 
@@ -350,7 +650,8 @@ pub const Store = struct {
             errdefer if (name) |value| self.allocator.free(value);
             const destination = try self.allocator.dupe(u8, job.destination);
             errdefer self.allocator.free(destination);
-            return .{ .id = id, .url = url, .name = name, .destination = destination };
+            const proxy_url = if (self.settings.proxy_url) |value| try self.allocator.dupe(u8, value) else null;
+            return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256) };
         }
         return error.JobNotFound;
     }
@@ -361,33 +662,46 @@ pub const Store = struct {
         var refs: std.ArrayList(queue_policy.JobRef) = .empty;
         defer refs.deinit(self.allocator);
         for (self.jobs.items, 0..) |job, index| {
-            const uri = try std.Uri.parse(job.url);
             try refs.append(self.allocator, .{
                 .id = @intCast(index),
-                .host = hostString(uri) orelse "",
+                .host = sourceHost(job.url),
                 .priority = job.priority,
                 .sequence = @intCast(index),
                 .state = std.meta.stringToEnum(CoreState, @tagName(job.state)).?,
             });
         }
-        const selected = queue_policy.next(refs.items, .{
-            .global_active = max_parallel_downloads,
+        const limits: queue_policy.Limits = .{
+            .global_active = self.settings.max_concurrent_tasks,
             .per_host_active = max_parallel_downloads_per_host,
-        }) orelse return null;
+        };
+        var selected = queue_policy.next(refs.items, limits) orelse return null;
+        while (try self.destinationOccupied(self.jobs.items[@intCast(refs.items[selected].id)], true)) {
+            refs.items[selected].state = .paused;
+            selected = queue_policy.next(refs.items, limits) orelse return null;
+        }
         const job = &self.jobs.items[@intCast(refs.items[selected].id)];
         const old_state = job.state;
         const old_revision = job.revision;
         const old_error = job.error_message;
         const old_completed = job.completed_bytes;
         const old_total = job.total_bytes;
+        const old_retry_at = job.retry_at_unix_ms;
+        const old_live_received = job.live_received_bytes;
+        const old_live_total = job.live_total_bytes;
+        const old_worker_count = job.worker_count;
+        const old_requested_control = job.requested_control;
         const next_revision = try std.math.add(u64, old_revision, 1);
         const task = try self.copyTaskUnlocked(job.*);
         errdefer task.deinit(self.allocator);
         job.state = .downloading;
         job.revision = next_revision;
         job.error_message = null;
-        job.completed_bytes = 0;
-        job.total_bytes = null;
+        // Preserve the durable prefix while the worker revalidates its
+        // partial file. Its first report will correct stale metadata.
+        job.retry_at_unix_ms = null;
+        job.live_received_bytes = null;
+        job.live_total_bytes = null;
+        job.worker_count = 0;
         job.requested_control = null;
         self.persist() catch |err| {
             job.state = old_state;
@@ -395,6 +709,11 @@ pub const Store = struct {
             job.error_message = old_error;
             job.completed_bytes = old_completed;
             job.total_bytes = old_total;
+            job.retry_at_unix_ms = old_retry_at;
+            job.live_received_bytes = old_live_received;
+            job.live_total_bytes = old_live_total;
+            job.worker_count = old_worker_count;
+            job.requested_control = old_requested_control;
             return err;
         };
         if (old_error) |message| self.allocator.free(message);
@@ -402,16 +721,21 @@ pub const Store = struct {
     }
 
     fn activeForHost(self: *Store, url: []const u8) usize {
-        const target = std.Uri.parse(url) catch return max_parallel_downloads_per_host;
-        const target_host = hostString(target) orelse return max_parallel_downloads_per_host;
+        const target_host = sourceHost(url);
+        if (target_host.len == 0) return max_parallel_downloads_per_host;
         var active: usize = 0;
         for (self.jobs.items) |job| {
             if (job.state != .resolving and job.state != .connecting and job.state != .downloading and job.state != .verifying) continue;
-            const uri = std.Uri.parse(job.url) catch continue;
-            const host = hostString(uri) orelse continue;
+            const host = sourceHost(job.url);
             if (std.ascii.eqlIgnoreCase(host, target_host)) active += 1;
         }
         return active;
+    }
+
+    fn sourceHost(url: []const u8) []const u8 {
+        if (url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:")) return "bittorrent";
+        const uri = std.Uri.parse(url) catch return "";
+        return hostString(uri) orelse "";
     }
 
     fn hostString(uri: std.Uri) ?[]const u8 {
@@ -431,7 +755,16 @@ pub const Store = struct {
         errdefer if (name) |value| self.allocator.free(value);
         const destination = try self.allocator.dupe(u8, job.destination);
         errdefer self.allocator.free(destination);
-        return .{ .id = id, .url = url, .name = name, .destination = destination };
+        const proxy_url = if (self.settings.proxy_url) |value| try self.allocator.dupe(u8, value) else null;
+        return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256) };
+    }
+
+    fn connectionsForJob(self: *const Store, job: Job) u8 {
+        return switch (self.settings.multipart_mode) {
+            .off => 0,
+            .fixed => self.settings.default_connections_per_task,
+            .auto => @min(self.settings.default_connections_per_task, job.adaptive_connections orelse self.settings.default_connections_per_task),
+        };
     }
 
     pub fn finishDownload(self: *Store, job_id: []const u8, succeeded: bool, error_message: ?[]const u8) !void {
@@ -444,6 +777,9 @@ pub const Store = struct {
             const old_revision = job.revision;
             const old_error = job.error_message;
             const old_requested_control = job.requested_control;
+            const old_worker_count = job.worker_count;
+            const old_retry_attempts = job.retry_attempts;
+            const old_retry_at = job.retry_at_unix_ms;
             const next_revision = try std.math.add(u64, job.revision, 1);
             const owned_error = if (!succeeded and error_message != null)
                 try self.allocator.dupe(u8, error_message.?)
@@ -453,11 +789,19 @@ pub const Store = struct {
             job.revision = next_revision;
             job.error_message = owned_error;
             job.requested_control = null;
+            job.worker_count = 0;
+            if (succeeded) job.retry_attempts = 0;
+            job.retry_at_unix_ms = null;
+            job.live_received_bytes = null;
+            job.live_total_bytes = null;
             self.persist() catch |err| {
                 job.state = old_state;
                 job.revision = old_revision;
                 job.error_message = old_error;
                 job.requested_control = old_requested_control;
+                job.worker_count = old_worker_count;
+                job.retry_attempts = old_retry_attempts;
+                job.retry_at_unix_ms = old_retry_at;
                 if (owned_error) |value| self.allocator.free(value);
                 return err;
             };
@@ -465,6 +809,83 @@ pub const Store = struct {
             return;
         }
         return error.JobNotFound;
+    }
+
+    /// Persist a bounded retry before releasing the worker slot. A later
+    /// scheduler tick promotes the job only after its deadline has passed.
+    pub fn scheduleTransientRetry(self: *Store, job_id: []const u8, failure: []const u8, minimum_delay_seconds: u32, rate_limited_connections: ?u8) !bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.state != .downloading or job.requested_control != null or job.retry_attempts >= 3) return false;
+            const attempt = job.retry_attempts + 1;
+            const delay_seconds: i64 = @max(@as(i64, 1) << @intCast(attempt), @min(@as(i64, minimum_delay_seconds), 3600));
+            const now_ms: i64 = @intCast(@divTrunc(std.Io.Clock.now(.real, self.io).nanoseconds, std.time.ns_per_ms));
+            const next_ms = std.math.add(i64, now_ms, delay_seconds * 1000) catch return error.RetryTimeOverflow;
+            const new_connections: ?u8 = if (rate_limited_connections) |count| @max(@as(u8, 1), count / 2) else job.adaptive_connections;
+            const message = if (rate_limited_connections != null)
+                try std.fmt.allocPrint(self.allocator, "Server limited parallel transfer; retrying in {d}s with {d} connection(s) ({d}/3)", .{ delay_seconds, new_connections.?, attempt })
+            else
+                try std.fmt.allocPrint(self.allocator, "Temporary transfer error ({s}); retrying in {d}s ({d}/3)", .{ failure, delay_seconds, attempt });
+            const old_state = job.state;
+            const old_revision = job.revision;
+            const old_error = job.error_message;
+            const old_worker_count = job.worker_count;
+            const old_attempts = job.retry_attempts;
+            const old_retry_at = job.retry_at_unix_ms;
+            const old_adaptive_connections = job.adaptive_connections;
+            const old_live_received = job.live_received_bytes;
+            const old_live_total = job.live_total_bytes;
+            job.state = .retry_wait;
+            job.revision = std.math.add(u64, job.revision, 1) catch {
+                self.allocator.free(message);
+                return error.RevisionOverflow;
+            };
+            job.error_message = message;
+            job.retry_attempts = attempt;
+            job.retry_at_unix_ms = next_ms;
+            job.adaptive_connections = new_connections;
+            job.worker_count = 0;
+            job.live_received_bytes = null;
+            job.live_total_bytes = null;
+            self.persist() catch |err| {
+                job.state = old_state;
+                job.revision = old_revision;
+                job.error_message = old_error;
+                job.retry_attempts = old_attempts;
+                job.retry_at_unix_ms = old_retry_at;
+                job.adaptive_connections = old_adaptive_connections;
+                job.worker_count = old_worker_count;
+                job.live_received_bytes = old_live_received;
+                job.live_total_bytes = old_live_total;
+                self.allocator.free(message);
+                return err;
+            };
+            if (old_error) |value| self.allocator.free(value);
+            return true;
+        }
+        return error.JobNotFound;
+    }
+
+    pub fn promoteDueRetries(self: *Store) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const now_ms: i64 = @intCast(@divTrunc(std.Io.Clock.now(.real, self.io).nanoseconds, std.time.ns_per_ms));
+        for (self.jobs.items) |*job| {
+            if (job.state != .retry_wait or (job.retry_at_unix_ms orelse 0) > now_ms) continue;
+            const old_revision = job.revision;
+            const old_retry_at = job.retry_at_unix_ms;
+            job.revision = try std.math.add(u64, job.revision, 1);
+            job.state = .queued;
+            job.retry_at_unix_ms = null;
+            self.persist() catch |err| {
+                job.revision = old_revision;
+                job.state = .retry_wait;
+                job.retry_at_unix_ms = old_retry_at;
+                return err;
+            };
+        }
     }
 
     pub fn requestStopJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: StopAction, expected_revision: u64) ![]u8 {
@@ -524,9 +945,13 @@ pub const Store = struct {
             const old_requested = job.requested_control;
             const old_completed = job.completed_bytes;
             const old_total = job.total_bytes;
+            const old_worker_count = job.worker_count;
             const next_revision = try std.math.add(u64, job.revision, 1);
             job.state = next_state;
             job.requested_control = null;
+            job.worker_count = 0;
+            job.live_received_bytes = null;
+            job.live_total_bytes = null;
             if (next_state == .canceled) {
                 job.completed_bytes = 0;
                 job.total_bytes = null;
@@ -538,6 +963,31 @@ pub const Store = struct {
                 job.requested_control = old_requested;
                 job.completed_bytes = old_completed;
                 job.total_bytes = old_total;
+                job.worker_count = old_worker_count;
+                return err;
+            };
+            return;
+        }
+        return error.JobNotFound;
+    }
+
+    pub fn finishScheduledDownload(self: *Store, job_id: []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.state != .downloading or job.requested_control != null) return error.InvalidJobControl;
+            const previous_worker_count = job.worker_count;
+            const next_revision = try std.math.add(u64, job.revision, 1);
+            job.state = .scheduled;
+            job.revision = next_revision;
+            job.worker_count = 0;
+            job.live_received_bytes = null;
+            job.live_total_bytes = null;
+            self.persist() catch |err| {
+                job.state = .downloading;
+                job.revision -= 1;
+                job.worker_count = previous_worker_count;
                 return err;
             };
             return;
@@ -546,11 +996,16 @@ pub const Store = struct {
     }
 
     pub fn updateProgress(self: *Store, job_id: []const u8, completed_bytes: u64, total_bytes: ?u64, durable: bool) !void {
-        if (!durable) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.id, job_id) or job.state != .downloading) continue;
+            job.live_received_bytes = completed_bytes;
+            job.live_total_bytes = total_bytes;
+            if (!durable) {
+                _ = self.change_sequence.fetchAdd(1, .release);
+                return;
+            }
             const previous_completed = job.completed_bytes;
             const previous_total = job.total_bytes;
             job.completed_bytes = completed_bytes;
@@ -560,6 +1015,30 @@ pub const Store = struct {
                 job.total_bytes = previous_total;
                 return err;
             };
+            return;
+        }
+    }
+
+    pub fn updateWorkerProgress(self: *Store, job_id: []const u8, worker_id: u32, start: u64, end: u64, downloaded: u64) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id) or job.state != .downloading) continue;
+            var slot: ?usize = null;
+            for (job.workers[0..job.worker_count], 0..) |worker, index| {
+                if (worker.worker_id == worker_id) {
+                    slot = index;
+                    break;
+                }
+            }
+            const index = slot orelse blk: {
+                if (job.worker_count == job.workers.len) return;
+                const next = job.worker_count;
+                job.worker_count += 1;
+                break :blk next;
+            };
+            job.workers[index] = .{ .worker_id = worker_id, .start = start, .end = end, .downloaded = downloaded };
+            _ = self.change_sequence.fetchAdd(1, .release);
             return;
         }
     }
@@ -593,13 +1072,17 @@ pub const Store = struct {
         errdefer self.allocator.free(destination);
         const idempotency_key = try self.allocator.dupe(u8, input.idempotency_key);
         errdefer self.allocator.free(idempotency_key);
+        const expected_sha256 = if (input.expected_sha256) |digest| try self.allocator.dupe(u8, digest) else null;
+        errdefer if (expected_sha256) |digest| self.allocator.free(digest);
         return .{
             .id = id,
             .url = url,
             .name = name,
             .destination = destination,
             .idempotency_key = idempotency_key,
+            .expected_sha256 = expected_sha256,
             .priority = input.priority,
+            .bandwidth_limit_bytes_per_second = input.bandwidth_limit_bytes_per_second,
         };
     }
 
@@ -609,6 +1092,7 @@ pub const Store = struct {
         if (job.name) |name| self.allocator.free(name);
         self.allocator.free(job.destination);
         self.allocator.free(job.idempotency_key);
+        if (job.expected_sha256) |digest| self.allocator.free(digest);
         if (job.error_message) |message| self.allocator.free(message);
     }
 
@@ -694,32 +1178,70 @@ pub const Store = struct {
         const priority_value = object.get("priority") orelse std.json.Value{ .integer = 0 };
         if (priority_value != .integer or priority_value.integer < -100 or priority_value.integer > 100)
             return error.InvalidJobStore;
+        const bandwidth_value = object.get("bandwidth_limit_bytes_per_second") orelse std.json.Value{ .integer = 0 };
+        if (bandwidth_value != .integer or bandwidth_value.integer < 0 or bandwidth_value.integer > 1_000_000_000_000)
+            return error.InvalidJobStore;
         const revision_value = object.get("revision") orelse return error.InvalidJobStore;
         if (revision_value != .integer or revision_value.integer <= 0) return error.InvalidJobStore;
         const name_value = object.get("name") orelse .null;
         if (name_value != .null and name_value != .string) return error.InvalidJobStore;
         if (name_value == .string and !validName(name_value.string)) return error.InvalidJobStore;
         const name = if (name_value == .string) try self.allocator.dupe(u8, name_value.string) else null;
+        const digest_value = object.get("expected_sha256") orelse .null;
+        if (digest_value != .null and (digest_value != .string or !validSha256(digest_value.string))) return error.InvalidJobStore;
+        const expected_sha256 = if (digest_value == .string) try self.allocator.dupe(u8, digest_value.string) else null;
+        const attempts_value = object.get("retry_attempts") orelse std.json.Value{ .integer = 0 };
+        if (attempts_value != .integer or attempts_value.integer < 0 or attempts_value.integer > 3) return error.InvalidJobStore;
+        const retry_at_value = object.get("retry_at_unix_ms") orelse .null;
+        if (retry_at_value != .null and (retry_at_value != .integer or retry_at_value.integer < 0)) return error.InvalidJobStore;
+        const adaptive_value = object.get("adaptive_connections") orelse .null;
+        if (adaptive_value != .null and (adaptive_value != .integer or adaptive_value.integer < 1 or adaptive_value.integer > 32)) return error.InvalidJobStore;
         try self.jobs.append(self.allocator, .{
             .id = try self.allocator.dupe(u8, id),
             .url = try self.allocator.dupe(u8, url),
             .name = name,
             .destination = try self.allocator.dupe(u8, destination),
             .idempotency_key = try self.allocator.dupe(u8, key),
+            .expected_sha256 = expected_sha256,
             .state = state,
             .revision = @intCast(revision_value.integer),
             .error_message = error_message,
+            .retry_attempts = @intCast(attempts_value.integer),
+            .retry_at_unix_ms = if (retry_at_value == .integer) retry_at_value.integer else null,
+            .adaptive_connections = if (adaptive_value == .integer) @intCast(adaptive_value.integer) else null,
             .completed_bytes = @intCast(completed_value.integer),
             .total_bytes = total_bytes,
             .requested_control = requested_control,
             .priority = @intCast(priority_value.integer),
+            .bandwidth_limit_bytes_per_second = @intCast(bandwidth_value.integer),
         });
     }
 
     fn persist(self: *Store) !void {
+        var persisted_jobs: std.ArrayList(PersistedJob) = .empty;
+        defer persisted_jobs.deinit(self.allocator);
+        for (self.jobs.items) |job| try persisted_jobs.append(self.allocator, .{
+            .id = job.id,
+            .url = job.url,
+            .name = job.name,
+            .destination = job.destination,
+            .idempotency_key = job.idempotency_key,
+            .expected_sha256 = job.expected_sha256,
+            .state = job.state,
+            .revision = job.revision,
+            .error_message = job.error_message,
+            .retry_attempts = job.retry_attempts,
+            .retry_at_unix_ms = job.retry_at_unix_ms,
+            .adaptive_connections = job.adaptive_connections,
+            .completed_bytes = job.completed_bytes,
+            .total_bytes = job.total_bytes,
+            .requested_control = job.requested_control,
+            .priority = job.priority,
+            .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
+        });
         const data = try std.json.Stringify.valueAlloc(self.allocator, .{
             .version = 1,
-            .jobs = self.jobs.items,
+            .jobs = persisted_jobs.items,
         }, .{});
         defer self.allocator.free(data);
         var atomic = try std.Io.Dir.createFileAtomic(.cwd(), self.io, self.file_path, .{
@@ -730,6 +1252,68 @@ pub const Store = struct {
         defer atomic.deinit(self.io);
         try atomic.file.writeStreamingAll(self.io, data);
         try atomic.replace(self.io);
+        _ = self.change_sequence.fetchAdd(1, .release);
+    }
+
+    fn loadSettings(self: *Store) !void {
+        if (comptime builtin.os.tag != .windows) {
+            const path_z = try self.allocator.dupeSentinel(u8, self.settings_path, 0);
+            defer self.allocator.free(path_z);
+            if (posix_stat.get(path_z, false)) |existing| {
+                if (existing.uid != posix_stat.currentUid() or !posix_stat.isRegularFile(existing)) return error.UnsafeSettingsFile;
+                if (chmod(path_z, 0o600) != 0) return error.UnsafeSettingsFile;
+            }
+        }
+        var file = std.Io.Dir.openFileAbsolute(self.io, self.settings_path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => {
+                self.settings = try self.duplicateSettings(.{});
+                try self.persistSettings();
+                return;
+            },
+            else => return err,
+        };
+        defer file.close(self.io);
+        const stat = try file.stat(self.io);
+        if (stat.size > 1024 * 1024) return error.SettingsTooLarge;
+        var buffer: [4096]u8 = undefined;
+        var reader = file.reader(self.io, &buffer);
+        const bytes = try reader.interface.allocRemaining(self.allocator, .limited(stat.size));
+        defer self.allocator.free(bytes);
+        const parsed = try std.json.parseFromSlice(Settings, self.allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        var migrated = parsed.value;
+        migrated.schema_version = 2;
+        try validateSettings(migrated);
+        self.settings = try self.duplicateSettings(migrated);
+    }
+
+    fn persistSettings(self: *Store) !void {
+        const data = try std.json.Stringify.valueAlloc(self.allocator, self.settings, .{});
+        defer self.allocator.free(data);
+        var atomic = try std.Io.Dir.createFileAtomic(.cwd(), self.io, self.settings_path, .{
+            .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o600),
+            .make_path = true,
+            .replace = true,
+        });
+        defer atomic.deinit(self.io);
+        try atomic.file.writeStreamingAll(self.io, data);
+        try atomic.replace(self.io);
+    }
+
+    fn validateSettings(value: Settings) !void {
+        if (value.schema_version != 2 or value.max_concurrent_tasks == 0 or value.max_concurrent_tasks > 32 or
+            value.default_connections_per_task == 0 or value.default_connections_per_task > 32 or
+            value.default_download_folder.len > 4096) return error.InvalidSettings;
+        if (value.proxy_mode == .custom) {
+            const endpoint = value.proxy_url orelse return error.InvalidSettings;
+            if (endpoint.len == 0 or endpoint.len > 2048) return error.InvalidSettings;
+            const uri = std.Uri.parse(endpoint) catch return error.InvalidSettings;
+            if (uri.host == null or uri.port == null or uri.port.? == 0 or uri.user != null or uri.password != null or
+                uri.query != null or uri.fragment != null) return error.InvalidSettings;
+            if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https") and
+                !std.mem.eql(u8, uri.scheme, "socks5")) return error.InvalidSettings;
+        }
+        if (value.bandwidth_limit_bytes_per_second > 1_000_000_000_000 or value.scheduled_bandwidth_limit_bytes_per_second > 1_000_000_000_000) return error.InvalidSettings;
     }
 
     fn deletePartialFiles(self: *Store, job: Job) !void {
@@ -741,10 +1325,13 @@ pub const Store = struct {
         defer self.allocator.free(journal_path);
         const segment_journal = try std.fmt.allocPrint(self.allocator, "{s}.sdr", .{part_path});
         defer self.allocator.free(segment_journal);
+        const ftp_journal = try std.fmt.allocPrint(self.allocator, "{s}.ftpj", .{part_path});
+        defer self.allocator.free(ftp_journal);
         const cwd = std.Io.Dir.cwd();
         cwd.deleteFile(self.io, part_path) catch {};
         cwd.deleteFile(self.io, journal_path) catch {};
         cwd.deleteFile(self.io, segment_journal) catch {};
+        cwd.deleteFile(self.io, ftp_journal) catch {};
     }
 
     fn deletePartialFilesStrict(self: *Store, job: Job) !void {
@@ -756,16 +1343,28 @@ pub const Store = struct {
         defer self.allocator.free(journal_path);
         const segment_journal = try std.fmt.allocPrint(self.allocator, "{s}.sdr", .{part_path});
         defer self.allocator.free(segment_journal);
+        const ftp_journal = try std.fmt.allocPrint(self.allocator, "{s}.ftpj", .{part_path});
+        defer self.allocator.free(ftp_journal);
         const cwd = std.Io.Dir.cwd();
         try deleteFileIfPresent(cwd, self.io, part_path);
         try deleteFileIfPresent(cwd, self.io, journal_path);
         try deleteFileIfPresent(cwd, self.io, segment_journal);
+        try deleteFileIfPresent(cwd, self.io, ftp_journal);
     }
 
     fn destinationPath(self: *Store, job: Job) ![]u8 {
         var filename: []const u8 = undefined;
         if (job.name) |name| {
             filename = name;
+        } else if (job.url.len >= 7 and std.ascii.eqlIgnoreCase(job.url[0..7], "magnet:")) {
+            var link = try @import("../protocols/torrent/magnet.zig").inspect(self.allocator, job.url);
+            defer link.deinit(self.allocator);
+            if (link.display_name) |name| {
+                if (@import("../protocols/torrent/metainfo.zig").safeComponent(name)) return std.fs.path.join(self.allocator, &.{ job.destination, name });
+            }
+            var fallback: [48]u8 = undefined;
+            const name = try std.fmt.bufPrint(&fallback, "torrent-{s}.download", .{job.id[0..8]});
+            return std.fs.path.join(self.allocator, &.{ job.destination, name });
         } else {
             const uri = try std.Uri.parse(job.url);
             const raw_path = switch (uri.path) {
@@ -785,6 +1384,40 @@ pub const Store = struct {
         }
         return std.fs.path.join(self.allocator, &.{ job.destination, filename });
     }
+
+    /// Existing records can predate destination reservations. Active records
+    /// always own their partial path; failed/canceled records own it only while
+    /// their partial file is still present.
+    fn destinationOccupied(self: *Store, candidate: Job, active_only: bool) !bool {
+        const target = try self.destinationPath(candidate);
+        defer self.allocator.free(target);
+        if (!active_only) {
+            if (try self.ioStatExists(target)) return error.DestinationExists;
+        }
+        for (self.jobs.items) |other| {
+            if (std.mem.eql(u8, other.id, candidate.id) or other.state == .completed) continue;
+            const active = other.state == .resolving or other.state == .connecting or
+                other.state == .downloading or other.state == .verifying;
+            if (active_only and !active) continue;
+            const existing = try self.destinationPath(other);
+            defer self.allocator.free(existing);
+            if (!std.mem.eql(u8, target, existing)) continue;
+            if (other.state == .failed or other.state == .canceled) {
+                const partial = try std.fmt.allocPrint(self.allocator, "{s}.part", .{existing});
+                defer self.allocator.free(partial);
+                if (!try self.ioStatExists(partial)) continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn ioStatExists(self: *Store, path: []const u8) !bool {
+        return if (std.Io.Dir.cwd().statFile(self.io, path, .{})) |_| true else |err| switch (err) {
+            error.FileNotFound => false,
+            else => return err,
+        };
+    }
 };
 
 const Summary = struct {
@@ -792,27 +1425,66 @@ const Summary = struct {
     url: []const u8,
     name: ?[]const u8,
     destination: []const u8,
+    expected_sha256: ?[]const u8,
     state: State,
     revision: []const u8,
     error_message: ?[]const u8,
+    retry_attempts: u8,
+    retry_at_unix_ms: ?[]const u8,
     completed_bytes: []const u8,
+    received_bytes: ?[]const u8,
     total_bytes: ?[]const u8,
     requested_control: ?StopAction,
     priority: i32,
+    bandwidth_limit_bytes_per_second: u64,
+    workers: []const WorkerProgress,
+};
+
+const PersistedJob = struct {
+    id: []const u8,
+    url: []const u8,
+    name: ?[]const u8,
+    destination: []const u8,
+    idempotency_key: []const u8,
+    expected_sha256: ?[]const u8,
+    state: State,
+    revision: u64,
+    error_message: ?[]const u8,
+    retry_attempts: u8,
+    retry_at_unix_ms: ?i64,
+    adaptive_connections: ?u8,
+    completed_bytes: u64,
+    total_bytes: ?u64,
+    requested_control: ?StopAction,
+    priority: i32,
+    bandwidth_limit_bytes_per_second: u64,
 };
 
 fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
     return try std.fmt.allocPrint(allocator, "{d}", .{value});
 }
 
-fn validateInput(io: std.Io, input: AddInput) !void {
+fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !void {
+    if (input.expected_sha256) |digest| if (!validSha256(digest)) return error.InvalidJob;
     if (input.url.len == 0 or input.url.len > 8192) return error.InvalidJob;
     if (input.priority < -100 or input.priority > 100) return error.InvalidJob;
-    const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
-    if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
-        uri.host == null or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null)
-        return error.InvalidJob;
-    if (input.name) |name| if (!validName(name)) return error.InvalidJob;
+    if (input.bandwidth_limit_bytes_per_second > 1_000_000_000_000) return error.InvalidJob;
+    if (input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:")) {
+        var link = @import("../protocols/torrent/magnet.zig").inspect(allocator, input.url) catch return error.InvalidJob;
+        defer link.deinit(allocator);
+    } else {
+        const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
+        if ((!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https") and
+            !std.ascii.eqlIgnoreCase(uri.scheme, "ftp") and !std.ascii.eqlIgnoreCase(uri.scheme, "ftps")) or
+            uri.host == null or uri.user != null or uri.password != null or uri.fragment != null)
+            return error.InvalidJob;
+        if ((std.ascii.eqlIgnoreCase(uri.scheme, "ftp") or std.ascii.eqlIgnoreCase(uri.scheme, "ftps")) and uri.query != null) return error.InvalidJob;
+    }
+    if (input.name) |name| {
+        if (!validName(name)) return error.InvalidJob;
+        if (input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:") and
+            !@import("../protocols/torrent/metainfo.zig").safeComponent(name)) return error.InvalidJob;
+    }
     if (input.destination.len == 0 or input.destination.len > 4096 or
         std.mem.indexOfScalar(u8, input.destination, 0) != null) return error.InvalidJob;
     if (!std.fs.path.isAbsolute(input.destination)) return error.InvalidDestination;
@@ -830,13 +1502,33 @@ fn validName(name: []const u8) bool {
         !std.mem.eql(u8, name, "..") and std.mem.indexOfAny(u8, name, "/\\\x00") == null;
 }
 
+fn validSha256(digest: []const u8) bool {
+    if (digest.len != 64) return false;
+    for (digest) |character| {
+        if (!std.ascii.isHex(character)) return false;
+    }
+    return true;
+}
+
+fn decodeSha256(value: ?[]const u8) ?[32]u8 {
+    const digest = value orelse return null;
+    var bytes: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, digest) catch unreachable;
+    return bytes;
+}
+
 fn sameInput(job: *const Job, input: AddInput) bool {
     const same_name = if (job.name) |name|
         if (input.name) |input_name| std.mem.eql(u8, name, input_name) else false
     else
         input.name == null;
-    return std.mem.eql(u8, job.url, input.url) and same_name and
-        std.mem.eql(u8, job.destination, input.destination) and job.priority == input.priority;
+    const same_digest = if (job.expected_sha256) |digest|
+        if (input.expected_sha256) |other| std.ascii.eqlIgnoreCase(digest, other) else false
+    else
+        input.expected_sha256 == null;
+    return same_digest and std.mem.eql(u8, job.url, input.url) and same_name and
+        std.mem.eql(u8, job.destination, input.destination) and job.priority == input.priority and
+        job.bandwidth_limit_bytes_per_second == input.bandwidth_limit_bytes_per_second;
 }
 
 fn getString(object: std.json.ObjectMap, key: []const u8) ![]const u8 {
@@ -846,6 +1538,7 @@ fn getString(object: std.json.ObjectMap, key: []const u8) ![]const u8 {
 }
 
 fn redactUrl(url: []const u8) []const u8 {
+    if (url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:")) return "magnet:";
     return url;
 }
 

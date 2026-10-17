@@ -1,12 +1,24 @@
 # HTTP multipart range allocation
 
 This document describes the bounded HTTP range path in the engine. Eligible
-HTTP(S) downloads now probe with `Range: bytes=0-0`, then issue up to four
-concurrent segment requests when the server proves range support and returns a
+HTTP(S) downloads now probe with `Range: bytes=0-0`, then issue up to the
+configured number of concurrent segment requests when the server proves range support and returns a
 strong ETag. Other downloads use the existing single-stream path. Work is only
-split when each new extent can retain at least 4 MiB. The segment
-journal is atomically replaced after a whole extent has been synced; a crash
-mid-extent causes that extent to be fetched again.
+split when each new extent can retain at least 4 MiB. The segment journal
+is not used when parallel downloading is Off; Automatic uses the
+configured connection ceiling and can lower it after a server rate limit,
+while Fixed keeps the configured count for each attempt. Single-stream
+downloads can still resume when the response has a known length and strong ETag.
+For multipart transfers, the segment journal is atomically replaced after each
+4 MiB of a worker's synced data, at
+segment completion, and when a worker stops. A crash may redownload only the
+bytes after that worker's last durable checkpoint.
+
+The Add Download preflight uses one small GET with the same range header. It
+derives the suggested name, final redirected URL, size, and range capability
+from that response. If the server ignores the range and sends a full response,
+the preflight closes its connection after the headers instead of reading the
+file body.
 
 ## Interval invariants
 
@@ -33,10 +45,27 @@ versioned codec in `src/protocols/http/segment_journal.zig` records
 representation identity, interval ownership, and cursors, and rejects gaps,
 overlaps, invalid validators, and malformed state. The driver syncs the part
 file before advancing a segment cursor and atomically replaces the journal.
-Checkpoints currently occur at segment completion, so in-flight segment bytes
-are safely redownloaded after interruption. The worker count is fixed at four
-or fewer for each transfer; splitting is performed before requests start, and
-dynamic work stealing or subdivision during a transfer remains future work.
+Checkpoints occur during segments and at pause, schedule stop, or transfer
+error when the worker can sync its buffered data. If a server changes the
+representation or returns an invalid range after a partial exists, the engine
+preserves the partial and reports the error instead of silently restarting a
+single-stream download. The worker count follows the per-task setting (up to
+32). Before requests start, the engine partitions at most twice as many
+pending segments as concurrent workers, bounded by 64 segments and the 4 MiB
+minimum piece size. An idle worker claims the next pending segment without
+waiting for the other workers. A failed worker stops new claims; other workers
+retain durably synced prefixes before the transfer exits. When every preplanned
+segment is claimed and a worker becomes idle, an active worker can divide its
+remaining range at a durable checkpoint. The original request is closed after
+its shortened head is synced; the idle worker requests only the new tail.
+If an HTTP range probe or worker receives 429 or 503, the engine saves a
+retry delay and halves that job's next-attempt connection cap, down to one.
+If a worker receives 403 after the range probe succeeded, Automatic mode also
+uses a bounded retry with fewer connections. Fixed mode retains the configured
+count.
+The cap is persisted with the job so an engine restart cannot restore the
+aggressive count during the wait. A manual retry after terminal failure
+restores the configured default connection count.
 
 ## Required integration policy
 
@@ -54,6 +83,11 @@ accepted. Two workers must never own the same writable byte. A journal must
 only advance a segment cursor after the corresponding file bytes are synced;
 recovery must discard any range whose ownership or representation cannot be
 validated.
+
+An invalid or interrupted segment response closes its connection without
+draining the body. This matters when a server ignores a range and sends a full
+`200 OK` response: cleanup must return promptly instead of reading the entire
+unwanted file.
 
 ## Adversarial validation matrix
 

@@ -13,3 +13,6 @@ linux/SpeedDownload/build/
 windows/SpeedDownload/bin/
 windows/SpeedDownload/obj/
 windows/SpeedDownload/publish/
+.build-cache-rebuild/
+macos/SpeedDownload/.build-cache-rebuild/
+dist/

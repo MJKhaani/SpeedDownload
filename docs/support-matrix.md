@@ -1,14 +1,31 @@
 # Platform Support and Feasibility Matrix
 
-**Status date:** 2026-10-13
-**Current project phase:** Phase 1 core MVP implementation; Phase 0 native CI results remain unavailable
+**Status date:** 2026-10-15
+**Current project phase:** macOS engine/client implementation alongside Phase 1–3 work; Phase 0 native CI results remain unavailable
 **Meaning:** “Not validated” means no native build/runtime evidence is available. Cross-compilation alone cannot change a target to supported.
 
 ## Current evidence
 
-Zig 0.17.0 builds the HTTP(S) engine on the current macOS host and cross-compiles it to x86_64 Windows. The downloader uses a real one-byte range probe and, for a known-size response with a strong ETag, can write up to four disjoint extents concurrently. Completed extents are synced before their cursors are atomically checkpointed; interrupted in-flight extents are fetched again on retry. Unsupported responses use the single-stream path. Dynamic resplitting during a transfer remains unimplemented. Optional SHA-256 verification is available. The engine persists jobs, exposes add/list/control RPCs, and drains the queue through a host-aware scheduler with four concurrent jobs globally and two per host; jobs have persisted priorities and durable progress is surfaced through snapshots polled by clients. Queue and active-transfer pause/resume/cancel controls are implemented; active stop is cooperative and may wait for the current network read. Event subscriptions are not connected. At startup, persisted in-progress states are recovered; pending active stops resolve to paused/canceled and other active jobs to `retry_wait`. Job creation requires an absolute, existing writable destination directory. IPC framing and handshake logic have macOS/Linux Unix socket and Windows named-pipe adapters. Unix sockets use private directory checks and same-UID peer authentication; named pipes use a current-user/session name, private DACL and remote-client rejection. Both listeners support up to 32 client sessions. The three native client projects implement dashboard polling, controls, and reconnect attempts. A new native CI workflow builds each engine/GUI on its OS runner and runs a local IPC + HTTP progress/restart smoke. It has not run against the current workspace yet, so no platform is verified. The macOS sandbox also prevents local socket binding (`EPERM`); local GTK dependencies and Windows GUI runtime are unavailable. No IPC platform is validated until native CI passes and GUI connection/reconnect behavior is confirmed on each OS.
+Zig 0.17.0 builds the HTTP(S) engine on the current macOS host and cross-compiles it to x86_64 Windows. The downloader uses a real one-byte range probe and, for a known-size response with a strong ETag, can write up to 32 disjoint extents concurrently when configured and supported. The macOS Connections preference exposes Off, Automatic, and Fixed parallel modes; Automatic can lower the count after server rate limits. Completed extents are synced before their cursors are atomically checkpointed; interrupted in-flight extents are fetched again on retry. Idle workers claim preplanned pending segments or take an untouched tail split from an active range at a durable checkpoint. Unsupported responses use the single-stream path. Optional SHA-256 verification is available. On macOS, system proxy mode reads static HTTP and HTTPS proxy entries with a 30-second cache and honors simple-host, exact-host, and wildcard-host exceptions for the original request host; automatic proxy scripts, SOCKS, CIDR exceptions, and authentication are not implemented. The engine persists jobs and per-user settings, exposes probe/add/list/control RPCs, and drains the queue through a host-aware scheduler. Bounded automatic retries for transient connection failures and HTTP 429/503 persist their attempt count and next retry time. Global and per-job download limits are enforced by the engine; the latter can change while a transfer is active. Queue and active-transfer pause/resume/cancel controls are implemented; active stop is cooperative and may wait for the current network read. Full event subscriptions are not connected. The macOS client uses a bounded change wait before fetching snapshots; other clients poll. At startup, persisted in-progress states are recovered; pending active stops resolve to paused/canceled and other active jobs to `retry_wait`. Job creation requires an absolute, existing writable destination directory. IPC framing and handshake logic have macOS/Linux Unix socket and Windows named-pipe adapters. Unix sockets use private directory checks and same-UID peer authentication; named pipes use a current-user/session name, private DACL and remote-client rejection. Both listeners support up to 32 client sessions. The three native client projects implement dashboard polling, controls, and reconnect attempts. Native CI has not run against the current workspace. The macOS client was exercised interactively on the user's host, but its release smoke and accessibility checks remain unrecorded. Local GTK dependencies and Windows GUI runtime are unavailable on this host.
 
 ## Target matrix
+
+Anonymous passive FTP and explicit FTPS source code now build with the macOS
+engine and are available through the CLI, IPC queue, and macOS Add Download
+dialog. FTPS certificate validation and encrypted data transport compile but
+have not been exercised against a live server. FTP/FTPS server interoperability
+and resume after a process restart are not yet
+validated. See [FTP source status](protocols/ftp.md) for its limits.
+
+The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
+inspection. It also has source for BEP 9 metadata retrieval from explicit
+`x.pe` peers or HTTP(S)/UDP tracker compact IPv4 peers, but this path has not
+been exercised against a live peer. Initial single-file v1 magnet payload
+transfer source now compiles and routes through the macOS/Unix engine queue,
+with piece verification and partial-file rehashing, but has not been exercised
+against a live swarm. DHT, multi-file torrents, and
+seeding remain unimplemented.
+See [BitTorrent status](protocols/torrent.md).
 
 | OS | CPU | Engine/CLI | Native GUI | IPC/runtime package | Status / next evidence |
 |---|---|---:|---:|---:|---|
@@ -19,7 +36,7 @@ Zig 0.17.0 builds the HTTP(S) engine on the current macOS host and cross-compile
 | Linux | x86_64 | Native smoke pending | GTK 4 source; native build pending | AF_UNIX source; native smoke pending | Experimental until Linux CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
 | Linux | ARM64 | Not validated | GTK source; not built | AF_UNIX source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
 | Linux | ARM32 | Not validated | Not implemented | Not implemented | Stretch target; assess ABI, OS dependencies and runner/hardware separately. |
-| macOS | x86_64 | Engine compiles; native smoke pending | SwiftUI source; native build pending | AF_UNIX source; local bind blocked by sandbox | Experimental until macOS CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
+| macOS | x86_64 | Engine compiles; native smoke pending | SwiftUI bundle builds; user interactive use recorded | AF_UNIX connects in packaged app; automated smoke pending | Experimental until macOS CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
 | macOS | ARM64 | Engine compiles; native smoke pending | SwiftUI source; native build pending | AF_UNIX source; local bind blocked by sandbox | Experimental until Apple Silicon native build/runtime and GUI connection/reconnect checks pass. |
 
 ## Core module check
@@ -40,4 +57,4 @@ No target is currently supported or release-certified. For each target, record e
 
 ## Phase 1 status
 
-The headless engine, persistent job store, HTTP(S) downloader with safe resume, and RPC CLI (`rpc list`, `rpc add`, `rpc control`, `rpc reorder`, `rpc delete`) are implemented. Local macOS, Linux x86_64, and Windows x86_64 compile checks have passed for recent engine revisions. Phase 1 runtime acceptance remains unverified: crash recovery, overwrite protection, pause/resume/cancel, TLS behavior, large-file handling, and restart persistence need the native integration suite. Runtime checks are deferred to the project testing pass.
+The headless engine, persistent job store, HTTP(S) downloader with safe resume, and RPC CLI (`rpc list`, `rpc probe`, `rpc add`, `rpc control`, `rpc reorder`, `rpc delete`) are implemented. The macOS client has been exercised interactively by the user, including multipart progress and resuming a partial transfer, but that observation is not a recorded release smoke test. On 2026-10-15 the Zig engine compiled with Zig 0.17.0 and the macOS app bundle built with Swift 6.0.3 on this Intel macOS host. Linux and Windows clients are deferred for the current implementation focus. Phase 1 runtime acceptance remains unverified: crash recovery, overwrite protection, pause/resume/cancel, TLS behavior, large-file handling, and restart persistence need the native integration suite.

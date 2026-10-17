@@ -1,11 +1,10 @@
-//! Single-stream HTTP(S) download prototype.
+//! HTTP(S) download with validated multipart and single-stream paths.
 //!
 //! This driver owns one request, an incomplete file, and a compact resume journal.
-//! Resume is enabled only for credential-free/query-free URLs with a known
-//! length and strong ETag. Durable byte counts advance only after the partial
+//! Resume is enabled only for credential-free URLs with a known length and
+//! strong ETag. Durable byte counts advance only after the partial
 //! file is synced. The journal stores a SHA-256 URL fingerprint, never the URL.
-//! This is still a single-stream driver; it does not checksum, queue, or use
-//! parallel ranges. See PROJECT.md DL-02 and storage invariants in section 5.3.
+//! See PROJECT.md DL-02 and storage invariants in section 5.3.
 
 const std = @import("std");
 
@@ -13,7 +12,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const http = std.http;
 
-/// Range-planning primitives used by the future multipart HTTP driver.
+/// Range-planning primitives used by the multipart HTTP driver.
 pub const range_allocator = @import("ranges.zig");
 
 /// Versioned segment snapshot codec. The filesystem layer must sync segment
@@ -86,6 +85,7 @@ const checkpoint_interval = 1024 * 1024;
 const progress_interval = 256 * 1024;
 
 pub const ProgressCallback = *const fn (context: *anyopaque, completed: u64, total: ?u64, durable: bool) anyerror!void;
+pub const WorkerProgressCallback = *const fn (context: *anyopaque, worker_id: u32, start: u64, end: u64, downloaded: u64) anyerror!void;
 
 /// Downloads `url` into a sibling `.part` file and safely resumes a prior run.
 ///
@@ -96,7 +96,7 @@ pub const ProgressCallback = *const fn (context: *anyopaque, completed: u64, tot
 /// A concurrent process could still create the final path while this download
 /// runs; final publication uses an atomic no-replace rename to protect it.
 pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8) !void {
-    return downloadWithProgress(allocator, io, url, destination, expected_sha256, null, null);
+    return downloadWithProgress(allocator, io, url, destination, expected_sha256, null, null, null);
 }
 
 pub fn downloadWithProgress(
@@ -107,9 +107,40 @@ pub fn downloadWithProgress(
     expected_sha256: ?[32]u8,
     progress_callback: ?ProgressCallback,
     progress_context: ?*anyopaque,
+    worker_callback: ?WorkerProgressCallback,
+) !void {
+    return downloadWithSettings(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, worker_callback, 4);
+}
+
+pub fn downloadWithSettings(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    progress_callback: ?ProgressCallback,
+    progress_context: ?*anyopaque,
+    worker_callback: ?WorkerProgressCallback,
+    requested_connections: u8,
+) !void {
+    return downloadWithPolicy(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, worker_callback, requested_connections, .{}, null);
+}
+
+pub fn downloadWithPolicy(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    progress_callback: ?ProgressCallback,
+    progress_context: ?*anyopaque,
+    worker_callback: ?WorkerProgressCallback,
+    requested_connections: u8,
+    proxy_policy: @import("proxy.zig").Policy,
+    retry_hint: ?*@import("retry_after.zig").Hint,
 ) !void {
     const ranged = @import("ranged_download.zig");
-    const range_completed = ranged.downloadIfSupported(
+    const range_completed = if (requested_connections == 0) false else try ranged.downloadIfSupported(
         allocator,
         io,
         url,
@@ -117,24 +148,14 @@ pub fn downloadWithProgress(
         expected_sha256,
         progress_callback,
         progress_context,
-    ) catch |err| {
-        if (err == ranged.Error.InvalidSegmentResponse or err == ranged.Error.RepresentationChanged) {
-            discardRangePartial(allocator, io, destination) catch {};
-        } else return err;
-        return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context);
-    };
+        worker_callback,
+        progress_context,
+        requested_connections,
+        proxy_policy,
+        retry_hint,
+    );
     if (range_completed) return;
-    return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context);
-}
-
-fn discardRangePartial(allocator: Allocator, io: Io, destination: []const u8) !void {
-    const part_path = try std.fmt.allocPrint(allocator, "{s}.part", .{destination});
-    defer allocator.free(part_path);
-    const range_journal = try std.fmt.allocPrint(allocator, "{s}.sdr", .{part_path});
-    defer allocator.free(range_journal);
-    const cwd = Io.Dir.cwd();
-    cwd.deleteFile(io, part_path) catch {};
-    cwd.deleteFile(io, range_journal) catch {};
+    return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, proxy_policy, retry_hint);
 }
 
 fn downloadSingleStreamWithProgress(
@@ -145,9 +166,11 @@ fn downloadSingleStreamWithProgress(
     expected_sha256: ?[32]u8,
     progress_callback: ?ProgressCallback,
     progress_context: ?*anyopaque,
+    proxy_policy: @import("proxy.zig").Policy,
+    retry_hint: ?*@import("retry_after.zig").Hint,
 ) !void {
-    const uri = try std.Uri.parse(url);
-    if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
+    var uri = try std.Uri.parse(url);
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) uri.scheme = "http" else if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) uri.scheme = "https" else {
         return DownloadError.UnsupportedScheme;
     }
 
@@ -217,7 +240,10 @@ fn downloadSingleStreamWithProgress(
     try file_writer.seekTo(offset);
 
     var client: http.Client = .{ .allocator = allocator, .io = io };
+    var proxy_state = @import("proxy.zig").State.init(allocator);
+    defer proxy_state.deinit();
     defer client.deinit();
+    try proxy_state.apply(&client, proxy_policy, uri);
 
     var extra_headers: [2]http.Header = undefined;
     var extra_header_count: usize = 0;
@@ -240,11 +266,27 @@ fn downloadSingleStreamWithProgress(
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = extra_headers[0..extra_header_count],
     });
-    defer request.deinit();
+    var response_started = false;
+    var body_consumed = false;
+    defer {
+        if (response_started and !body_consumed) {
+            // On pause, cancellation, or an invalid response, do not drain a
+            // potentially large body before releasing this connection.
+            request.connection.?.closing = true;
+            request.reader.state = .ready;
+        }
+        request.deinit();
+    }
     try request.sendBodiless();
 
     var redirect_buffer: [8 * 1024]u8 = undefined;
     var response = try request.receiveHead(&redirect_buffer);
+    response_started = true;
+    if (response.head.status == .too_many_requests or response.head.status == .service_unavailable) {
+        const retry_after = @import("retry_after.zig");
+        retry_after.record(retry_hint, responseHeader(response.head.bytes, "retry-after"), @intCast(@divTrunc(std.Io.Clock.now(.real, io).nanoseconds, std.time.ns_per_s)));
+        return error.ServerBusy;
+    }
     const target_hash = try uriHash(allocator, request.uri);
     if (response.head.content_encoding != .identity) return DownloadError.UnsupportedContentEncoding;
 
@@ -305,8 +347,8 @@ fn downloadSingleStreamWithProgress(
         cwd.deleteFile(io, journal_path) catch {};
     }
     if (!resumeSafe(uri) or !resumeSafe(request.uri)) {
-        // URLs with user-info, query, or fragment data may carry credentials or
-        // bearer tokens; they are not fingerprinted or persisted for resumption.
+        // User-info and fragments are excluded. The full source URL, including
+        // its query, is fingerprinted in the journal without storing the URL.
         if (part_exists) return DownloadError.ResumeUnsafeForUrl;
     }
 
@@ -359,6 +401,7 @@ fn downloadSingleStreamWithProgress(
         error.ReadFailed => return response.bodyErr().?,
         error.WriteFailed => return sink.last_error orelse error.WriteFailed,
     };
+    body_consumed = true;
 
     sink.writer.flush() catch return sink.last_error orelse error.WriteFailed;
     try file_writer.flush();
@@ -400,7 +443,7 @@ pub fn publishNoReplace(dir: Io.Dir, io: Io, part_path: []const u8, destination:
 }
 
 fn resumeSafe(uri: std.Uri) bool {
-    return uri.user == null and uri.password == null and uri.query == null and uri.fragment == null;
+    return uri.user == null and uri.password == null and uri.fragment == null;
 }
 
 fn uriHash(allocator: Allocator, uri: std.Uri) ![32]u8 {
@@ -413,12 +456,19 @@ fn uriHash(allocator: Allocator, uri: std.Uri) ![32]u8 {
 }
 
 fn responseHeader(bytes: []const u8, name: []const u8) ?[]const u8 {
-    var iter = http.HeaderIterator.init(bytes);
+    if (bytes.len < 2) return null;
+    const status_end = std.mem.indexOf(u8, bytes, "\r\n") orelse return null;
+    var cursor = status_end + 2;
     var found: ?[]const u8 = null;
-    while (iter.next()) |header| {
-        if (!std.ascii.eqlIgnoreCase(header.name, name)) continue;
+    while (cursor + 2 <= bytes.len) {
+        const relative_end = std.mem.indexOfPos(u8, bytes, cursor, "\r\n") orelse return null;
+        if (relative_end == cursor) return found;
+        const line = bytes[cursor..relative_end];
+        cursor = relative_end + 2;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..colon], " \t"), name)) continue;
         if (found != null) return null;
-        found = header.value;
+        found = std.mem.trim(u8, line[colon + 1 ..], " \t");
     }
     return found;
 }

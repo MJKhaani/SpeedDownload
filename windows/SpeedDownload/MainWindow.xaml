@@ -4,59 +4,81 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:SpeedDownload"
     Title="Speed Download">
-    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-        <Grid Padding="24,18" ColumnSpacing="12">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <StackPanel Spacing="3">
-                <TextBlock Text="Speed Download" Style="{ThemeResource TitleTextBlockStyle}" />
-                <TextBlock Text="Your downloads, in one place." Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+    <NavigationView x:Name="AppNavigation" IsBackButtonVisible="Collapsed" PaneDisplayMode="Left" IsSettingsVisible="False" ItemInvoked="OnNavigationItemInvoked">
+        <NavigationView.MenuItems>
+            <NavigationViewItem Content="Queue" Tag="Queue" Icon="List" />
+            <NavigationViewItem Content="Active transfers" Tag="Active Transfers" Icon="Download" IsSelected="True" />
+            <NavigationViewItem Content="Completed" Tag="Completed" Icon="Accept" />
+            <NavigationViewItem Content="Failed" Tag="Failed" Icon="Warning" />
+        </NavigationView.MenuItems>
+        <NavigationView.Header>
+            <Grid Padding="20,12" ColumnSpacing="12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Spacing="2">
+                    <TextBlock Text="Speed Download" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <TextBlock x:Name="ConnectionStatus" Text="Starting local engine…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="Refresh" Click="OnRefresh" />
+                <Button Grid.Column="2" Content="Add download" Style="{ThemeResource AccentButtonStyle}" Click="OnAddDownload" />
+            </Grid>
+        </NavigationView.Header>
+        <Grid Padding="16,4,20,16" RowSpacing="12">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <StackPanel Spacing="8">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+                    <TextBlock x:Name="SectionTitle" Text="Active transfers" Style="{ThemeResource TitleTextBlockStyle}" VerticalAlignment="Center" />
+                    <AutoSuggestBox x:Name="SearchBox" Grid.Column="1" PlaceholderText="Filter transfers" TextChanged="OnSearchTextChanged" />
+                </Grid>
+                <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" />
             </StackPanel>
-            <Button Grid.Column="1" Content="Refresh" Click="OnRefresh" />
-            <Button Grid.Column="2" Content="Add Download" Style="{ThemeResource AccentButtonStyle}" Click="OnAddDownload" />
-        </Grid>
-        <TextBlock x:Name="ConnectionStatus" Grid.Row="1" Margin="24,0" Text="Connecting to engine…" />
-        <InfoBar x:Name="MessageBar" Grid.Row="2" Margin="24,12,24,0" IsOpen="False" Severity="Informational" />
-        <ScrollViewer Grid.Row="3" Padding="24" VerticalScrollBarVisibility="Auto">
-            <ItemsControl x:Name="JobsList">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="local:DownloadJob">
-                        <Border Margin="0,0,0,12" Padding="16" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12">
-                            <StackPanel Spacing="8">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
+            <Grid Grid.Row="1" ColumnSpacing="14">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="2.2*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <ListView x:Name="JobsList" SelectionMode="Single" SelectionChanged="OnJobSelectionChanged" IsItemClickEnabled="False">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="local:DownloadJob">
+                            <Grid Padding="12" ColumnSpacing="12" MinHeight="92">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="105"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <StackPanel Spacing="5" VerticalAlignment="Center">
                                     <TextBlock Text="{x:Bind Title}" Style="{ThemeResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="1" Text="{x:Bind State}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                </Grid>
-                                <TextBlock Text="{x:Bind Url}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                <ProgressBar Value="{x:Bind Progress}" Maximum="100" Visibility="{x:Bind ProgressVisibility}" />
-                                <TextBlock Text="{x:Bind ProgressText}" Visibility="{x:Bind ProgressVisibility}" FontSize="12" />
-                                <TextBlock Text="{x:Bind ErrorMessage}" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
-                                <TextBlock Text="{x:Bind Destination}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" FontSize="12" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{x:Bind Url}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" FontSize="12" />
+                                    <ProgressBar Value="{x:Bind Progress}" Maximum="100" Visibility="{x:Bind ProgressVisibility}" />
+                                    <TextBlock Text="{x:Bind ProgressText}" Visibility="{x:Bind ProgressVisibility}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" Text="{x:Bind State}" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                                     <Button Content="Start" Tag="{x:Bind JobId}" Visibility="{x:Bind StartVisibility}" Click="OnJobAction" />
                                     <Button Content="Pause" Tag="{x:Bind JobId}" Visibility="{x:Bind PauseVisibility}" Click="OnJobAction" />
                                     <Button Content="Resume" Tag="{x:Bind JobId}" Visibility="{x:Bind ResumeVisibility}" Click="OnJobAction" />
                                     <Button Content="Retry" Tag="{x:Bind JobId}" Visibility="{x:Bind RetryVisibility}" Click="OnJobAction" />
                                     <Button Content="Cancel" Tag="{x:Bind JobId}" Visibility="{x:Bind CancelVisibility}" Click="OnJobAction" />
                                 </StackPanel>
-                            </StackPanel>
-                        </Border>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
-    </Grid>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <Border Grid.Column="1" Padding="18" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="14">
+                            <TextBlock Text="Transfer details" Style="{ThemeResource TitleTextBlockStyle}" />
+                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
+                            <TextBlock Text="STATUS" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailState" Text="—" />
+                            <TextBlock Text="SOURCE" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailUrl" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock Text="DESTINATION" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailDestination" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock x:Name="DetailProgress" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailError" Text="" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+            <Grid Grid.Row="2" ColumnSpacing="8">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="QueueSummary" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="Transfer speed and ETA are not provided by the engine yet" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" VerticalAlignment="Center" />
+            </Grid>
+        </Grid>
+    </NavigationView>
 </Window>

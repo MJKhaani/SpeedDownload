@@ -3,6 +3,8 @@ using System.IO.Pipes;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace SpeedDownload;
 
@@ -12,6 +14,9 @@ internal sealed class EngineClient
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private bool _engineLaunchAttempted;
     private System.Diagnostics.Process? _engineProcess;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
 
     private static string PipeName
     {
@@ -31,6 +36,12 @@ internal sealed class EngineClient
         }
         catch (Exception initialError) when (!cancellationToken.IsCancellationRequested)
         {
+            if (initialError is EngineOutdatedException)
+            {
+                await StopOutdatedPackagedEngineAsync(cancellationToken);
+                _engineLaunchAttempted = false;
+                if (_engineProcess is { HasExited: true }) { _engineProcess.Dispose(); _engineProcess = null; }
+            }
             EnsureEngineRunning();
             for (var attempt = 0; attempt < 20; attempt++)
             {
@@ -90,6 +101,24 @@ internal sealed class EngineClient
         if (_engineProcess is null) throw new InvalidOperationException("Windows did not start the Speed Download engine.");
     }
 
+    private async Task StopOutdatedPackagedEngineAsync(CancellationToken cancellationToken)
+    {
+        await using var pipe = new NamedPipeClientStream(
+            ".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
+        await pipe.ConnectAsync(2_000, cancellationToken);
+        if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var serverPid))
+            throw new InvalidOperationException("Could not identify the outdated engine process safely.");
+        using var server = System.Diagnostics.Process.GetProcessById(checked((int)serverPid));
+        var overridePath = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_ENGINE_PATH");
+        var candidates = new[] { overridePath, Path.Combine(AppContext.BaseDirectory, "speed-download.exe"), Path.Combine(AppContext.BaseDirectory, "engine", "speed-download.exe") };
+        var actual = server.MainModule?.FileName;
+        if (actual is null || (!Path.GetFileName(actual).Equals("speed-download.exe", StringComparison.OrdinalIgnoreCase) &&
+            !candidates.Any(candidate => !string.IsNullOrWhiteSpace(candidate) && Path.GetFullPath(candidate).Equals(Path.GetFullPath(actual), StringComparison.OrdinalIgnoreCase))))
+            throw new InvalidOperationException("The engine is outdated and is not the packaged Speed Download engine, so it was left running.");
+        server.Kill();
+        await server.WaitForExitAsync(cancellationToken);
+    }
+
     public async Task AddJobAsync(string url, string? name, string destination, int priority, CancellationToken cancellationToken = default)
     {
         using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new
@@ -121,9 +150,14 @@ internal sealed class EngineClient
         await pipe.ConnectAsync(5_000, cancellationToken);
 
         using var hello = JsonDocument.Parse("""
-            {"protocol":{"major":1,"minor":0},"client":{"kind":"windows-winui","version":"0.1.0"},"features":[]}
+            {"protocol":{"major":1,"minor":0},"client":{"kind":"windows-winui","version":"0.1.0"},"features":["jobs.probe","jobs.worker-progress","jobs.probe-filename-decoding"]}
             """);
         using var helloResult = await RequestAsync(pipe, "engine.hello", hello.RootElement, cancellationToken);
+        var handshake = JsonSerializer.Deserialize<HelloResult>(helloResult.RootElement.GetRawText(), JsonOptions)
+                        ?? throw new InvalidDataException("Engine returned an invalid hello response.");
+        if (!handshake.Features.Contains("jobs.probe") || !handshake.Features.Contains("jobs.worker-progress") ||
+            !handshake.Features.Contains("jobs.probe-filename-decoding"))
+            throw new EngineOutdatedException();
         return await RequestAsync(pipe, method, parameters, cancellationToken);
     }
 
@@ -194,5 +228,15 @@ internal sealed class EngineClient
         public List<DownloadJob> Jobs { get; init; } = [];
         [System.Text.Json.Serialization.JsonPropertyName("next_offset")]
         public string? NextOffset { get; init; }
+    }
+
+    private sealed class HelloResult
+    {
+        public List<string> Features { get; init; } = [];
+    }
+
+    private sealed class EngineOutdatedException : InvalidOperationException
+    {
+        public EngineOutdatedException() : base("The running engine is outdated and must be restarted.") { }
     }
 }

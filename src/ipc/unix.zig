@@ -7,13 +7,30 @@ const frame = @import("frame.zig");
 const protocol = @import("root.zig");
 const job_store = @import("../core/job_store.zig");
 const posix_stat = @import("../core/posix_stat.zig");
+const http_probe = @import("../protocols/http/probe.zig");
 
 const c = std.c;
+const LocalTime = extern struct {
+    tm_sec: c_int,
+    tm_min: c_int,
+    tm_hour: c_int,
+    tm_mday: c_int,
+    tm_mon: c_int,
+    tm_year: c_int,
+    tm_wday: c_int,
+    tm_yday: c_int,
+    tm_isdst: c_int,
+    tm_gmtoff: c_long,
+    tm_zone: ?[*:0]const u8,
+};
+extern "c" fn time(?*c.time_t) c.time_t;
+extern "c" fn localtime_r(*const c.time_t, *LocalTime) ?*LocalTime;
 const SocketPath = [*:0]const u8;
 const max_socket_path_bytes = if (builtin.os.tag == .macos) 104 else 108;
 const max_ipc_clients = 32;
 
 extern "c" fn socket(domain: c_int, socket_type: c_int, protocol_number: c_int) c_int;
+extern "c" fn kill(pid: c_int, signal: c_int) c_int;
 const getErrno = @extern(*const fn () callconv(.c) *c_int, .{
     .name = if (builtin.os.tag == .macos) "__error" else "__errno_location",
 });
@@ -35,6 +52,10 @@ pub const EngineContext = struct {
     jobs: *job_store.Store,
     active_workers: std.atomic.Value(u32) = .init(0),
     active_clients: std.atomic.Value(u32) = .init(0),
+    bandwidth_mutex: std.Io.Mutex = .init,
+    bandwidth_next_ns: i96 = 0,
+    bandwidth_current_limit: u64 = 0,
+    last_queue_window: std.atomic.Value(i8) = .init(-1),
 };
 
 pub const ServerIdentity = struct {
@@ -65,7 +86,25 @@ fn serveUnix(allocator: std.mem.Allocator, config: Config) !void {
 
     try validatePrivateDirectory(config.runtime_dir);
     try ensurePrivateDirectory(paths.app_dir);
-    if (pathExists(paths.socket_path)) return Error.EndpointExists;
+    if (pathExists(paths.socket_path)) {
+        const stale_owner = posix_stat.get(paths.socket_z, false) orelse return Error.EndpointExists;
+        if (!posix_stat.isSocket(stale_owner) or stale_owner.uid != posix_stat.currentUid()) return Error.EndpointExists;
+        const probe_fd = socket(c.AF.UNIX, c.SOCK.STREAM, 0);
+        if (probe_fd < 0) return Error.SystemCallFailed;
+        var probe_address = try makeAddress(paths.socket_path);
+        const probe_len: c.socklen_t = if (builtin.os.tag == .macos)
+            @intCast(@offsetOf(c.sockaddr.un, "path") + paths.socket_path.len + 1)
+        else
+            @sizeOf(c.sockaddr.un);
+        if (c.connect(probe_fd, @ptrCast(&probe_address), probe_len) == 0) {
+            _ = c.close(probe_fd);
+            return Error.EndpointExists;
+        }
+        const connect_errno = getErrno().*;
+        _ = c.close(probe_fd);
+        if (connect_errno != @backingInt(c.E.CONNREFUSED) and connect_errno != @backingInt(c.E.NOENT)) return Error.EndpointExists;
+        _ = c.unlink(paths.socket_z);
+    }
     const listener = socket(c.AF.UNIX, c.SOCK.STREAM, 0);
     if (listener < 0) return Error.SystemCallFailed;
     defer _ = c.close(listener);
@@ -83,6 +122,10 @@ fn serveUnix(allocator: std.mem.Allocator, config: Config) !void {
     defer unlinkIfSame(paths.socket_z, bound_info.device, bound_info.inode);
     if (c.chmod(paths.socket_z, 0o600) != 0) return Error.SystemCallFailed;
     if (c.listen(listener, 16) != 0) return Error.SystemCallFailed;
+
+    scheduleTick(&engine);
+    var scheduler = try std.Thread.spawn(.{}, schedulerLoop, .{&engine});
+    scheduler.detach();
 
     while (true) {
         const client = c.accept(listener, null, null);
@@ -173,10 +216,94 @@ pub fn dispatchMethod(
 ) anyerror!?[]u8 {
     const engine: *EngineContext = @ptrCast(@alignCast(context orelse return error.MissingDispatcherContext));
     const jobs = engine.jobs;
+    jobs.logAction(loggedMethod(method), "received");
+    defer jobs.logAction(loggedMethod(method), "finished");
     if (std.mem.eql(u8, method, "jobs.list")) {
         const page = parseListPage(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         if (request_id) |id| return @as(?[]u8, try jobs.listJson(id, page.offset, page.limit));
         return null;
+    }
+    if (std.mem.eql(u8, method, "jobs.wait")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const cursor_text = stringField(value.object, "cursor") orelse return dispatchError(allocator, request_id, -32602, "Invalid cursor");
+        if (cursor_text.len == 0 or cursor_text.len > 20 or
+            (cursor_text.len > 1 and cursor_text[0] == '0'))
+            return dispatchError(allocator, request_id, -32602, "Invalid cursor");
+        for (cursor_text) |digit| {
+            if (digit < '0' or digit > '9') return dispatchError(allocator, request_id, -32602, "Invalid cursor");
+        }
+        const cursor = std.fmt.parseInt(u64, cursor_text, 10) catch return dispatchError(allocator, request_id, -32602, "Invalid cursor");
+        var current = jobs.changeCursor();
+        var checks: usize = 0;
+        while (current == cursor and checks < 25) : (checks += 1) {
+            std.Io.sleep(engine.io, std.Io.Duration.fromMilliseconds(200), .awake) catch break;
+            current = jobs.changeCursor();
+        }
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{current});
+        defer allocator.free(next_cursor);
+        return try std.json.Stringify.valueAlloc(allocator, .{
+            .jsonrpc = "2.0",
+            .id = id,
+            .result = .{ .cursor = next_cursor, .changed = current != cursor },
+        }, .{});
+    }
+    if (std.mem.eql(u8, method, "settings.get")) {
+        const id = request_id orelse return null;
+        return @as(?[]u8, try jobs.settingsJson(id));
+    }
+    if (std.mem.eql(u8, method, "settings.update")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const settings_value = value.object.get("settings") orelse value;
+        var parsed = std.json.parseFromValue(job_store.Settings, allocator, settings_value, .{}) catch
+            return dispatchError(allocator, request_id, -32602, "Invalid settings");
+        defer parsed.deinit();
+        const response = jobs.updateSettingsJson(id, parsed.value) catch |err| {
+            if (err == error.InvalidSettings) return dispatchError(allocator, request_id, -32602, "Invalid settings");
+            return dispatchError(allocator, request_id, -32020, "Could not save settings");
+        };
+        jobs.logAction("settings.update", "saved");
+        scheduleTick(engine);
+        return response;
+    }
+    if (std.mem.eql(u8, method, "jobs.probe")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const url = stringField(value.object, "url") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const proxy_policy = jobs.copyProxyPolicy() catch return dispatchError(allocator, request_id, -32020, "Could not read proxy settings");
+        defer proxy_policy.deinit(jobs.allocator);
+        const probe = if (isMagnetUrl(url)) blk: {
+            var link = @import("../protocols/torrent/magnet.zig").inspect(arena.allocator(), url) catch break :blk error.InvalidMagnetUri;
+            defer link.deinit(arena.allocator());
+            const suggested = if (link.display_name) |name| if (@import("../protocols/torrent/metainfo.zig").safeComponent(name)) name else "torrent-download" else "torrent-download";
+            const result: http_probe.Result = .{ .final_url = url, .suggested_name = suggested, .total_bytes = null, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Magnet link accepted. The engine will retrieve metadata and verify each piece when the download starts." };
+            break :blk result;
+        } else if (isFtpUrl(url)) blk: {
+            if (proxy_policy.mode == .custom) break :blk error.UnsupportedFtpProxy;
+            break :blk @import("../protocols/ftp/download.zig").inspect(arena.allocator(), engine.io, url);
+        } else http_probe.inspectWithPolicy(arena.allocator(), engine.io, url, .{ .mode = proxy_policy.mode, .url = proxy_policy.url });
+        const result = probe catch |err| {
+            jobs.logAction("jobs.probe", @errorName(err));
+            const message: []const u8 = if (err == error.InvalidUrl or err == error.UnsupportedScheme)
+                "Enter a valid HTTP, HTTPS, FTP, FTPS, or magnet link."
+            else if (err == error.ServerBusy)
+                "The server is temporarily busy or rate limiting requests. Wait before inspecting this link again."
+            else
+                try std.fmt.allocPrint(arena.allocator(), "URL probe failed in the engine: {s}", .{@errorName(err)});
+            return dispatchError(allocator, request_id, -32021, message);
+        };
+        jobs.logAction("jobs.probe", "completed");
+        return @as(?[]u8, try std.json.Stringify.valueAlloc(allocator, .{
+            .jsonrpc = "2.0",
+            .id = id,
+            .result = result,
+        }, .{}));
     }
     if (std.mem.eql(u8, method, "jobs.control")) {
         const control = parseJobControl(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
@@ -200,6 +327,22 @@ pub fn dispatchMethod(
         };
         if (control.action == .retry) scheduleQueued(engine);
         return @as(?[]u8, response);
+    }
+    if (std.mem.eql(u8, method, "jobs.set-bandwidth")) {
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const job_id = stringField(value.object, "job_id") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const revision_text = stringField(value.object, "expected_revision") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const revision = std.fmt.parseInt(u64, revision_text, 10) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const limit_value = value.object.get("bandwidth_limit_bytes_per_second") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (limit_value != .integer or limit_value.integer < 0 or limit_value.integer > 1_000_000_000_000)
+            return dispatchError(allocator, request_id, -32602, "Invalid bandwidth limit");
+        const id = request_id orelse return null;
+        return jobs.setBandwidthLimitJson(id, job_id, revision, @intCast(limit_value.integer)) catch |err| {
+            if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+            if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
+            return dispatchError(allocator, request_id, -32020, "Could not save the download limit");
+        };
     }
     if (std.mem.eql(u8, method, "jobs.reorder")) {
         const input = parseJobReorder(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
@@ -228,16 +371,29 @@ pub fn dispatchMethod(
         return dispatchError(allocator, request_id, -32602, "Invalid params");
     };
     const id = request_id orelse return null;
-    return jobs.addJson(id, input) catch |err| {
+    const response = jobs.addJson(id, input) catch |err| {
         if (request_id == null) return null;
         if (err == error.InvalidJob) return dispatchError(allocator, request_id, -32010, "Invalid download request");
         if (err == error.InvalidDestination) return dispatchError(allocator, request_id, -32014, "Destination must be an existing writable directory");
+        if (err == error.DestinationExists) return dispatchError(allocator, request_id, -32018, "A file with this name already exists in the destination folder");
+        if (err == error.DestinationReserved) return dispatchError(allocator, request_id, -32018, "Another download already uses this destination and filename");
         if (err == error.IdempotencyConflict) return dispatchError(allocator, request_id, -32011, "Idempotency key was already used for another request");
         return dispatchError(allocator, request_id, -32020, "Could not save the download request");
     };
+    scheduleTick(engine);
+    return response;
+}
+
+fn loggedMethod(method: []const u8) []const u8 {
+    inline for (.{ "jobs.list", "jobs.wait", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+        if (std.mem.eql(u8, method, known)) return known;
+    }
+    return "unknown-method";
 }
 
 fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, control: JobControl, engine: *EngineContext) anyerror!?[]u8 {
+    if (!queueWindowOpen(engine))
+        return dispatchError(allocator, request_id, -32019, "The queue is outside its scheduled hours");
     if (!reserveWorker(engine))
         return dispatchError(allocator, request_id, -32016, "Another download is already active");
 
@@ -246,6 +402,7 @@ fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, contr
         if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
         if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Action is not valid for this job state");
         if (err == error.HostLimitReached) return dispatchError(allocator, request_id, -32016, "This host already has the maximum number of active downloads");
+        if (err == error.DestinationReserved) return dispatchError(allocator, request_id, -32018, "Another active download uses this destination and filename");
         if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
         return dispatchError(allocator, request_id, -32020, "Could not save the download request");
     };
@@ -264,37 +421,130 @@ fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, contr
 }
 
 fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) void {
+    engine.jobs.logAction("transfer", "started");
     defer task.deinit(engine.allocator);
     defer {
         releaseWorker(engine);
         scheduleQueued(engine);
     }
     const destination = buildDestination(engine.allocator, task) catch {
+        engine.jobs.logAction("transfer", "invalid-destination");
         engine.jobs.finishDownload(task.id, false, "Could not create a safe destination path") catch {};
         return;
     };
     defer engine.allocator.free(destination);
 
-    const download_module = @import("../protocols/http/download.zig");
     var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id };
-    download_module.downloadWithProgress(engine.allocator, engine.io, task.url, destination, null, updateDownloadProgress, @ptrCast(&progress)) catch |err| {
+    var retry_hint: @import("../protocols/http/retry_after.zig").Hint = .init(0);
+    const transfer = if (isMagnetUrl(task.url)) blk: {
+        if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
+        break :blk @import("../protocols/torrent/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
+    } else if (isFtpUrl(task.url)) blk: {
+        if (task.proxy_mode == .custom) break :blk error.UnsupportedFtpProxy;
+        break :blk @import("../protocols/ftp/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
+    } else @import("../protocols/http/download.zig").downloadWithPolicy(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url }, &retry_hint);
+    transfer catch |err| {
         if (engine.jobs.requestedControl(task.id)) |control| {
+            engine.jobs.logAction("transfer", if (control == .pause) "paused" else "canceled");
             if (control == .cancel) deletePartial(engine, destination);
             engine.jobs.finishStoppedDownload(task.id, if (control == .pause) .paused else .canceled) catch {};
             return;
         }
-        const error_message = std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
-        defer if (!std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
+        if (err == error.TransferSchedulePaused) {
+            engine.jobs.logAction("transfer", "scheduled");
+            engine.jobs.finishScheduledDownload(task.id) catch {};
+            return;
+        }
+        if (retryableDownloadError(err)) {
+            if (engine.jobs.scheduleTransientRetry(task.id, @errorName(err), retry_hint.load(.acquire), if (err == error.ServerBusy or err == error.ParallelRangeRejected) task.connections else null) catch false) {
+                engine.jobs.logAction("transfer", "retry-scheduled");
+                return;
+            }
+        }
+        const error_message = if (err == error.ExpectedChecksumMismatch)
+            "SHA-256 checksum does not match the downloaded file"
+        else
+            std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
+        engine.jobs.logAction("transfer", @errorName(err));
+        defer if (err != error.ExpectedChecksumMismatch and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
         engine.jobs.finishDownload(task.id, false, error_message) catch {};
         return;
     };
     engine.jobs.finishDownload(task.id, true, null) catch {};
+    engine.jobs.logAction("transfer", "completed");
+}
+
+fn retryableDownloadError(err: anyerror) bool {
+    return switch (err) {
+        error.ConnectionResetByPeer,
+        error.ConnectionTimedOut,
+        error.ConnectionRefused,
+        error.NetworkUnreachable,
+        error.HostUnreachable,
+        error.BrokenPipe,
+        error.EndOfStream,
+        error.ResponseLengthMismatch,
+        error.SegmentLengthMismatch,
+        error.FtpControlReadFailed,
+        error.FtpControlReadTimedOut,
+        error.FtpControlClosed,
+        error.FtpDataReadFailed,
+        error.FtpDataReadTimedOut,
+        error.FtpsHandshakeTimedOut,
+        error.FtpTransferIncomplete,
+        error.FtpServerBusy,
+        error.NoReachablePeer,
+        error.NoTrackerPeers,
+        error.NoTorrentPeers,
+        error.NoPeerHasPieces,
+        error.PeerClosed,
+        error.PeerChoked,
+        error.PeerPieceUnavailable,
+        error.MetadataPieceRejected,
+        error.ParallelRangeRejected,
+        error.ServerBusy,
+        => true,
+        else => false,
+    };
+}
+
+fn isFtpUrl(url: []const u8) bool {
+    const uri = std.Uri.parse(url) catch return false;
+    return std.ascii.eqlIgnoreCase(uri.scheme, "ftp") or std.ascii.eqlIgnoreCase(uri.scheme, "ftps");
+}
+
+fn isMagnetUrl(url: []const u8) bool {
+    return url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:");
+}
+
+fn updateWorkerProgress(context: *anyopaque, worker_id: u32, start: u64, end: u64, downloaded: u64) anyerror!void {
+    const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    if (progress.engine.jobs.requestedControl(progress.job_id)) |control| {
+        return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
+    }
+    if (!queueWindowOpen(progress.engine)) return error.TransferSchedulePaused;
+    if (worker_id >= 1 and worker_id <= progress.worker_downloaded.len) {
+        progress.progress_mutex.lockUncancelable(progress.engine.io);
+        const index: usize = @intCast(worker_id - 1);
+        if (!progress.worker_known[index] or progress.worker_start[index] != start or progress.worker_end[index] != end) {
+            progress.worker_downloaded[index] = 0;
+            progress.worker_start[index] = start;
+            progress.worker_end[index] = end;
+            progress.worker_known[index] = true;
+        }
+        const delta = downloaded -| progress.worker_downloaded[index];
+        progress.worker_downloaded[index] = downloaded;
+        progress.worker_updates_seen = true;
+        progress.progress_mutex.unlock(progress.engine.io);
+        try throttleBytes(progress, delta);
+    }
+    progress.engine.jobs.updateWorkerProgress(progress.job_id, worker_id, start, end, downloaded);
 }
 
 fn reserveWorker(engine: *EngineContext) bool {
     while (true) {
         const active = engine.active_workers.load(.acquire);
-        if (active >= job_store.max_parallel_downloads) return false;
+        if (active >= engine.jobs.runtimePolicy().max_concurrent_tasks) return false;
         if (engine.active_workers.cmpxchgWeak(active, active + 1, .acquire, .monotonic) == null) return true;
     }
 }
@@ -314,6 +564,7 @@ fn launchWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) !voi
 }
 
 fn scheduleQueued(engine: *EngineContext) void {
+    if (!queueWindowOpen(engine)) return;
     while (reserveWorker(engine)) {
         const task = engine.jobs.startNextQueued() catch {
             releaseWorker(engine);
@@ -336,26 +587,126 @@ fn deletePartial(engine: *EngineContext, destination: []const u8) void {
     defer engine.allocator.free(journal_path);
     const segment_journal_path = std.fmt.allocPrint(engine.allocator, "{s}.sdr", .{part_path}) catch return;
     defer engine.allocator.free(segment_journal_path);
+    const ftp_journal_path = std.fmt.allocPrint(engine.allocator, "{s}.ftpj", .{part_path}) catch return;
+    defer engine.allocator.free(ftp_journal_path);
     const cwd = std.Io.Dir.cwd();
     cwd.deleteFile(engine.io, part_path) catch {};
     cwd.deleteFile(engine.io, journal_path) catch {};
     cwd.deleteFile(engine.io, segment_journal_path) catch {};
+    cwd.deleteFile(engine.io, ftp_journal_path) catch {};
 }
 
-const DownloadProgressContext = struct { engine: *EngineContext, job_id: []const u8 };
+const DownloadProgressContext = struct {
+    engine: *EngineContext,
+    job_id: []const u8,
+    progress_mutex: std.Io.Mutex = .init,
+    worker_updates_seen: bool = false,
+    worker_downloaded: [32]u64 = @splat(0),
+    worker_start: [32]u64 = @splat(0),
+    worker_end: [32]u64 = @splat(0),
+    worker_known: [32]bool = @splat(false),
+    single_reported: ?u64 = null,
+    bandwidth_current_limit: u64 = 0,
+    bandwidth_next_ns: i96 = 0,
+};
 
 fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64, durable: bool) anyerror!void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
     if (progress.engine.jobs.requestedControl(progress.job_id)) |control| {
+        if (durable) try progress.engine.jobs.updateProgress(progress.job_id, completed, total, true);
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
     }
+    if (!queueWindowOpen(progress.engine)) {
+        if (durable) try progress.engine.jobs.updateProgress(progress.job_id, completed, total, true);
+        return error.TransferSchedulePaused;
+    }
+    progress.progress_mutex.lockUncancelable(progress.engine.io);
+    const single_stream = !progress.worker_updates_seen;
+    const delta = if (!single_stream) @as(u64, 0) else if (progress.single_reported) |previous| completed -| previous else @as(u64, 0);
+    progress.single_reported = completed;
+    progress.progress_mutex.unlock(progress.engine.io);
+    try throttleBytes(progress, delta);
     try progress.engine.jobs.updateProgress(progress.job_id, completed, total, durable);
+    if (single_stream) if (total) |known_total| {
+        progress.engine.jobs.updateWorkerProgress(progress.job_id, 1, 0, known_total, completed);
+    };
+}
+
+fn throttleBytes(progress: *DownloadProgressContext, bytes: u64) !void {
+    if (bytes == 0) return;
+    const engine = progress.engine;
+    const policy = engine.jobs.runtimePolicy();
+    const slot = localWeekSlot() orelse if (policy.bandwidth_schedule_enabled) return error.LocalTimeUnavailable else 0;
+    const global_limit = policy.downloadLimit(slot);
+    const job_limit = engine.jobs.jobBandwidthLimit(progress.job_id);
+    const now_ns = std.Io.Clock.now(.awake, engine.io).nanoseconds;
+    engine.bandwidth_mutex.lockUncancelable(engine.io);
+    const global_deadline = reserveBandwidth(&engine.bandwidth_next_ns, &engine.bandwidth_current_limit, global_limit, bytes, now_ns);
+    engine.bandwidth_mutex.unlock(engine.io);
+    progress.progress_mutex.lockUncancelable(engine.io);
+    const job_deadline = reserveBandwidth(&progress.bandwidth_next_ns, &progress.bandwidth_current_limit, job_limit, bytes, now_ns);
+    progress.progress_mutex.unlock(engine.io);
+    const deadline_ns = @max(global_deadline, job_deadline);
+    if (deadline_ns > now_ns) try (std.Io.Timestamp.fromNanoseconds(deadline_ns).withClock(.awake)).wait(engine.io);
+}
+
+fn reserveBandwidth(next_ns: *i96, current_limit: *u64, limit: u64, bytes: u64, now_ns: i96) i96 {
+    if (limit == 0 or current_limit.* != limit) {
+        current_limit.* = limit;
+        next_ns.* = now_ns;
+    }
+    if (limit == 0) return now_ns;
+    const start_ns = @max(now_ns, next_ns.*);
+    const duration_ns = @divTrunc(@as(i96, bytes) * std.time.ns_per_s + @as(i96, limit) - 1, @as(i96, limit));
+    next_ns.* = start_ns + duration_ns;
+    return next_ns.*;
+}
+
+fn localWeekSlot() ?usize {
+    var now: c.time_t = 0;
+    if (time(&now) == -1) return null;
+    var local: LocalTime = undefined;
+    if (localtime_r(&now, &local) == null) return null;
+    if (local.tm_wday < 0 or local.tm_wday > 6 or local.tm_hour < 0 or local.tm_hour > 23) return null;
+    return @as(usize, @intCast(local.tm_wday)) * 24 + @as(usize, @intCast(local.tm_hour));
+}
+
+fn queueWindowOpen(engine: *EngineContext) bool {
+    const policy = engine.jobs.runtimePolicy();
+    if (!policy.queue_schedule_enabled) return true;
+    return policy.queueActive(localWeekSlot() orelse return false);
+}
+
+fn scheduleTick(engine: *EngineContext) void {
+    engine.jobs.promoteDueRetries() catch return;
+    const active = queueWindowOpen(engine);
+    const previous = engine.last_queue_window.swap(if (active) 1 else 0, .acq_rel);
+    if (previous != (if (active) @as(i8, 1) else 0))
+        engine.jobs.logAction("queue-window", if (active) "active" else "off");
+    engine.jobs.applyQueueWindow(active) catch return;
+    if (active) scheduleQueued(engine);
+}
+
+fn schedulerLoop(engine: *EngineContext) void {
+    while (true) {
+        std.Io.sleep(engine.io, std.Io.Duration.fromSeconds(5), .awake) catch {};
+        scheduleTick(engine);
+    }
 }
 
 fn buildDestination(allocator: std.mem.Allocator, task: job_store.Store.DownloadTask) ![]u8 {
     var filename: []const u8 = undefined;
     if (task.name) |name| {
         filename = name;
+    } else if (isMagnetUrl(task.url)) {
+        var link = try @import("../protocols/torrent/magnet.zig").inspect(allocator, task.url);
+        defer link.deinit(allocator);
+        if (link.display_name) |name| {
+            if (@import("../protocols/torrent/metainfo.zig").safeComponent(name)) return std.fs.path.join(allocator, &.{ task.destination, name });
+        }
+        var fallback: [48]u8 = undefined;
+        const name = try std.fmt.bufPrint(&fallback, "torrent-{s}.download", .{task.id[0..8]});
+        return std.fs.path.join(allocator, &.{ task.destination, name });
     } else {
         const uri = try std.Uri.parse(task.url);
         const raw_path = switch (uri.path) {
@@ -450,11 +801,21 @@ fn parseAddInput(params: std.json.Value) !job_store.AddInput {
         .null => null,
         else => return error.InvalidParams,
     } else null;
+    const digest_value = object.get("expected_sha256");
+    const expected_sha256 = if (digest_value) |value| switch (value) {
+        .string => |text| text,
+        .null => null,
+        else => return error.InvalidParams,
+    } else null;
     const priority: i32 = if (object.get("priority")) |value| blk: {
         if (value != .integer or value.integer < -100 or value.integer > 100) return error.InvalidParams;
         break :blk @intCast(value.integer);
     } else 0;
-    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority };
+    const bandwidth: u64 = if (object.get("bandwidth_limit_bytes_per_second")) |value| blk: {
+        if (value != .integer or value.integer < 0 or value.integer > 1_000_000_000_000) return error.InvalidParams;
+        break :blk @intCast(value.integer);
+    } else 0;
+    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth };
 }
 
 fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {

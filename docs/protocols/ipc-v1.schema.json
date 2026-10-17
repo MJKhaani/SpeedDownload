@@ -6,8 +6,10 @@
   "oneOf": [
     { "$ref": "#/$defs/hello" },
     { "$ref": "#/$defs/jobsList" },
+    { "$ref": "#/$defs/jobsWait" },
     { "$ref": "#/$defs/jobsAdd" },
     { "$ref": "#/$defs/jobsControl" },
+    { "$ref": "#/$defs/jobsSetBandwidth" },
     { "$ref": "#/$defs/jobsReorder" },
     { "$ref": "#/$defs/jobsDelete" }
   ],
@@ -77,6 +79,17 @@
         }
       ]
     },
+    "jobsWait": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.wait" },
+          "params": { "type": "object", "required": ["cursor"], "properties": {
+            "cursor": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20 }
+          }, "additionalProperties": false }
+        } }
+      ]
+    },
     "jobsAdd": {
       "allOf": [
         { "$ref": "#/$defs/requestBase" },
@@ -91,7 +104,9 @@
                 "name": { "type": ["string", "null"], "maxLength": 255 },
                 "destination": { "type": "string", "minLength": 1, "maxLength": 4096 },
                 "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
-                "priority": { "type": "integer", "minimum": -100, "maximum": 100 }
+                "priority": { "type": "integer", "minimum": -100, "maximum": 100 },
+                "expected_sha256": { "type": ["string", "null"], "pattern": "^[A-Fa-f0-9]{64}$" },
+                "bandwidth_limit_bytes_per_second": { "type": "integer", "minimum": 0, "maximum": 1000000000000 }
               },
               "additionalProperties": false
             }
@@ -117,6 +132,19 @@
             }
           }
         }
+      ]
+    },
+    "jobsSetBandwidth": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.set-bandwidth" },
+          "params": { "type": "object", "required": ["job_id", "expected_revision", "bandwidth_limit_bytes_per_second"], "properties": {
+            "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "expected_revision": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "bandwidth_limit_bytes_per_second": { "type": "integer", "minimum": 0, "maximum": 1000000000000 }
+          }, "additionalProperties": false }
+        } }
       ]
     },
     "jobsReorder": {
