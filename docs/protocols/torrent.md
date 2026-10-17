@@ -37,18 +37,19 @@ macOS Add Download dialog or `jobs.add` IPC. The CLI can also use
 retrieves metadata, accepts a single-file v1 torrent, discovers peers from
 `x.pe` or HTTP(S)/UDP compact IPv4 tracker replies, and requests 16 KiB blocks
 from TCP peers. It verifies each complete piece against the metainfo SHA-1
-hash before syncing it to a `.part` file. On restart, it rehashes existing
-complete pieces and truncates at the first missing or mismatched piece. The
-completed file is published without replacing an existing file. The queue,
+hash before writing it at the correct offset in a `.part` file and syncing.
+On restart, it rehashes every complete piece independently; a valid piece
+after a missing or damaged piece can still be reused. The completed file is
+published without replacing an existing file. The queue,
 pause/cancel controls, progress, and optional whole-file SHA-256 check apply.
 The engine first requests payload pieces from the peer that supplied the
 metadata. If that peer cannot continue, it announces the verified downloaded
 byte count and remaining size to trackers and tries other discovered peers.
 For each TCP peer, BITFIELD and HAVE messages record which pieces it reports;
-the engine moves to another peer when the next required piece is known to be
-missing. A peer that sends no bitfield leaves availability unknown until a
-piece request succeeds or fails. Requests are still sequential, so a swarm
-with complementary partial peers may not complete.
+the engine chooses any unverified piece available from that peer. A peer that
+sends no bitfield leaves availability unknown until a piece request succeeds
+or fails. Piece requests are sequential within each connection, and peers
+are contacted sequentially rather than concurrently.
 
 This is an early compatibility slice. It requests blocks sequentially and
 does not upload or seed. Multi-file torrents, DHT, IPv6 compact

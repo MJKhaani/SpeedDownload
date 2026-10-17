@@ -1,6 +1,6 @@
-//! Initial BitTorrent v1 single-file transfer path. Every published piece
-//! matches the SHA-1 hash in validated metainfo; partial files are rehashed
-//! on restart before any byte is trusted.
+//! Initial BitTorrent v1 single-file transfer path. Each independently placed
+//! piece matches its metainfo SHA-1; all partial pieces are rehashed on restart
+//! before any byte is trusted.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -52,43 +52,41 @@ pub fn download(
     const piece_size: usize = std.math.cast(usize, info.piece_length) orelse return error.TorrentTooLarge;
     const piece_buffer = try allocator.alloc(u8, piece_size);
     defer allocator.free(piece_buffer);
-    var next_piece = try verifiedPrefix(io, file, info, piece_buffer);
-    var completed = try pieceOffset(info, next_piece);
-    try file.setLength(io, completed);
-    var write_buffer: [32 * 1024]u8 = undefined;
-    var writer = file.writer(io, &write_buffer);
-    try writer.seekTo(completed);
-    if (callback) |report| if (context) |ctx| try report(ctx, completed, info.total_bytes, true);
+    const count = std.math.cast(usize, info.piece_count) orelse return error.TorrentTooLarge;
+    const verified = try allocator.alloc(bool, count);
+    defer allocator.free(verified);
+    @memset(verified, false);
+    var verified_bytes: u64 = 0;
+    var remaining = try scanVerified(io, file, info, piece_buffer, verified, &verified_bytes);
+    try file.setLength(io, info.total_bytes);
+    if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes, info.total_bytes, true);
 
-    if (next_piece < info.piece_count) {
+    if (remaining != 0) {
         var last_error: anyerror = error.NoPeerHasPieces;
-        transferFromPeer(io, fetched.peer, info, file, &writer, piece_buffer, &next_piece, callback, context) catch |err| {
+        transferFromPeer(io, fetched.peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
             if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
             last_error = err;
         };
-        if (next_piece < info.piece_count) {
-            const verified = @min(try pieceOffset(info, next_piece), info.total_bytes);
-            const peers = try metadata.collectPeers(allocator, io, &link, verified, info.total_bytes);
+        if (remaining != 0) {
+            const peers = try metadata.collectPeers(allocator, io, &link, verified_bytes, info.total_bytes);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);
             }
             for (peers) |peer| {
                 if (std.mem.eql(u8, peer, fetched.peer)) continue;
-                transferFromPeer(io, peer, info, file, &writer, piece_buffer, &next_piece, callback, context) catch |err| {
+                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
                     if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                     last_error = err;
                     continue;
                 };
-                if (next_piece == info.piece_count) break;
+                if (remaining == 0) break;
             }
         }
-        if (next_piece != info.piece_count) return last_error;
+        if (remaining != 0) return last_error;
     }
-    completed = info.total_bytes;
-    try writer.interface.flush();
     try file.sync(io);
-    if (callback) |report| if (context) |ctx| try report(ctx, completed, completed, true);
+    if (callback) |report| if (context) |ctx| try report(ctx, info.total_bytes, info.total_bytes, true);
     try http_download.verifySha256(io, file, expected_sha256);
     file.close(io);
     file_open = false;
@@ -105,23 +103,24 @@ fn pieceBytes(info: metainfo.Result, index: u64) !usize {
     return @intCast(@min(info.piece_length, info.total_bytes - offset));
 }
 
-fn verifiedPrefix(io: Io, file: Io.File, info: metainfo.Result, buffer: []u8) !u64 {
+fn scanVerified(io: Io, file: Io.File, info: metainfo.Result, buffer: []u8, verified: []bool, verified_bytes: *u64) !usize {
     const length = try file.length(io);
-    var reader_buffer: [32 * 1024]u8 = undefined;
-    var reader = file.reader(io, &reader_buffer);
-    try reader.seekTo(0);
-    var piece: u64 = 0;
-    while (piece < info.piece_count) : (piece += 1) {
+    var remaining = verified.len;
+    for (verified, 0..) |*valid, index| {
+        const piece: u64 = @intCast(index);
         const offset = try pieceOffset(info, piece);
         const size = try pieceBytes(info, piece);
-        if (length < offset + size) break;
-        try reader.interface.readSliceAll(buffer[0..size]);
+        if (length < offset + size) continue;
+        if (try file.readPositionalAll(io, buffer[0..size], offset) != size) return error.ShortPartialFileRead;
         var actual: [20]u8 = undefined;
         std.crypto.hash.Sha1.hash(buffer[0..size], &actual, .{});
         const expected = info.piece_hashes[@as(usize, @intCast(piece)) * 20 ..][0..20];
-        if (!std.mem.eql(u8, &actual, expected)) break;
+        if (!std.mem.eql(u8, &actual, expected)) continue;
+        valid.* = true;
+        verified_bytes.* += size;
+        remaining -= 1;
     }
-    return piece;
+    return remaining;
 }
 
 fn transferFromPeer(
@@ -129,9 +128,10 @@ fn transferFromPeer(
     address: []const u8,
     info: metainfo.Result,
     file: Io.File,
-    writer: *Io.File.Writer,
     piece_buffer: []u8,
-    next_piece: *u64,
+    verified: []bool,
+    remaining: *usize,
+    verified_bytes: *u64,
     callback: ?ProgressCallback,
     context: ?*anyopaque,
 ) !void {
@@ -171,23 +171,23 @@ fn transferFromPeer(
     var frame_buffer: [128 * 1024]u8 = undefined;
     var availability: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
     var bitfield_known = false;
-    while (next_piece.* < info.piece_count) {
-        const piece_index = next_piece.*;
+    piece_loop: while (remaining.* != 0) {
+        const piece_index = nextAvailablePiece(verified, &availability, bitfield_known) orelse return error.PeerMissingPieces;
         const size = try pieceBytes(info, piece_index);
         var cursor: usize = 0;
         var unchoke_messages: usize = 0;
         var has_piece: ?bool = if (pieceInBitfield(&availability, piece_index)) true else if (bitfield_known) false else null;
-        if (has_piece == false) return error.PeerMissingPiece;
+        if (has_piece == false) continue :piece_loop;
         while (cursor < size) {
             while (choked) {
                 unchoke_messages += 1;
                 if (unchoke_messages > 128) return error.PeerChoked;
                 const frame = try readFrame(io, stream, &frame_buffer);
                 try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
-                if (has_piece == false) return error.PeerMissingPiece;
+                if (has_piece == false) continue :piece_loop;
                 if (frame.len == 1 and frame[0] == 1) choked = false;
             }
-            if (has_piece == false) return error.PeerMissingPiece;
+            if (has_piece == false) continue :piece_loop;
             const amount = @min(block_size, size - cursor);
             var request: [17]u8 = .{ 0, 0, 0, 13, 6 } ++ @as([12]u8, @splat(0));
             std.mem.writeInt(u32, request[5..9], @intCast(piece_index), .big);
@@ -202,14 +202,14 @@ fn transferFromPeer(
                 const frame = try readFrame(io, stream, &frame_buffer);
                 if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
                 try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
-                if (has_piece == false) return error.PeerMissingPiece;
+                if (has_piece == false) continue :piece_loop;
                 if (frame.len != amount + 9 or frame[0] != 7) continue;
                 const index = std.mem.readInt(u32, frame[1..5], .big);
                 const begin = std.mem.readInt(u32, frame[5..9], .big);
                 if (index != piece_index or begin != cursor) return error.UnexpectedPeerPiece;
                 @memcpy(piece_buffer[cursor .. cursor + amount], frame[9..]);
                 cursor += amount;
-                if (callback) |report| if (context) |ctx| try report(ctx, (try pieceOffset(info, piece_index)) + cursor, info.total_bytes, false);
+                if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.* + cursor, info.total_bytes, false);
                 break;
             }
         }
@@ -217,12 +217,22 @@ fn transferFromPeer(
         std.crypto.hash.Sha1.hash(piece_buffer[0..size], &digest, .{});
         const expected = info.piece_hashes[@as(usize, @intCast(piece_index)) * 20 ..][0..20];
         if (!std.mem.eql(u8, &digest, expected)) return error.TorrentPieceHashMismatch;
-        try writer.interface.writeAll(piece_buffer[0..size]);
-        try writer.interface.flush();
+        try file.writePositionalAll(io, piece_buffer[0..size], try pieceOffset(info, piece_index));
         try file.sync(io);
-        next_piece.* += 1;
-        if (callback) |report| if (context) |ctx| try report(ctx, @min(try pieceOffset(info, next_piece.*), info.total_bytes), info.total_bytes, true);
+        verified[@intCast(piece_index)] = true;
+        verified_bytes.* += size;
+        remaining.* -= 1;
+        if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.*, info.total_bytes, true);
     }
+}
+
+fn nextAvailablePiece(verified: []const bool, availability: []const u8, bitfield_known: bool) ?u64 {
+    for (verified, 0..) |done, index| {
+        if (done) continue;
+        if (bitfield_known and !pieceInBitfield(availability, index)) continue;
+        return @intCast(index);
+    }
+    return null;
 }
 
 // A missing bitfield leaves availability unknown; a received bitfield is

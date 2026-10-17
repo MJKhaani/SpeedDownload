@@ -22,7 +22,7 @@ inspection. It also has source for BEP 9 metadata retrieval from explicit
 `x.pe` peers or HTTP(S)/UDP tracker compact IPv4 peers, but this path has not
 been exercised against a live peer. Initial single-file v1 magnet payload
 transfer source now compiles and routes through the macOS/Unix engine queue,
-with piece verification and partial-file rehashing, but has not been exercised
+with piece verification and independent rehashing of out-of-order pieces, but has not been exercised
 against a live swarm. DHT, multi-file torrents, and
 seeding remain unimplemented.
 See [BitTorrent status](protocols/torrent.md).
