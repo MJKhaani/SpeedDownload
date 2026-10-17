@@ -6,14 +6,17 @@ tracker, total bytes, file and piece counts, piece length, and SHA-1 info
 hash as JSON. It does not add a transfer, contact a tracker or peer, or write
 downloaded files.
 
-For a **single-file** v1 torrent with a primary HTTP(S) or UDP `announce`
-tracker, the CLI can transfer its payload with
+For a **single-file** v1 torrent with HTTP(S) or UDP trackers in `announce`
+or `announce-list`, the CLI can transfer its payload with
 `speed-download torrent-download <file.torrent> <destination-file>`. It uses
 the same SHA-1 piece verification, out-of-order placement, restart rehashing,
 and no-replace publication as `magnet-download`. It reads the `.torrent` from
 the local filesystem; this command does not yet add a persisted GUI job.
-Multi-file torrents and `announce-list` fallback trackers remain unsupported
-for transfer.
+The parser accepts up to 32 distinct usable tracker URLs and ignores the
+primary `announce` when an `announce-list` is present, following
+[BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in
+file order; within-tier shuffling and successful-tracker promotion are not
+implemented. Multi-file torrents remain unsupported for transfer.
 
 The engine also inspects BitTorrent v1 magnet URIs with
 `speed-download magnet-info 'magnet:?xt=urn:btih:…&dn=…&tr=…&x.pe=host:port'`.

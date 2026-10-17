@@ -11,6 +11,7 @@ const max_files = 10_000;
 pub const Result = struct {
     name: []const u8,
     announce: ?[]const u8,
+    announce_list: ?[]const u8,
     total_bytes: u64,
     file_count: u32,
     single_file: bool,
@@ -224,6 +225,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
     try cursor.take('d');
     var previous: ?[]const u8 = null;
     var announce: ?[]const u8 = null;
+    var announce_list: ?[]const u8 = null;
     var info_name: ?[]const u8 = null;
     var info_files: Files = .{};
     var single_file = false;
@@ -239,6 +241,10 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
             const value = try cursor.string();
             if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidTorrentTracker;
             announce = value;
+        } else if (std.mem.eql(u8, key, "announce-list")) {
+            const start = cursor.position;
+            try cursor.skip(1);
+            announce_list = bytes[start..cursor.position];
         } else if (std.mem.eql(u8, key, "info")) {
             const start = cursor.position;
             const info = try parseInfo(allocator, &cursor);
@@ -259,6 +265,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
     return .{
         .name = info_name.?,
         .announce = announce,
+        .announce_list = announce_list,
         .total_bytes = info_files.total,
         .file_count = info_files.count,
         .single_file = single_file,
@@ -267,4 +274,46 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
         .piece_hashes = piece_hashes,
         .info_hash = info_hash,
     };
+}
+
+/// Return owned tracker URLs from BEP 12 tiers, or the primary announce URL
+/// when no tier list exists. The caller frees each URL and the outer slice.
+pub fn trackerUrls(allocator: Allocator, info: Result) ![][]u8 {
+    var urls: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (urls.items) |url| allocator.free(url);
+        urls.deinit(allocator);
+    }
+    if (info.announce_list) |encoded| {
+        var cursor: Cursor = .{ .bytes = encoded };
+        try cursor.count();
+        try cursor.take('l');
+        while (cursor.position < encoded.len and encoded[cursor.position] != 'e') {
+            try cursor.count();
+            try cursor.take('l');
+            while (cursor.position < encoded.len and encoded[cursor.position] != 'e') {
+                const value = try cursor.string();
+                try appendTracker(allocator, &urls, value);
+            }
+            try cursor.take('e');
+        }
+        try cursor.take('e');
+        if (cursor.position != encoded.len) return error.InvalidTorrentTrackers;
+    } else if (info.announce) |primary| {
+        try appendTracker(allocator, &urls, primary);
+    }
+    if (urls.items.len == 0) return error.NoTorrentTrackers;
+    return urls.toOwnedSlice(allocator);
+}
+
+fn appendTracker(allocator: Allocator, urls: *std.ArrayList([]u8), value: []const u8) !void {
+    if (urls.items.len >= 32 or value.len == 0 or value.len > 2048 or !std.unicode.utf8ValidateSlice(value)) return;
+    for (value) |byte| if (byte < 0x20 or byte == 0x7f) return;
+    const uri = std.Uri.parse(value) catch return;
+    if (uri.host == null or uri.user != null or uri.password != null or uri.fragment != null or
+        !(std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https") or std.ascii.eqlIgnoreCase(uri.scheme, "udp"))) return;
+    for (urls.items) |existing| if (std.mem.eql(u8, existing, value)) return;
+    const owned = try allocator.dupe(u8, value);
+    errdefer allocator.free(owned);
+    try urls.append(allocator, owned);
 }

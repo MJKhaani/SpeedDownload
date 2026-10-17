@@ -38,7 +38,7 @@ pub fn download(
     try transferValidated(allocator, io, info, &link, fetched.peer, destination, expected_sha256, callback, context);
 }
 
-/// Download a validated single-file v1 `.torrent` using its primary tracker.
+/// Download a validated single-file v1 `.torrent` using its tracker tiers.
 /// The destination is a full file path and is never replaced on completion.
 pub fn downloadTorrentFile(
     allocator: Allocator,
@@ -53,16 +53,10 @@ pub fn downloadTorrentFile(
     defer allocator.free(bytes);
     const info = try metainfo.inspect(allocator, bytes);
     if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
-    const announce = info.announce orelse return error.NoTorrentTrackers;
-    const tracker = try allocator.dupe(u8, announce);
-    const trackers = allocator.alloc([]u8, 1) catch |err| {
-        allocator.free(tracker);
-        return err;
-    };
-    trackers[0] = tracker;
+    const trackers = try metainfo.trackerUrls(allocator, info);
     const peers = allocator.alloc([]u8, 0) catch |err| {
+        for (trackers) |tracker| allocator.free(tracker);
         allocator.free(trackers);
-        allocator.free(tracker);
         return err;
     };
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
