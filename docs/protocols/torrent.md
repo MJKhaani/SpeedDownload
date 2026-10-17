@@ -11,7 +11,9 @@ or `announce-list`, the CLI can transfer its payload with
 `speed-download torrent-download <file.torrent> <destination-file>`. It uses
 the same SHA-1 piece verification, out-of-order placement, restart rehashing,
 and no-replace publication as `magnet-download`. It reads the `.torrent` from
-the local filesystem; this command does not yet add a persisted GUI job.
+the local filesystem. On macOS, Add Download can choose a `.torrent` file
+and submit it through the engine queue for normal progress and resume. The
+selected source file must remain in place until the job completes.
 The parser accepts up to 32 distinct usable tracker URLs and ignores the
 primary `announce` when an `announce-list` is present, following
 [BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in

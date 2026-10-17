@@ -101,12 +101,22 @@ The `torrents.magnet-v1-single-file` feature indicates that `jobs.probe` and
 `jobs.add` accept v1 `magnet:` links on the Unix engine. The probe returns
 `http_version: "BitTorrent"`, `status_code: 0`, an optional safe display name,
 and an unknown size until metadata arrives. A queued magnet resolves metadata
-from explicit peers or HTTP(S) tracker compact IPv4 peer lists, then transfers
+from explicit peers or HTTP(S)/UDP tracker compact IPv4 peer lists, then transfers
 one file with per-piece SHA-1 verification. `completed_bytes` counts synced,
 verified pieces; `received_bytes` may include the current unverified piece.
-The daemon rehashes `.part` pieces before resume. Multi-file torrents, UDP
-trackers, DHT, and seeding are outside this feature. Custom proxy mode rejects
+The daemon rehashes all `.part` pieces before resume. Multi-file torrents,
+DHT, and seeding are outside this feature. Custom proxy mode rejects
 magnet transfers rather than bypassing the configured proxy.
+
+The Unix engine also advertises `torrents.local-file-v1-single-file`.
+The macOS Add Download file picker submits a `torrent-file:///` URL with an
+absolute, percent-encoded `.torrent` path. `jobs.probe` reads at most 8 MiB,
+validates the metainfo, and returns the single-file name and size. `jobs.add`
+requires a safe output name and validates the selected torrent again. The
+engine stores the local source URL privately and redacts its path from job
+summaries. The source file must remain available until transfer completion;
+moving or changing it can make a queued or resumed job fail. This URL type is
+for trusted local clients and must not be accepted by browser handoff bridges.
 
 `jobs.list` keeps `completed_bytes` as the durable resume checkpoint. While a transfer is active, it also exposes `received_bytes` for live UI progress and may expose a `total_bytes` learned from response headers before a durable checkpoint exists. These live fields are not persisted as completed data. The `workers` array includes a single connection for sequential HTTP transfers when the total size is known; its progress is also live and clears when the transfer stops. Clients should label received bytes as transfer progress rather than verified or resumable bytes.
 

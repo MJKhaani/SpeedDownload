@@ -734,6 +734,7 @@ pub const Store = struct {
 
     fn sourceHost(url: []const u8) []const u8 {
         if (url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:")) return "bittorrent";
+        if (@import("../protocols/torrent/source.zig").isLocalTorrent(url)) return "local-torrent";
         const uri = std.Uri.parse(url) catch return "";
         return hostString(uri) orelse "";
     }
@@ -1472,6 +1473,14 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
     if (input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:")) {
         var link = @import("../protocols/torrent/magnet.zig").inspect(allocator, input.url) catch return error.InvalidJob;
         defer link.deinit(allocator);
+    } else if (@import("../protocols/torrent/source.zig").isLocalTorrent(input.url)) {
+        const path = @import("../protocols/torrent/source.zig").pathAlloc(allocator, input.url) catch return error.InvalidJob;
+        defer allocator.free(path);
+        const torrent = @import("../protocols/torrent/metainfo.zig");
+        const bytes = std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(torrent.max_metainfo_bytes)) catch return error.InvalidJob;
+        defer allocator.free(bytes);
+        const info = torrent.inspect(allocator, bytes) catch return error.InvalidJob;
+        if (!info.single_file or input.name == null) return error.InvalidJob;
     } else {
         const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
         if ((!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https") and
@@ -1482,7 +1491,8 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
     }
     if (input.name) |name| {
         if (!validName(name)) return error.InvalidJob;
-        if (input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:") and
+        if ((input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:") or
+            @import("../protocols/torrent/source.zig").isLocalTorrent(input.url)) and
             !@import("../protocols/torrent/metainfo.zig").safeComponent(name)) return error.InvalidJob;
     }
     if (input.destination.len == 0 or input.destination.len > 4096 or
@@ -1539,6 +1549,7 @@ fn getString(object: std.json.ObjectMap, key: []const u8) ![]const u8 {
 
 fn redactUrl(url: []const u8) []const u8 {
     if (url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:")) return "magnet:";
+    if (@import("../protocols/torrent/source.zig").isLocalTorrent(url)) return "torrent-file:";
     return url;
 }
 

@@ -278,7 +278,17 @@ pub fn dispatchMethod(
         defer arena.deinit();
         const proxy_policy = jobs.copyProxyPolicy() catch return dispatchError(allocator, request_id, -32020, "Could not read proxy settings");
         defer proxy_policy.deinit(jobs.allocator);
-        const probe = if (isMagnetUrl(url)) blk: {
+        const probe = if (isTorrentFileUrl(url)) blk: {
+            const source = @import("../protocols/torrent/source.zig");
+            const torrent = @import("../protocols/torrent/metainfo.zig");
+            const path = source.pathAlloc(arena.allocator(), url) catch break :blk error.InvalidTorrentSource;
+            const bytes = std.Io.Dir.readFileAlloc(.cwd(), engine.io, path, arena.allocator(), .limited(torrent.max_metainfo_bytes)) catch break :blk error.InvalidTorrentSource;
+            const info = torrent.inspect(arena.allocator(), bytes) catch break :blk error.InvalidTorrentSource;
+            if (!info.single_file) break :blk error.MultiFileTorrentNotYetSupported;
+            const total = std.fmt.allocPrint(arena.allocator(), "{d}", .{info.total_bytes}) catch break :blk error.OutOfMemory;
+            const result: http_probe.Result = .{ .final_url = "torrent-file:", .suggested_name = info.name, .total_bytes = total, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Torrent file accepted. The engine verifies each piece and resumes verified pieces." };
+            break :blk result;
+        } else if (isMagnetUrl(url)) blk: {
             var link = @import("../protocols/torrent/magnet.zig").inspect(arena.allocator(), url) catch break :blk error.InvalidMagnetUri;
             defer link.deinit(arena.allocator());
             const suggested = if (link.display_name) |name| if (@import("../protocols/torrent/metainfo.zig").safeComponent(name)) name else "torrent-download" else "torrent-download";
@@ -436,7 +446,10 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
 
     var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id };
     var retry_hint: @import("../protocols/http/retry_after.zig").Hint = .init(0);
-    const transfer = if (isMagnetUrl(task.url)) blk: {
+    const transfer = if (isTorrentFileUrl(task.url)) blk: {
+        if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
+        break :blk @import("../protocols/torrent/download.zig").downloadTorrentSource(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
+    } else if (isMagnetUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
         break :blk @import("../protocols/torrent/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
     } else if (isFtpUrl(task.url)) blk: {
@@ -515,6 +528,10 @@ fn isFtpUrl(url: []const u8) bool {
 
 fn isMagnetUrl(url: []const u8) bool {
     return url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:");
+}
+
+fn isTorrentFileUrl(url: []const u8) bool {
+    return @import("../protocols/torrent/source.zig").isLocalTorrent(url);
 }
 
 fn updateWorkerProgress(context: *anyopaque, worker_id: u32, start: u64, end: u64, downloaded: u64) anyerror!void {

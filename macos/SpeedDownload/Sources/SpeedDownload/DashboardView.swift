@@ -686,8 +686,11 @@ private struct AddDownloadView: View {
             }
             Form {
                 Section("Download source") {
-                    TextField("URL", text: $url, prompt: Text("https://example.com/file.zip or magnet:?xt=…"))
-                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        TextField("URL", text: $url, prompt: Text("https://example.com/file.zip or magnet:?xt=…"))
+                            .textFieldStyle(.roundedBorder)
+                        Button("Choose Torrent…", action: chooseTorrent)
+                    }
                     probeSummary
                 }
                 Section("File") {
@@ -791,7 +794,7 @@ private struct AddDownloadView: View {
             Label(probeError, systemImage: "exclamationmark.triangle")
                 .font(.callout).foregroundStyle(.orange)
         } else if !trimmedURL.isEmpty {
-            Text("Enter an HTTP, HTTPS, FTP, FTPS, or magnet link to inspect the download.")
+            Text("Enter a link or choose a .torrent file to inspect the download.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -801,9 +804,9 @@ private struct AddDownloadView: View {
         probeError = nil
         guard !value.isEmpty else { isProbing = false; return }
         guard let parsed = URL(string: value),
-              (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || value.lowercased().hasPrefix("magnet:?")) else {
+              (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || value.lowercased().hasPrefix("magnet:?") || value.lowercased().hasPrefix("torrent-file:///")) else {
             isProbing = false
-            probeError = "Enter a valid HTTP, HTTPS, FTP, FTPS, or magnet link."
+            probeError = "Enter a valid link or choose a .torrent file."
             return
         }
         do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
@@ -884,8 +887,8 @@ private struct AddDownloadView: View {
     private func save() async {
         let trimmedURL = self.trimmedURL
         guard let parsed = URL(string: trimmedURL),
-              (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || trimmedURL.lowercased().hasPrefix("magnet:?")) else {
-            validationError = "Enter a valid HTTP, HTTPS, FTP, FTPS, or magnet link."; return
+              (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || trimmedURL.lowercased().hasPrefix("magnet:?") || trimmedURL.lowercased().hasPrefix("torrent-file:///")) else {
+            validationError = "Enter a valid link or choose a .torrent file."; return
         }
         let path = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         var isDirectory: ObjCBool = false
@@ -906,5 +909,19 @@ private struct AddDownloadView: View {
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: destination, isDirectory: true)
         if panel.runModal() == .OK, let selectedURL = panel.url { destination = selectedURL.path }
+    }
+    private func chooseTorrent() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Torrent File"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let torrentType = UTType(filenameExtension: "torrent") { panel.allowedContentTypes = [torrentType] }
+        if panel.runModal() == .OK, let selectedURL = panel.url,
+           var components = URLComponents(url: selectedURL, resolvingAgainstBaseURL: false) {
+            components.scheme = "torrent-file"
+            if let source = components.url?.absoluteString { url = source }
+        }
     }
 }

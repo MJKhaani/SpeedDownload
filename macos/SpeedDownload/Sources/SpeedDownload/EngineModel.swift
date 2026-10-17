@@ -96,7 +96,8 @@ final class EngineModel: ObservableObject {
                   hello.supportedFeatures.contains("jobs.per-job-bandwidth"),
                   hello.supportedFeatures.contains("settings.persisted-v2"),
                   hello.supportedFeatures.contains("settings.weekly-schedules"),
-                  hello.supportedFeatures.contains("torrents.magnet-v1-single-file") else {
+                  hello.supportedFeatures.contains("torrents.magnet-v1-single-file"),
+                  hello.supportedFeatures.contains("torrents.local-file-v1-single-file") else {
                 throw EngineLaunchError.outdated
             }
             return (hello, try client.listJobs())

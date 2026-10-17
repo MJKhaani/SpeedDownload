@@ -64,6 +64,13 @@ pub fn downloadTorrentFile(
     try transferValidated(allocator, io, info, &link, null, destination, expected_sha256, callback, context);
 }
 
+/// Queue worker entry point for a desktop-selected local torrent source URL.
+pub fn downloadTorrentSource(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8, callback: ?ProgressCallback, context: ?*anyopaque) !void {
+    const path = try @import("source.zig").pathAlloc(allocator, url);
+    defer allocator.free(path);
+    try downloadTorrentFile(allocator, io, path, destination, expected_sha256, callback, context);
+}
+
 fn transferValidated(
     allocator: Allocator,
     io: Io,
