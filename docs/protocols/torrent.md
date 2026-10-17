@@ -13,7 +13,9 @@ the same SHA-1 piece verification, out-of-order placement, restart rehashing,
 and no-replace publication as `magnet-download`. It reads the `.torrent` from
 the local filesystem. On macOS, Add Download can choose a `.torrent` file
 and submit it through the engine queue for normal progress and resume. The
-selected source file must remain in place until the job completes.
+engine copies metainfo into its private job state before accepting the job,
+so the selected file can subsequently be moved or removed. Older queued
+jobs created before this behavior still need the original file for resume.
 The parser accepts up to 32 distinct usable tracker URLs and ignores the
 primary `announce` when an `announce-list` is present, following
 [BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in

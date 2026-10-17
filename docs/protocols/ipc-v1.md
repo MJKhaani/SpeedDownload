@@ -113,9 +113,10 @@ The macOS Add Download file picker submits a `torrent-file:///` URL with an
 absolute, percent-encoded `.torrent` path. `jobs.probe` reads at most 8 MiB,
 validates the metainfo, and returns the single-file name and size. `jobs.add`
 requires a safe output name and validates the selected torrent again. The
-engine stores the local source URL privately and redacts its path from job
-summaries. The source file must remain available until transfer completion;
-moving or changing it can make a queued or resumed job fail. This URL type is
+engine stores the local source URL privately, redacts its path from job
+summaries, and saves a private metainfo snapshot before acknowledging the job.
+The original file can then be moved or removed. Jobs added before snapshots
+were introduced still require their original source file for resume. This URL type is
 for trusted local clients and must not be accepted by browser handoff bridges.
 
 `jobs.list` keeps `completed_bytes` as the durable resume checkpoint. While a transfer is active, it also exposes `received_bytes` for live UI progress and may expose a `total_bytes` learned from response headers before a durable checkpoint exists. These live fields are not persisted as completed data. The `workers` array includes a single connection for sequential HTTP transfers when the total size is known; its progress is also live and clears when the transfer stops. Clients should label received bytes as transfer progress rather than verified or resumable bytes.

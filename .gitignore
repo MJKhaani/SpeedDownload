@@ -1,5 +1,7 @@
 .DS_Store
 .zig-global-cache/
+.swift-module-cache/
+.clang-module-cache/
 .zig-cache/
 zig-out/
 zig-cache/

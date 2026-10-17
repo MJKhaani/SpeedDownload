@@ -312,12 +312,12 @@ pub const Store = struct {
     }
 
     fn addUnlocked(self: *Store, input: AddInput) !AddResult {
-        try validateInput(self.allocator, self.io, input);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.idempotency_key, input.idempotency_key)) continue;
             if (sameInput(job, input)) return .{ .job = job, .duplicate = true };
             return error.IdempotencyConflict;
         }
+        try validateInput(self.allocator, self.io, input);
 
         const job = try self.duplicateJob(input);
         const occupied = self.destinationOccupied(job, false) catch |err| {
@@ -328,15 +328,60 @@ pub const Store = struct {
             self.freeJob(job);
             return error.DestinationReserved;
         }
+        const source_snapshot = if (@import("../protocols/torrent/source.zig").isLocalTorrent(input.url))
+            self.snapshotTorrentSource(job.id, input.url) catch |err| {
+                self.freeJob(job);
+                return err;
+            }
+        else
+            null;
+        defer if (source_snapshot) |path| self.allocator.free(path);
         self.jobs.append(self.allocator, job) catch |err| {
+            if (source_snapshot) |path| std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
             self.freeJob(job);
             return err;
         };
         self.persist() catch |err| {
+            if (source_snapshot) |path| std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
             self.freeJob(self.jobs.pop().?);
             return err;
         };
         return .{ .job = &self.jobs.items[self.jobs.items.len - 1], .duplicate = false };
+    }
+
+    /// Private immutable metainfo copy. Job IDs are generated before this is
+    /// called; linking atomically avoids exposing a partially written source.
+    fn snapshotTorrentSource(self: *Store, job_id: []const u8, url: []const u8) ![]u8 {
+        const source = @import("../protocols/torrent/source.zig");
+        const torrent = @import("../protocols/torrent/metainfo.zig");
+        const original = try source.pathAlloc(self.allocator, url);
+        defer self.allocator.free(original);
+        const bytes = try std.Io.Dir.readFileAlloc(.cwd(), self.io, original, self.allocator, .limited(torrent.max_metainfo_bytes));
+        defer self.allocator.free(bytes);
+        const info = try torrent.inspect(self.allocator, bytes);
+        if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
+        const path = try self.torrentSnapshotPath(self.allocator, job_id);
+        errdefer self.allocator.free(path);
+        var atomic = try std.Io.Dir.createFileAtomic(.cwd(), self.io, path, .{
+            .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o600),
+        });
+        defer atomic.deinit(self.io);
+        try atomic.file.writeStreamingAll(self.io, bytes);
+        try atomic.file.sync(self.io);
+        try atomic.link(self.io);
+        return path;
+    }
+
+    pub fn torrentSnapshotPath(self: *const Store, allocator: std.mem.Allocator, job_id: []const u8) ![]u8 {
+        if (job_id.len != 36) return error.InvalidJobId;
+        for (job_id, 0..) |byte, index| {
+            if (index == 8 or index == 13 or index == 18 or index == 23) {
+                if (byte != '-') return error.InvalidJobId;
+            } else if (!std.ascii.isHex(byte)) return error.InvalidJobId;
+        }
+        const filename = try std.fmt.allocPrint(allocator, "torrent-{s}.torrent", .{job_id});
+        defer allocator.free(filename);
+        return std.fs.path.join(allocator, &.{ self.directory_path, filename });
     }
 
     pub fn listJson(self: *Store, request_id: std.json.Value, offset: usize, limit: usize) ![]u8 {
@@ -527,6 +572,13 @@ pub const Store = struct {
             self.jobs.insert(self.allocator, remove_at, removed) catch unreachable;
             return err;
         };
+        if (@import("../protocols/torrent/source.zig").isLocalTorrent(removed.url)) {
+            const snapshot = self.torrentSnapshotPath(self.allocator, removed.id) catch null;
+            if (snapshot) |path| {
+                defer self.allocator.free(path);
+                std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
+            }
+        }
         self.freeJob(removed);
         return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
             .job_id = job_id,

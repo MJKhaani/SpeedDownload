@@ -448,7 +448,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     var retry_hint: @import("../protocols/http/retry_after.zig").Hint = .init(0);
     const transfer = if (isTorrentFileUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
-        break :blk @import("../protocols/torrent/download.zig").downloadTorrentSource(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
+        break :blk downloadStoredTorrent(engine, task, destination, &progress);
     } else if (isMagnetUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
         break :blk @import("../protocols/torrent/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
@@ -485,6 +485,21 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     };
     engine.jobs.finishDownload(task.id, true, null) catch {};
     engine.jobs.logAction("transfer", "completed");
+}
+
+fn downloadStoredTorrent(engine: *EngineContext, task: job_store.Store.DownloadTask, destination: []const u8, progress: *DownloadProgressContext) !void {
+    const snapshot = try engine.jobs.torrentSnapshotPath(engine.allocator, task.id);
+    defer engine.allocator.free(snapshot);
+    const exists = if (std.Io.Dir.cwd().statFile(engine.io, snapshot, .{})) |_| true else |err| switch (err) {
+        error.FileNotFound => false,
+        else => return err,
+    };
+    if (exists) {
+        return @import("../protocols/torrent/download.zig").downloadTorrentFile(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress));
+    }
+    // Jobs queued before source snapshots were introduced can still resume
+    // from the original selected file when it remains available.
+    return @import("../protocols/torrent/download.zig").downloadTorrentSource(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress));
 }
 
 fn retryableDownloadError(err: anyerror) bool {
