@@ -84,11 +84,12 @@ byte count and remaining size to trackers and tries other discovered peers.
 For each TCP peer, BITFIELD and HAVE messages record which pieces it reports;
 the engine chooses any unverified piece available from that peer. A peer that
 sends no bitfield leaves availability unknown until a piece request succeeds
-or fails. Piece requests are sequential within each connection, and peers
-are contacted sequentially rather than concurrently.
+or fails. It keeps up to eight 16 KiB requests in flight for one piece and
+accepts out-of-order responses only for requested block offsets and lengths.
+Completed pieces are SHA-1 verified before they enter the partial file. Pieces
+and peers are still handled sequentially rather than concurrently.
 
-This is an early compatibility slice. It requests blocks sequentially and
-does not upload or seed. File selection, DHT,
+This is an early compatibility slice. It does not upload or seed. File selection, DHT,
 peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a

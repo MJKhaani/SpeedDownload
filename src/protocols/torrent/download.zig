@@ -13,6 +13,8 @@ const http_download = @import("../http/download.zig");
 pub const ProgressCallback = *const fn (*anyopaque, u64, ?u64, bool) anyerror!void;
 const timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
 const block_size: usize = 16 * 1024;
+const max_in_flight_blocks: usize = 8;
+const max_piece_blocks: usize = 64 * 1024 * 1024 / block_size;
 
 pub fn download(
     allocator: Allocator,
@@ -287,44 +289,63 @@ fn transferFromPeer(
     piece_loop: while (remaining.* != 0) {
         const piece_index = nextAvailablePiece(verified, &availability, bitfield_known) orelse return error.PeerMissingPieces;
         const size = try pieceBytes(info, piece_index);
-        var cursor: usize = 0;
         var unchoke_messages: usize = 0;
         var has_piece: ?bool = if (pieceInBitfield(&availability, piece_index)) true else if (bitfield_known) false else null;
         if (has_piece == false) continue :piece_loop;
-        while (cursor < size) {
-            while (choked) {
-                unchoke_messages += 1;
-                if (unchoke_messages > 128) return error.PeerChoked;
-                const frame = try readFrame(io, stream, &frame_buffer);
-                try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
-                if (has_piece == false) continue :piece_loop;
-                if (frame.len == 1 and frame[0] == 1) choked = false;
-            }
+        while (choked) {
+            unchoke_messages += 1;
+            if (unchoke_messages > 128) return error.PeerChoked;
+            const frame = try readFrame(io, stream, &frame_buffer);
+            try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
             if (has_piece == false) continue :piece_loop;
-            const amount = @min(block_size, size - cursor);
-            var request: [17]u8 = .{ 0, 0, 0, 13, 6 } ++ @as([12]u8, @splat(0));
-            std.mem.writeInt(u32, request[5..9], @intCast(piece_index), .big);
-            std.mem.writeInt(u32, request[9..13], @intCast(cursor), .big);
-            std.mem.writeInt(u32, request[13..17], @intCast(amount), .big);
-            try socket_writer.interface.writeAll(&request);
-            try socket_writer.interface.flush();
-            var messages: usize = 0;
-            while (true) {
-                messages += 1;
-                if (messages > 128) return error.PeerPieceUnavailable;
-                const frame = try readFrame(io, stream, &frame_buffer);
-                if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
-                try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
-                if (has_piece == false) continue :piece_loop;
-                if (frame.len != amount + 9 or frame[0] != 7) continue;
-                const index = std.mem.readInt(u32, frame[1..5], .big);
-                const begin = std.mem.readInt(u32, frame[5..9], .big);
-                if (index != piece_index or begin != cursor) return error.UnexpectedPeerPiece;
-                @memcpy(piece_buffer[cursor .. cursor + amount], frame[9..]);
-                cursor += amount;
-                if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.* + cursor, info.total_bytes, false);
-                break;
+            if (frame.len == 1 and frame[0] == 1) choked = false;
+        }
+        const block_count = std.math.divCeil(usize, size, block_size) catch return error.InvalidTorrentPieceLength;
+        if (block_count > max_piece_blocks) return error.InvalidTorrentPieceLength;
+        var received: [max_piece_blocks]bool = @splat(false);
+        var requested_blocks: usize = 0;
+        var received_blocks: usize = 0;
+        var received_bytes: usize = 0;
+        var idle_messages: usize = 0;
+        while (received_blocks < block_count) {
+            while (requested_blocks < block_count and requested_blocks - received_blocks < max_in_flight_blocks) {
+                const begin = requested_blocks * block_size;
+                const amount = @min(block_size, size - begin);
+                var request: [17]u8 = .{ 0, 0, 0, 13, 6 } ++ @as([12]u8, @splat(0));
+                std.mem.writeInt(u32, request[5..9], @intCast(piece_index), .big);
+                std.mem.writeInt(u32, request[9..13], @intCast(begin), .big);
+                std.mem.writeInt(u32, request[13..17], @intCast(amount), .big);
+                try socket_writer.interface.writeAll(&request);
+                requested_blocks += 1;
             }
+            try socket_writer.interface.flush();
+            const frame = try readFrame(io, stream, &frame_buffer);
+            if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
+            try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
+            if (has_piece == false) return error.PeerMissingPieces;
+            if (frame.len < 9 or frame[0] != 7) {
+                idle_messages += 1;
+                if (idle_messages > 128) return error.PeerPieceUnavailable;
+                continue;
+            }
+            const index = std.mem.readInt(u32, frame[1..5], .big);
+            const begin: usize = std.mem.readInt(u32, frame[5..9], .big);
+            if (index != piece_index or begin % block_size != 0 or begin >= size) return error.UnexpectedPeerPiece;
+            const block_index = begin / block_size;
+            if (block_index >= requested_blocks) return error.UnexpectedPeerPiece;
+            const amount = @min(block_size, size - begin);
+            if (frame.len != amount + 9) return error.UnexpectedPeerPiece;
+            if (received[block_index]) {
+                idle_messages += 1;
+                if (idle_messages > 128) return error.PeerPieceUnavailable;
+                continue;
+            }
+            @memcpy(piece_buffer[begin .. begin + amount], frame[9..]);
+            received[block_index] = true;
+            received_blocks += 1;
+            received_bytes += amount;
+            idle_messages = 0;
+            if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.* + received_bytes, info.total_bytes, false);
         }
         var digest: [20]u8 = undefined;
         std.crypto.hash.Sha1.hash(piece_buffer[0..size], &digest, .{});
