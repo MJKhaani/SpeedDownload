@@ -35,8 +35,12 @@ pub fn main(init: std.process.Init) !void {
         try torrent_download(init.gpa, init.io, args[2], args[3], null, null, null);
         return;
     }
+    if (args.len == 4 and std.mem.eql(u8, args[1], "torrent-download")) {
+        try @import("protocols/torrent/download.zig").downloadTorrentFile(init.gpa, init.io, args[2], args[3], null, null, null);
+        return;
+    }
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        std.debug.print("Usage: speed-download [engine | torrent-info <file.torrent> | magnet-info <magnet-uri> | magnet-metadata <magnet-uri> <output.torrent> | magnet-download <magnet-uri> <destination-file> | rpc <list|probe|add|control|reorder|delete> ... | [--sha256 <64-hex-digits>] <download-url> <destination>]\n", .{});
+        std.debug.print("Usage: speed-download [engine | torrent-info <file.torrent> | torrent-download <file.torrent> <destination-file> | magnet-info <magnet-uri> | magnet-metadata <magnet-uri> <output.torrent> | magnet-download <magnet-uri> <destination-file> | rpc <list|probe|add|control|reorder|delete> ... | [--sha256 <64-hex-digits>] <download-url> <destination>]\n", .{});
         return;
     }
     var expected_sha256: ?[32]u8 = null;

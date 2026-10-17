@@ -35,7 +35,52 @@ pub fn download(
     // Even a one-entry multi-file torrent needs a directory root and path map.
     if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
+    try transferValidated(allocator, io, info, &link, fetched.peer, destination, expected_sha256, callback, context);
+}
 
+/// Download a validated single-file v1 `.torrent` using its primary tracker.
+/// The destination is a full file path and is never replaced on completion.
+pub fn downloadTorrentFile(
+    allocator: Allocator,
+    io: Io,
+    torrent_path: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+) !void {
+    const bytes = try Io.Dir.readFileAlloc(.cwd(), io, torrent_path, allocator, .limited(metainfo.max_metainfo_bytes));
+    defer allocator.free(bytes);
+    const info = try metainfo.inspect(allocator, bytes);
+    if (!info.single_file) return error.MultiFileTorrentNotYetSupported;
+    const announce = info.announce orelse return error.NoTorrentTrackers;
+    const tracker = try allocator.dupe(u8, announce);
+    const trackers = allocator.alloc([]u8, 1) catch |err| {
+        allocator.free(tracker);
+        return err;
+    };
+    trackers[0] = tracker;
+    const peers = allocator.alloc([]u8, 0) catch |err| {
+        allocator.free(trackers);
+        allocator.free(tracker);
+        return err;
+    };
+    var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
+    defer link.deinit(allocator);
+    try transferValidated(allocator, io, info, &link, null, destination, expected_sha256, callback, context);
+}
+
+fn transferValidated(
+    allocator: Allocator,
+    io: Io,
+    info: metainfo.Result,
+    link: *const magnet.Result,
+    first_peer: ?[]const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+) !void {
     const cwd = Io.Dir.cwd();
     if (cwd.statFile(io, destination, .{})) |_| return error.DestinationExists else |err| switch (err) {
         error.FileNotFound => {},
@@ -63,18 +108,20 @@ pub fn download(
 
     if (remaining != 0) {
         var last_error: anyerror = error.NoPeerHasPieces;
-        transferFromPeer(io, fetched.peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
-            if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
-            last_error = err;
-        };
+        if (first_peer) |peer| {
+            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
+                if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
+                last_error = err;
+            };
+        }
         if (remaining != 0) {
-            const peers = try metadata.collectPeers(allocator, io, &link, verified_bytes, info.total_bytes);
+            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, info.total_bytes);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);
             }
             for (peers) |peer| {
-                if (std.mem.eql(u8, peer, fetched.peer)) continue;
+                if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
                 transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context) catch |err| {
                     if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                     last_error = err;
