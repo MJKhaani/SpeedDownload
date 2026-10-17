@@ -31,7 +31,7 @@ Output is JSON with `status: "metadata_required"`. URI length, parameter
 count, decoded values, and percent escapes are bounded and checked.
 
 For a magnet with an `x.pe` direct peer address, an HTTP(S) tracker returning
-compact IPv4 or IPv6 peers, or a UDP tracker returning compact IPv4 peers,
+compact IPv4/IPv6 or dictionary peers, or a UDP tracker returning compact IPv4 peers,
 the CLI can request the info dictionary using
 BEP 10/BEP 9 metadata exchange:
 
@@ -45,15 +45,16 @@ the same paths, sizes, and piece hashes as `.torrent` inspection before
 creating `output.torrent`. All magnet trackers are retained in its
 `announce-list`. An existing output file is never replaced. The command
 contacts an explicit peer first, then HTTP(S) and UDP trackers in magnet order.
-HTTP(S) trackers may return compact IPv4 `peers` and IPv6 `peers6` lists;
-UDP tracker discovery remains IPv4 only. Noncompact peer lists and DHT are not supported. It does not
+HTTP(S) trackers may return compact IPv4 `peers`, IPv6 `peers6`, or BEP 3
+`peers` dictionaries with an IP/hostname and port. UDP tracker discovery
+remains IPv4 only. DHT is not supported. It does not
 download payload pieces or seed.
 
 The initial single-file transfer path accepts a v1 magnet URI through the
 macOS Add Download dialog or `jobs.add` IPC. The CLI can also use
 `speed-download magnet-download '<magnet-uri>' <destination-file>`. The engine
 retrieves metadata, accepts a single-file v1 torrent, discovers peers from
-`x.pe`, HTTP(S) compact IPv4/IPv6 tracker replies, or UDP compact IPv4
+`x.pe`, HTTP(S) compact IPv4/IPv6 or dictionary tracker replies, or UDP compact IPv4
 tracker replies, and requests 16 KiB blocks
 from TCP peers. It verifies each complete piece against the metainfo SHA-1
 hash before writing it at the correct offset in a `.part` file and syncing.

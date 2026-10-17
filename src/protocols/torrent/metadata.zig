@@ -206,12 +206,22 @@ fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_has
         for (peers) |peer| allocator.free(peer);
         allocator.free(peers);
     }
-    if (compact.ipv6.len == 0) return peers;
     const ipv6 = try peersFromCompact6(allocator, compact.ipv6);
     defer allocator.free(ipv6);
-    const combined = try allocator.alloc([]u8, peers.len + ipv6.len);
-    @memcpy(combined[0..peers.len], peers);
-    @memcpy(combined[peers.len..], ipv6);
+    errdefer for (ipv6) |peer| allocator.free(peer);
+    const expanded = try peersFromExpanded(allocator, compact.expanded);
+    defer allocator.free(expanded);
+    errdefer for (expanded) |peer| allocator.free(peer);
+    const ipv4_count = @min(peers.len, 80);
+    const ipv6_count = @min(ipv6.len, 80 - ipv4_count);
+    const expanded_count = @min(expanded.len, 80 - ipv4_count - ipv6_count);
+    const combined = try allocator.alloc([]u8, ipv4_count + ipv6_count + expanded_count);
+    @memcpy(combined[0..ipv4_count], peers[0..ipv4_count]);
+    @memcpy(combined[ipv4_count..][0..ipv6_count], ipv6[0..ipv6_count]);
+    @memcpy(combined[ipv4_count + ipv6_count ..], expanded[0..expanded_count]);
+    for (peers[ipv4_count..]) |peer| allocator.free(peer);
+    for (ipv6[ipv6_count..]) |peer| allocator.free(peer);
+    for (expanded[expanded_count..]) |peer| allocator.free(peer);
     allocator.free(peers);
     peers = &.{};
     return combined;
@@ -255,6 +265,57 @@ fn peersFromCompact6(allocator: Allocator, compact: []const u8) ![][]u8 {
     return peers.toOwnedSlice(allocator);
 }
 
+fn peersFromExpanded(allocator: Allocator, encoded: []const u8) ![][]u8 {
+    var peers: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (peers.items) |peer| allocator.free(peer);
+        peers.deinit(allocator);
+    }
+    if (encoded.len == 0) return peers.toOwnedSlice(allocator);
+    if (encoded[0] != 'l') return error.InvalidTrackerResponse;
+    var cursor: usize = 1;
+    while (cursor < encoded.len and encoded[cursor] != 'e') {
+        if (cursor >= encoded.len or encoded[cursor] != 'd') return error.InvalidTrackerResponse;
+        cursor += 1;
+        var host: ?[]const u8 = null;
+        var port: ?u16 = null;
+        while (cursor < encoded.len and encoded[cursor] != 'e') {
+            const key = try parseString(encoded, &cursor);
+            if (std.mem.eql(u8, key, "ip")) {
+                if (host != null) return error.InvalidTrackerResponse;
+                host = try parseString(encoded, &cursor);
+            } else if (std.mem.eql(u8, key, "port")) {
+                if (port != null) return error.InvalidTrackerResponse;
+                const value = try parseUnsigned(encoded, &cursor);
+                if (value == 0 or value > 65535) return error.InvalidTrackerResponse;
+                port = @intCast(value);
+            } else try skipValue(encoded, &cursor, 0);
+        }
+        if (cursor >= encoded.len) return error.InvalidTrackerResponse;
+        cursor += 1;
+        const address = host orelse return error.InvalidTrackerResponse;
+        const peer_port = port orelse return error.InvalidTrackerResponse;
+        if (address.len == 0 or address.len > 253 or !std.unicode.utf8ValidateSlice(address)) return error.InvalidTrackerResponse;
+        for (address) |byte| if (byte < 0x21 or byte > 0x7e or byte == '/' or byte == '@' or byte == '[' or byte == ']') return error.InvalidTrackerResponse;
+        const ipv6 = std.mem.indexOfScalar(u8, address, ':') != null;
+        if (ipv6) {
+            _ = Io.net.IpAddress.parseIp6(address, peer_port) catch return error.InvalidTrackerResponse;
+        } else {
+            _ = Io.net.HostName.init(address) catch return error.InvalidTrackerResponse;
+        }
+        if (peers.items.len < 64) {
+            const value = if (ipv6)
+                try std.fmt.allocPrint(allocator, "[{s}]:{d}", .{ address, peer_port })
+            else
+                try std.fmt.allocPrint(allocator, "{s}:{d}", .{ address, peer_port });
+            errdefer allocator.free(value);
+            try peers.append(allocator, value);
+        }
+    }
+    if (cursor + 1 != encoded.len) return error.InvalidTrackerResponse;
+    return peers.toOwnedSlice(allocator);
+}
+
 fn percentEncode(bytes: []const u8) [60]u8 {
     var output: [60]u8 = undefined;
     const alphabet = "0123456789ABCDEF";
@@ -266,7 +327,7 @@ fn percentEncode(bytes: []const u8) [60]u8 {
     return output;
 }
 
-const CompactPeers = struct { ipv4: []const u8 = "", ipv6: []const u8 = "" };
+const CompactPeers = struct { ipv4: []const u8 = "", ipv6: []const u8 = "", expanded: []const u8 = "" };
 
 fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
     if (bytes.len < 2 or bytes[0] != 'd') return error.InvalidTrackerResponse;
@@ -275,7 +336,11 @@ fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
     while (cursor < bytes.len and bytes[cursor] != 'e') {
         const key = try parseString(bytes, &cursor);
         if (std.mem.eql(u8, key, "peers")) {
-            peers.ipv4 = try parseString(bytes, &cursor);
+            if (cursor < bytes.len and bytes[cursor] == 'l') {
+                const start = cursor;
+                try skipValue(bytes, &cursor, 0);
+                peers.expanded = bytes[start..cursor];
+            } else peers.ipv4 = try parseString(bytes, &cursor);
         } else if (std.mem.eql(u8, key, "peers6")) {
             peers.ipv6 = try parseString(bytes, &cursor);
         } else if (std.mem.eql(u8, key, "failure reason")) {
@@ -284,7 +349,7 @@ fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
         } else try skipValue(bytes, &cursor, 0);
     }
     if (cursor + 1 != bytes.len) return error.InvalidTrackerResponse;
-    if (peers.ipv4.len == 0 and peers.ipv6.len == 0) return error.NoTrackerPeers;
+    if (peers.ipv4.len == 0 and peers.ipv6.len == 0 and peers.expanded.len == 0) return error.NoTrackerPeers;
     if (peers.ipv4.len % 6 != 0 or peers.ipv6.len % 18 != 0) return error.InvalidTrackerResponse;
     return peers;
 }
