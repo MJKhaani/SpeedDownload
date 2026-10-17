@@ -98,21 +98,33 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
     const host = switch (host_component) {
         .raw, .percent_encoded => |value| value,
     };
-    if (host.len == 0 or host[0] == '[') return error.UnsupportedUdpTrackerAddressFamily;
-    const address = Io.net.IpAddress.parseIp4(host, port) catch blk: {
+    if (host.len == 0) return error.InvalidTracker;
+    const address = if (host[0] == '[') blk: {
+        if (host.len < 3 or host[host.len - 1] != ']') return error.InvalidTracker;
+        break :blk Io.net.IpAddress.parseIp6(host[1 .. host.len - 1], port) catch return error.InvalidTracker;
+    } else Io.net.IpAddress.parseIp4(host, port) catch blk: {
         const name = Io.net.HostName.init(host) catch return error.InvalidTracker;
         var results_buffer: [16]Io.net.HostName.LookupResult = undefined;
         var results: Io.Queue(Io.net.HostName.LookupResult) = .init(&results_buffer);
-        try name.lookup(io, &results, .{ .port = port, .family = .ip4 });
+        try name.lookup(io, &results, .{ .port = port });
+        var ipv6: ?Io.net.IpAddress = null;
         while (results.getOne(io)) |result| {
             switch (result) {
-                .address => |candidate| if (candidate == .ip4) break :blk candidate,
+                .address => |candidate| switch (candidate) {
+                    .ip4 => break :blk candidate,
+                    .ip6 => if (ipv6 == null) {
+                        ipv6 = candidate;
+                    },
+                },
                 .canonical_name => {},
             }
         } else |_| {}
-        return error.TrackerAddressUnavailable;
+        break :blk ipv6 orelse return error.TrackerAddressUnavailable;
     };
-    const local: Io.net.IpAddress = .{ .ip4 = .unspecified(0) };
+    const local: Io.net.IpAddress = switch (address) {
+        .ip4 => .{ .ip4 = .unspecified(0) },
+        .ip6 => .{ .ip6 = .unspecified(0) },
+    };
     const socket = try local.bind(io, .{ .mode = .dgram });
     defer socket.close(io);
     const udp_timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
@@ -151,12 +163,16 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
     std.mem.writeInt(u32, announce[92..96], 50, .big);
     try socket.sendTimeout(io, &address, &announce, udp_timeout);
     const received = try socket.receiveTimeout(io, &response_buffer, udp_timeout);
+    const stride: usize = if (address == .ip4) 6 else 18;
     if (received.flags.trunc or !std.meta.eql(received.from, address) or received.data.len < 20 or
         std.mem.readInt(u32, received.data[0..4], .big) != 1 or
         std.mem.readInt(u32, received.data[4..8], .big) != announce_transaction or
-        (received.data.len - 20) % 6 != 0)
+        (received.data.len - 20) % stride != 0)
         return error.InvalidTrackerResponse;
-    return peersFromCompact(allocator, received.data[20..]);
+    return if (address == .ip4)
+        peersFromCompact(allocator, received.data[20..])
+    else
+        peersFromCompact6(allocator, received.data[20..]);
 }
 
 fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_hash: [20]u8, downloaded: u64, left: u64) ![][]u8 {

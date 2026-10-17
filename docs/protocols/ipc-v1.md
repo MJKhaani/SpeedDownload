@@ -101,7 +101,7 @@ The `torrents.magnet-v1-single-file` feature indicates that `jobs.probe` and
 `jobs.add` accept v1 `magnet:` links on the Unix engine. The probe returns
 `http_version: "BitTorrent"`, `status_code: 0`, an optional safe display name,
 and an unknown size until metadata arrives. A queued magnet resolves metadata
-from explicit peers, HTTP(S) tracker compact IPv4/IPv6 or dictionary peer lists, or UDP tracker compact IPv4 peer lists, then transfers
+from explicit peers, HTTP(S) tracker compact IPv4/IPv6 or dictionary peer lists, or UDP tracker compact IPv4/IPv6 peer lists, then transfers
 one file with per-piece SHA-1 verification. `completed_bytes` counts synced,
 verified pieces; `received_bytes` may include the current unverified piece.
 The daemon rehashes all `.part` pieces before resume. Multi-file torrents,
