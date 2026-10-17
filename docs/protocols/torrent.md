@@ -16,6 +16,8 @@ and submit it through the engine queue for normal progress and resume. The
 engine copies metainfo into its private job state before accepting the job,
 so the selected file can subsequently be moved or removed. Older queued
 jobs created before this behavior still need the original file for resume.
+The engine removes unreferenced snapshot files during startup and after a
+job is deleted.
 The parser accepts up to 32 distinct usable tracker URLs and ignores the
 primary `announce` when an `announce-list` is present, following
 [BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in

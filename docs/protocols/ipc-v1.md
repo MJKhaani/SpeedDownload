@@ -116,7 +116,10 @@ requires a safe output name and validates the selected torrent again. The
 engine stores the local source URL privately, redacts its path from job
 summaries, and saves a private metainfo snapshot before acknowledging the job.
 The original file can then be moved or removed. Jobs added before snapshots
-were introduced still require their original source file for resume. This URL type is
+were introduced still require their original source file for resume. On
+startup, the engine removes snapshot files that no longer have a matching
+local torrent job; a cleanup error leaves the file in place and does not
+prevent the engine from starting. This URL type is
 for trusted local clients and must not be accepted by browser handoff bridges.
 
 `jobs.list` keeps `completed_bytes` as the durable resume checkpoint. While a transfer is active, it also exposes `received_bytes` for live UI progress and may expose a `total_bytes` learned from response headers before a durable checkpoint exists. These live fields are not persisted as completed data. The `workers` array includes a single connection for sequential HTTP transfers when the total size is known; its progress is also live and clears when the transfer stops. Clients should label received bytes as transfer progress rather than verified or resumable bytes.

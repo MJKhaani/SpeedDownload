@@ -190,6 +190,7 @@ pub const Store = struct {
         errdefer store.deinit();
         try store.load();
         try store.loadSettings();
+        store.cleanupTorrentSnapshots() catch {};
         return store;
     }
 
@@ -373,15 +374,34 @@ pub const Store = struct {
     }
 
     pub fn torrentSnapshotPath(self: *const Store, allocator: std.mem.Allocator, job_id: []const u8) ![]u8 {
-        if (job_id.len != 36) return error.InvalidJobId;
-        for (job_id, 0..) |byte, index| {
-            if (index == 8 or index == 13 or index == 18 or index == 23) {
-                if (byte != '-') return error.InvalidJobId;
-            } else if (!std.ascii.isHex(byte)) return error.InvalidJobId;
-        }
+        if (!validJobId(job_id)) return error.InvalidJobId;
         const filename = try std.fmt.allocPrint(allocator, "torrent-{s}.torrent", .{job_id});
         defer allocator.free(filename);
         return std.fs.path.join(allocator, &.{ self.directory_path, filename });
+    }
+
+    /// A crash between snapshot publication and jobs.json persistence may
+    /// leave an unreferenced metainfo file. Only this app's exact filename
+    /// pattern is eligible for startup cleanup.
+    fn cleanupTorrentSnapshots(self: *Store) !void {
+        const source = @import("../protocols/torrent/source.zig");
+        var directory = try std.Io.Dir.openDirAbsolute(self.io, self.directory_path, .{ .iterate = true, .follow_symlinks = false });
+        defer directory.close(self.io);
+        var iterator = directory.iterate();
+        while (try iterator.next(self.io)) |entry| {
+            if (entry.kind != .file or !std.mem.startsWith(u8, entry.name, "torrent-") or
+                !std.mem.endsWith(u8, entry.name, ".torrent") or entry.name.len != 8 + 36 + 8) continue;
+            const job_id = entry.name[8 .. 8 + 36];
+            if (!validJobId(job_id)) continue;
+            var referenced = false;
+            for (self.jobs.items) |job| {
+                if (std.mem.eql(u8, job.id, job_id) and source.isLocalTorrent(job.url)) {
+                    referenced = true;
+                    break;
+                }
+            }
+            if (!referenced) directory.deleteFile(self.io, entry.name) catch {};
+        }
     }
 
     pub fn listJson(self: *Store, request_id: std.json.Value, offset: usize, limit: usize) ![]u8 {
@@ -1610,4 +1630,14 @@ fn deleteFileIfPresent(dir: std.Io.Dir, io: std.Io, path: []const u8) !void {
         error.FileNotFound => return,
         else => return err,
     };
+}
+
+fn validJobId(job_id: []const u8) bool {
+    if (job_id.len != 36) return false;
+    for (job_id, 0..) |byte, index| {
+        if (index == 8 or index == 13 or index == 18 or index == 23) {
+            if (byte != '-') return false;
+        } else if (!std.ascii.isHex(byte)) return false;
+    }
+    return true;
 }
