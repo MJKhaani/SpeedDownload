@@ -99,19 +99,24 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
         .raw, .percent_encoded => |value| value,
     };
     if (host.len == 0) return error.InvalidTracker;
-    const address = if (host[0] == '[') blk: {
+    var ipv4: ?Io.net.IpAddress = null;
+    var ipv6: ?Io.net.IpAddress = null;
+    if (host[0] == '[') {
         if (host.len < 3 or host[host.len - 1] != ']') return error.InvalidTracker;
-        break :blk Io.net.IpAddress.parseIp6(host[1 .. host.len - 1], port) catch return error.InvalidTracker;
-    } else Io.net.IpAddress.parseIp4(host, port) catch blk: {
+        ipv6 = Io.net.IpAddress.parseIp6(host[1 .. host.len - 1], port) catch return error.InvalidTracker;
+    } else if (Io.net.IpAddress.parseIp4(host, port)) |address| {
+        ipv4 = address;
+    } else |_| {
         const name = Io.net.HostName.init(host) catch return error.InvalidTracker;
         var results_buffer: [16]Io.net.HostName.LookupResult = undefined;
         var results: Io.Queue(Io.net.HostName.LookupResult) = .init(&results_buffer);
         try name.lookup(io, &results, .{ .port = port });
-        var ipv6: ?Io.net.IpAddress = null;
         while (results.getOne(io)) |result| {
             switch (result) {
                 .address => |candidate| switch (candidate) {
-                    .ip4 => break :blk candidate,
+                    .ip4 => if (ipv4 == null) {
+                        ipv4 = candidate;
+                    },
                     .ip6 => if (ipv6 == null) {
                         ipv6 = candidate;
                     },
@@ -119,8 +124,43 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
                 .canonical_name => {},
             }
         } else |_| {}
-        break :blk ipv6 orelse return error.TrackerAddressUnavailable;
-    };
+    }
+    if (ipv4 == null and ipv6 == null) return error.TrackerAddressUnavailable;
+    var peer_id: [20]u8 = undefined;
+    try io.randomSecure(&peer_id);
+    var key_bytes: [4]u8 = undefined;
+    try io.randomSecure(&key_bytes);
+    var peers: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (peers.items) |peer| allocator.free(peer);
+        peers.deinit(allocator);
+    }
+    var last_error: anyerror = error.TrackerAddressUnavailable;
+    var succeeded = false;
+    const addresses: [2]?Io.net.IpAddress = .{ ipv4, ipv6 };
+    for (addresses) |maybe_address| {
+        const address = maybe_address orelse continue;
+        const found = discoverUdpPeersAtAddress(allocator, io, address, info_hash, downloaded, left, peer_id, key_bytes) catch |err| {
+            last_error = err;
+            continue;
+        };
+        succeeded = true;
+        defer allocator.free(found);
+        const take = @min(found.len, 80 - peers.items.len);
+        peers.ensureUnusedCapacity(allocator, take) catch |err| {
+            for (found) |peer| allocator.free(peer);
+            return err;
+        };
+        for (found[0..take]) |peer| peers.appendAssumeCapacity(peer);
+        for (found[take..]) |peer| {
+            allocator.free(peer);
+        }
+    }
+    if (!succeeded) return last_error;
+    return peers.toOwnedSlice(allocator);
+}
+
+fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAddress, info_hash: [20]u8, downloaded: u64, left: u64, peer_id: [20]u8, key_bytes: [4]u8) ![][]u8 {
     const local: Io.net.IpAddress = switch (address) {
         .ip4 => .{ .ip4 = .unspecified(0) },
         .ip6 => .{ .ip6 = .unspecified(0) },
@@ -146,10 +186,6 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, uri: std.Uri, info_hash: [20]u
 
     try io.randomSecure(&transaction_bytes);
     const announce_transaction = std.mem.readInt(u32, &transaction_bytes, .big);
-    var peer_id: [20]u8 = undefined;
-    try io.randomSecure(&peer_id);
-    var key_bytes: [4]u8 = undefined;
-    try io.randomSecure(&key_bytes);
     var announce: [98]u8 = @splat(0);
     std.mem.writeInt(u64, announce[0..8], connection_id, .big);
     std.mem.writeInt(u32, announce[8..12], 1, .big);

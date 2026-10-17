@@ -48,8 +48,9 @@ contacts an explicit peer first, then HTTP(S) and UDP trackers in magnet order.
 HTTP(S) trackers may return compact IPv4 `peers`, IPv6 `peers6`, or BEP 3
 `peers` dictionaries with an IP/hostname and port. UDP tracker discovery
 accepts IPv4 and IPv6 responses according to the tracker socket's address
-family. A hostname resolving to both currently uses IPv4 first. DHT is not
-supported. It does not
+family. For dual-stack hostnames, it announces to one address of each family
+with the same peer ID and key, and keeps peers from either successful response.
+DHT is not supported. It does not
 download payload pieces or seed.
 
 The initial single-file transfer path accepts a v1 magnet URI through the
@@ -74,7 +75,7 @@ or fails. Piece requests are sequential within each connection, and peers
 are contacted sequentially rather than concurrently.
 
 This is an early compatibility slice. It requests blocks sequentially and
-does not upload or seed. Multi-file torrents, DHT, dual-family UDP announces,
+does not upload or seed. Multi-file torrents, DHT,
 peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a
