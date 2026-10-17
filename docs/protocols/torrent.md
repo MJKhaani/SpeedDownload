@@ -30,8 +30,9 @@ to 16 explicit peer addresses.
 Output is JSON with `status: "metadata_required"`. URI length, parameter
 count, decoded values, and percent escapes are bounded and checked.
 
-For a magnet with an `x.pe` direct peer address or an HTTP(S) or UDP tracker
-that returns compact IPv4 peers, the CLI can request the info dictionary using
+For a magnet with an `x.pe` direct peer address, an HTTP(S) tracker returning
+compact IPv4 or IPv6 peers, or a UDP tracker returning compact IPv4 peers,
+the CLI can request the info dictionary using
 BEP 10/BEP 9 metadata exchange:
 
 ```sh
@@ -44,14 +45,16 @@ the same paths, sizes, and piece hashes as `.torrent` inspection before
 creating `output.torrent`. All magnet trackers are retained in its
 `announce-list`. An existing output file is never replaced. The command
 contacts an explicit peer first, then HTTP(S) and UDP trackers in magnet order.
-Noncompact peer lists and DHT are not supported. It does not
+HTTP(S) trackers may return compact IPv4 `peers` and IPv6 `peers6` lists;
+UDP tracker discovery remains IPv4 only. Noncompact peer lists and DHT are not supported. It does not
 download payload pieces or seed.
 
 The initial single-file transfer path accepts a v1 magnet URI through the
 macOS Add Download dialog or `jobs.add` IPC. The CLI can also use
 `speed-download magnet-download '<magnet-uri>' <destination-file>`. The engine
 retrieves metadata, accepts a single-file v1 torrent, discovers peers from
-`x.pe` or HTTP(S)/UDP compact IPv4 tracker replies, and requests 16 KiB blocks
+`x.pe`, HTTP(S) compact IPv4/IPv6 tracker replies, or UDP compact IPv4
+tracker replies, and requests 16 KiB blocks
 from TCP peers. It verifies each complete piece against the metainfo SHA-1
 hash before writing it at the correct offset in a `.part` file and syncing.
 On restart, it rehashes every complete piece independently; a valid piece
@@ -68,8 +71,8 @@ or fails. Piece requests are sequential within each connection, and peers
 are contacted sequentially rather than concurrently.
 
 This is an early compatibility slice. It requests blocks sequentially and
-does not upload or seed. Multi-file torrents, DHT, IPv6 compact
-tracker responses, peer encryption, uTP, and BitTorrent v2 are unsupported.
+does not upload or seed. Multi-file torrents, DHT, IPv6 UDP trackers,
+peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a
 live swarm; it is not release-ready.

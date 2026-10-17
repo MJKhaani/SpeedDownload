@@ -59,8 +59,7 @@ pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result)
     return last_error;
 }
 
-/// The caller owns every returned address and the outer slice.
-/// Discover compact IPv4 peers for a transfer. `downloaded` counts verified
+/// Discover compact tracker peers for a transfer. `downloaded` counts verified
 /// payload bytes; `total_bytes` comes from hash-verified torrent metadata.
 /// The caller owns every returned address and the outer slice.
 pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, downloaded: u64, total_bytes: u64) ![][]u8 {
@@ -202,7 +201,20 @@ fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_has
     }
     complete = true;
     const compact = try parseTrackerPeers(bytes.items);
-    return peersFromCompact(allocator, compact);
+    var peers = try peersFromCompact(allocator, compact.ipv4);
+    errdefer {
+        for (peers) |peer| allocator.free(peer);
+        allocator.free(peers);
+    }
+    if (compact.ipv6.len == 0) return peers;
+    const ipv6 = try peersFromCompact6(allocator, compact.ipv6);
+    defer allocator.free(ipv6);
+    const combined = try allocator.alloc([]u8, peers.len + ipv6.len);
+    @memcpy(combined[0..peers.len], peers);
+    @memcpy(combined[peers.len..], ipv6);
+    allocator.free(peers);
+    peers = &.{};
+    return combined;
 }
 
 fn peersFromCompact(allocator: Allocator, compact: []const u8) ![][]u8 {
@@ -222,6 +234,27 @@ fn peersFromCompact(allocator: Allocator, compact: []const u8) ![][]u8 {
     return peers.toOwnedSlice(allocator);
 }
 
+fn peersFromCompact6(allocator: Allocator, compact: []const u8) ![][]u8 {
+    if (compact.len % 18 != 0) return error.InvalidTrackerResponse;
+    var peers: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (peers.items) |peer| allocator.free(peer);
+        peers.deinit(allocator);
+    }
+    for (0..@min(compact.len / 18, 64)) |index| {
+        const entry = compact[index * 18 ..][0..18];
+        const port = std.mem.readInt(u16, entry[16..18], .big);
+        if (port == 0) continue;
+        const address = try std.fmt.allocPrint(allocator, "[{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}]:{d}", .{
+            entry[0], entry[1], entry[2],  entry[3],  entry[4],  entry[5],  entry[6],  entry[7],
+            entry[8], entry[9], entry[10], entry[11], entry[12], entry[13], entry[14], entry[15],
+            port,
+        });
+        try peers.append(allocator, address);
+    }
+    return peers.toOwnedSlice(allocator);
+}
+
 fn percentEncode(bytes: []const u8) [60]u8 {
     var output: [60]u8 = undefined;
     const alphabet = "0123456789ABCDEF";
@@ -233,23 +266,27 @@ fn percentEncode(bytes: []const u8) [60]u8 {
     return output;
 }
 
-fn parseTrackerPeers(bytes: []const u8) ![]const u8 {
+const CompactPeers = struct { ipv4: []const u8 = "", ipv6: []const u8 = "" };
+
+fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
     if (bytes.len < 2 or bytes[0] != 'd') return error.InvalidTrackerResponse;
     var cursor: usize = 1;
-    var peers: ?[]const u8 = null;
+    var peers: CompactPeers = .{};
     while (cursor < bytes.len and bytes[cursor] != 'e') {
         const key = try parseString(bytes, &cursor);
         if (std.mem.eql(u8, key, "peers")) {
-            peers = try parseString(bytes, &cursor);
+            peers.ipv4 = try parseString(bytes, &cursor);
+        } else if (std.mem.eql(u8, key, "peers6")) {
+            peers.ipv6 = try parseString(bytes, &cursor);
         } else if (std.mem.eql(u8, key, "failure reason")) {
             _ = try parseString(bytes, &cursor);
             return error.TrackerRejected;
         } else try skipValue(bytes, &cursor, 0);
     }
     if (cursor + 1 != bytes.len) return error.InvalidTrackerResponse;
-    const compact = peers orelse return error.NoTrackerPeers;
-    if (compact.len % 6 != 0) return error.InvalidTrackerResponse;
-    return compact;
+    if (peers.ipv4.len == 0 and peers.ipv6.len == 0) return error.NoTrackerPeers;
+    if (peers.ipv4.len % 6 != 0 or peers.ipv6.len % 18 != 0) return error.InvalidTrackerResponse;
+    return peers;
 }
 
 fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u8) ![]u8 {

@@ -19,7 +19,7 @@ validated. See [FTP source status](protocols/ftp.md) for its limits.
 
 The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
 inspection. It also has source for BEP 9 metadata retrieval from explicit
-`x.pe` peers or HTTP(S)/UDP tracker compact IPv4 peers, but this path has not
+`x.pe` peers, HTTP(S) tracker compact IPv4/IPv6 peers, or UDP tracker compact IPv4 peers, but this path has not
 been exercised against a live peer. Initial single-file v1 magnet payload
 transfer source now compiles and routes through the macOS/Unix engine queue.
 The macOS Add Download dialog can also select a single-file v1 `.torrent`
