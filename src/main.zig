@@ -175,9 +175,26 @@ fn runRpc(init: std.process.Init, args: []const []const u8) !void {
     if (std.mem.eql(u8, args[2], "status") and args.len == 3) {
         method = "engine.status";
         params = try allocator.dupe(u8, "{}");
-    } else if (std.mem.eql(u8, args[2], "list") and args.len == 3) {
+    } else if (std.mem.eql(u8, args[2], "list") and args.len >= 3 and args.len <= 7 and args.len % 2 == 1) {
         method = "jobs.list";
-        params = try allocator.dupe(u8, "{\"offset\":0,\"limit\":50}");
+        var state: ?[]const u8 = null;
+        var search: ?[]const u8 = null;
+        var index: usize = 3;
+        while (index < args.len) : (index += 2) {
+            if (std.mem.eql(u8, args[index], "--state") and state == null) {
+                state = args[index + 1];
+            } else if (std.mem.eql(u8, args[index], "--search") and search == null) {
+                search = args[index + 1];
+            } else return error.InvalidRpcArguments;
+        }
+        params = if (state) |state_text| if (search) |search_text|
+            try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .state = state_text, .search = search_text }, .{})
+        else
+            try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .state = state_text }, .{})
+        else if (search) |search_text|
+            try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .search = search_text }, .{})
+        else
+            try allocator.dupe(u8, "{\"offset\":0,\"limit\":50}");
     } else if (std.mem.eql(u8, args[2], "get") and args.len == 4) {
         method = "jobs.get";
         params = try std.json.Stringify.valueAlloc(allocator, .{ .job_id = args[3] }, .{});
@@ -232,7 +249,7 @@ fn runRpc(init: std.process.Init, args: []const []const u8) !void {
             .delete_partial = delete_partial,
         }, .{});
     } else {
-        std.debug.print("Usage: speed-download rpc status\n       speed-download rpc list\n       speed-download rpc get <job-id>\n       speed-download rpc probe <download-url>\n       speed-download rpc add <download-url> <destination-folder> [name] [--sha256 <64-hex-digits>]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n       speed-download rpc reorder <job-id> <position> <revision>\n       speed-download rpc delete <job-id> <revision> [--delete-partial]\n", .{});
+        std.debug.print("Usage: speed-download rpc status\n       speed-download rpc list [--state <state>] [--search <text>]\n       speed-download rpc get <job-id>\n       speed-download rpc probe <download-url>\n       speed-download rpc add <download-url> <destination-folder> [name] [--sha256 <64-hex-digits>]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n       speed-download rpc reorder <job-id> <position> <revision>\n       speed-download rpc delete <job-id> <revision> [--delete-partial]\n", .{});
         return error.InvalidRpcArguments;
     }
     defer allocator.free(params);

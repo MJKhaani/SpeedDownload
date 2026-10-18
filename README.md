@@ -51,6 +51,7 @@ Use the engine RPC CLI while the engine is running:
 ```sh
 speed-download rpc status
 speed-download rpc list
+speed-download rpc list --state paused --search firefox
 speed-download rpc get <job-id>
 speed-download rpc add https://example.com/archive.zip "$HOME/Downloads" "archive.zip"
 speed-download rpc add https://example.com/archive.zip "$HOME/Downloads" --sha256 <64-hex-digits>
@@ -60,7 +61,7 @@ speed-download rpc reorder <job-id> <zero-based-position> <revision>
 speed-download rpc delete <job-id> <revision> [--delete-partial]
 ```
 
-`rpc status` reports engine uptime and job counts. `rpc list` prints one JSON-RPC response containing up to 50 jobs; `rpc get` returns one job with its worker progress. These snapshots omit URL query strings and fragments, which may contain access tokens. `rpc add` accepts an existing destination folder, an optional filename, and an optional SHA-256 digest for completion verification. `rpc control`, `rpc reorder`, and `rpc delete` require the current job revision shown by `rpc list` or `rpc get`; refresh the job after a stale-revision error. Reordering applies to queued, paused, or retry-wait jobs. Deleting removes the job record and leaves completed downloads untouched. `--delete-partial` also removes partial data for an inactive job.
+`rpc status` reports engine uptime and job counts. `rpc list` prints one JSON-RPC response containing up to 50 jobs and can filter by exact state and case-insensitive name/source text; `rpc get` returns one job with its worker progress. These snapshots omit URL query strings and fragments, which may contain access tokens. `rpc add` accepts an existing destination folder, an optional filename, and an optional SHA-256 digest for completion verification. `rpc control`, `rpc reorder`, and `rpc delete` require the current job revision shown by `rpc list` or `rpc get`; refresh the job after a stale-revision error. Reordering applies to queued, paused, or retry-wait jobs. Deleting removes the job record and leaves completed downloads untouched. `--delete-partial` also removes partial data for an inactive job.
 
 The engine automatically retries transient network failures and HTTP 429 or 503 responses up to three times. It honors a server `Retry-After` delay up to one hour; queued retries remain visible and can be paused or resumed immediately.
 After a 429 or 503 response, each automatic retry opens fewer connections for that job, down to one.
