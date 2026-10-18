@@ -63,7 +63,7 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `jobs.list` | Pagination/safe filters | Authoritative job summaries + revision | Bounded page size |
 | `jobs.wait` | In-memory change cursor | New cursor + changed flag, within 5 seconds | Bounded long poll; client fetches a fresh `jobs.list` snapshot when changed |
 | `jobs.get` | `job_id` | Detailed state/segments | Redacted sensitive URL metadata |
-| `jobs.add` | URL, optional name/priority/`expected_sha256`/`bandwidth_limit_bytes_per_second`, destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); `expected_sha256` is an optional 64-character hexadecimal digest checked before completion; bandwidth zero means no per-job cap; require an absolute existing writable destination directory; validate URL and idempotent retries |
+| `jobs.add` | URL, optional name/priority/`expected_sha256`/`bandwidth_limit_bytes_per_second`/`selected_torrent_files`, destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); `expected_sha256` is an optional 64-character hexadecimal digest checked before completion; bandwidth zero means no per-job cap; require an absolute existing writable destination directory; validate URL and idempotent retries |
 | `jobs.control` | `job_id`, action (`start`, `pause`, `resume`, `cancel`, `retry`), `expected_revision` | Updated job state/revision | Start fills scheduler slots; retry moves a failed job back to the queue; active pause/cancel persists `requested_control` and returns the still-downloading job; worker applies it at its next progress callback; reject stale revisions and per-host cap violations |
 | `jobs.set-bandwidth` | `job_id`, `expected_revision`, `bandwidth_limit_bytes_per_second` | Updated revision and limit | Persists a per-job cap and applies it to active workers at their next progress callback; zero removes the per-job cap while the global cap still applies |
 | `jobs.reorder` | `job_id`, zero-based `position`, `expected_revision` | Updated position and revision | Only queued, scheduled, paused, or retry-wait jobs; persist order atomically; reject out-of-range position and stale revision |
@@ -116,7 +116,17 @@ validates the metainfo, and returns the root name and total size. For local
 an ordered preview of at most 20 `{path, length}` entries. `length` is a
 decimal byte-count string; `path` is relative to the torrent root. A missing
 preview means the protocol does not have a local file map at probe time.
-The preview is read-only: the current queue worker still downloads all files.
+For multi-file local torrents, `jobs.add` accepts `selected_torrent_files` as
+a nonempty array of distinct relative paths returned by the probe. The
+`torrents.file-selection-v1` handshake feature must be present before a client
+sends it. Omission includes all files. Selection is persisted with the job;
+the worker verifies only pieces overlapping selected files and publishes only
+those files. A boundary piece may contain bytes from an unselected file and
+is still needed for SHA-1 verification. Progress measures all required piece
+bytes, including such boundary bytes. Whole-download `expected_sha256` is not
+accepted with a subset. The macOS Add dialog offers selection when the
+preview contains the complete file map (up to 20 files); larger torrents
+currently include all files through that dialog.
 `jobs.add`
 requires a safe output name and validates the selected torrent again. The
 engine stores the local source URL privately, redacts its path from job

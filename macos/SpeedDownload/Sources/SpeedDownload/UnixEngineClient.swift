@@ -222,10 +222,13 @@ struct UnixEngineClient: Sendable {
         return result
     }
 
-    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil) throws -> AddJobResult {
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
-        _ = try negotiate(fd: fd)
+        let hello = try negotiate(fd: fd)
+        if selectedTorrentFiles != nil && !hello.supportedFeatures.contains("torrents.file-selection-v1") {
+            throw ClientError.engineOutdated
+        }
         var params: [String: Any] = [
             "url": url,
             "destination": destination,
@@ -236,6 +239,7 @@ struct UnixEngineClient: Sendable {
             params["name"] = name
         }
         if let expectedSHA256 { params["expected_sha256"] = expectedSHA256 }
+        if let selectedTorrentFiles { params["selected_torrent_files"] = selectedTorrentFiles }
         let envelope: RPCEnvelope<AddJobResult> = try request(
             fd: fd,
             id: "jobs-add-\(UUID().uuidString)",
@@ -358,7 +362,7 @@ struct UnixEngineClient: Sendable {
             params: [
                 "protocol": ["major": 1, "minor": 0],
                 "client": ["kind": "macos-gui", "version": "0.1.0"],
-                "features": ["jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules"],
+                "features": ["jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules", "torrents.file-selection-v1"],
             ]
         )
         guard let result = envelope.result else { throw ClientError.invalidResponse }

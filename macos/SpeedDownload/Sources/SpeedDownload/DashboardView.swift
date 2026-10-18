@@ -157,8 +157,8 @@ struct DashboardView: View {
                 initialURL: incomingDownloadURL,
                 isSubmitting: engine.isSubmitting,
                 probeURL: { url in try await engine.probe(url: url) },
-                submit: { url, name, destination, priority, checksum in
-                    let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum)
+                submit: { url, name, destination, priority, checksum, selectedFiles in
+                    let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles)
                     if added { showingAddDownload = false }
                     return added
                 }
@@ -670,10 +670,11 @@ private struct AddDownloadView: View {
     @State private var probeError: String?
     @State private var isProbing = false
     @State private var lastSuggestedName: String?
+    @State private var selectedTorrentFiles: Set<String> = []
     let initialURL: String
     let isSubmitting: Bool
     let probeURL: (String) async throws -> DownloadProbe
-    let submit: (String, String, String, Int, String?) async -> Bool
+    let submit: (String, String, String, Int, String?, [String]?) async -> Bool
 
     private var trimmedURL: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -780,6 +781,16 @@ private struct AddDownloadView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             ForEach(Array(files.enumerated()), id: \.offset) { _, file in
                                 HStack(spacing: 8) {
+                                    if count == files.count {
+                                        Toggle("Include \(file.path)", isOn: Binding(
+                                            get: { selectedTorrentFiles.contains(file.path) },
+                                            set: { enabled in
+                                                if enabled { selectedTorrentFiles.insert(file.path) }
+                                                else { selectedTorrentFiles.remove(file.path) }
+                                            }
+                                        ))
+                                        .labelsHidden()
+                                    }
                                     Text(file.path).lineLimit(1).truncationMode(.middle)
                                     Spacer(minLength: 8)
                                     Text(formattedSize(file.length)).foregroundStyle(.secondary)
@@ -790,8 +801,10 @@ private struct AddDownloadView: View {
                                 Text("Showing the first \(files.count) files")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
-                            Text("All files are included in this download.")
-                                .font(.caption).foregroundStyle(.secondary)
+                            if count > files.count {
+                                Text("All files are included. File selection is available for torrents with up to \(files.count) files.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         .padding(.top, 5)
                     }
@@ -812,7 +825,7 @@ private struct AddDownloadView: View {
             }
             .padding(10)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
         } else if let probeError {
             Label(probeError, systemImage: "exclamationmark.triangle")
                 .font(.callout).foregroundStyle(.orange)
@@ -825,6 +838,7 @@ private struct AddDownloadView: View {
     private func inspectURL(_ value: String) async {
         probeResult = nil
         probeError = nil
+        selectedTorrentFiles = []
         guard !value.isEmpty else { isProbing = false; return }
         guard let parsed = URL(string: value),
               (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || value.lowercased().hasPrefix("magnet:?") || value.lowercased().hasPrefix("torrent-file:///")) else {
@@ -840,6 +854,7 @@ private struct AddDownloadView: View {
             let result = try await probeURL(value)
             guard !Task.isCancelled, trimmedURL == value else { return }
             probeResult = result
+            selectedTorrentFiles = Set(result.torrentFiles?.map(\.path) ?? [])
             probeError = nil
             let suggestedName = displayFilename(result.suggestedName)
             let currentName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -925,7 +940,20 @@ private struct AddDownloadView: View {
             validationError = "SHA-256 must contain exactly 64 hexadecimal characters."; return
         }
         validationError = nil
-        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased())
+        var selectedFiles: [String]? = nil
+        if let probeResult, let files = probeResult.torrentFiles,
+           let count = probeResult.torrentFileCount, count > 1, count == files.count {
+            guard !selectedTorrentFiles.isEmpty else {
+                validationError = "Select at least one file from the torrent."; return
+            }
+            if selectedTorrentFiles.count < count {
+                guard checksum.isEmpty else {
+                    validationError = "A whole-download SHA-256 checksum cannot be used with file selection."; return
+                }
+                selectedFiles = files.map(\.path).filter { selectedTorrentFiles.contains($0) }
+            }
+        }
+        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles)
     }
     private func chooseDestination() {
         let panel = NSOpenPanel(); panel.title = "Choose Download Folder"; panel.prompt = "Choose Folder"

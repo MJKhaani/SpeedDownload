@@ -327,7 +327,7 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    func addJob(url: String, name: String, destination: String, priority: Int = 0, expectedSHA256: String? = nil) async -> Bool {
+    func addJob(url: String, name: String, destination: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil) async -> Bool {
         guard !isSubmitting else { return false }
         isSubmitting = true
         actionError = nil
@@ -341,7 +341,8 @@ final class EngineModel: ObservableObject {
                     destination: destination,
                     idempotencyKey: UUID().uuidString,
                     priority: priority,
-                    expectedSHA256: expectedSHA256
+                    expectedSHA256: expectedSHA256,
+                    selectedTorrentFiles: selectedTorrentFiles
                 )
             }.value
             do {

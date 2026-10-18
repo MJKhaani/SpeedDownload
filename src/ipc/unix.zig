@@ -386,9 +386,10 @@ pub fn dispatchMethod(
     }
     if (!std.mem.eql(u8, method, "jobs.add")) return null;
 
-    const input = parseAddInput(params orelse return dispatchError(allocator, request_id, -32602, "Invalid params")) catch {
+    const input = parseAddInput(allocator, params orelse return dispatchError(allocator, request_id, -32602, "Invalid params")) catch {
         return dispatchError(allocator, request_id, -32602, "Invalid params");
     };
+    defer if (input.selected_torrent_files) |files| allocator.free(files);
     const id = request_id orelse return null;
     const response = jobs.addJson(id, input) catch |err| {
         if (request_id == null) return null;
@@ -504,10 +505,11 @@ fn downloadStoredTorrent(engine: *EngineContext, task: job_store.Store.DownloadT
         else => return err,
     };
     if (exists) {
-        return @import("../protocols/torrent/download.zig").downloadTorrentFileWithControl(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress));
+        return @import("../protocols/torrent/download.zig").downloadTorrentFileSelectedWithControl(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, task.selected_torrent_files, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress));
     }
     // Jobs queued before source snapshots were introduced can still resume
     // from the original selected file when it remains available.
+    if (task.selected_torrent_files != null) return error.MissingTorrentSnapshot;
     return @import("../protocols/torrent/download.zig").downloadTorrentSourceWithControl(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress));
 }
 
@@ -837,7 +839,7 @@ fn parseListPage(params: ?std.json.Value) !ListPage {
     return page;
 }
 
-fn parseAddInput(params: std.json.Value) !job_store.AddInput {
+fn parseAddInput(allocator: std.mem.Allocator, params: std.json.Value) !job_store.AddInput {
     if (params != .object) return error.InvalidParams;
     const object = params.object;
     const url = stringField(object, "url") orelse return error.InvalidParams;
@@ -863,7 +865,18 @@ fn parseAddInput(params: std.json.Value) !job_store.AddInput {
         if (value != .integer or value.integer < 0 or value.integer > 1_000_000_000_000) return error.InvalidParams;
         break :blk @intCast(value.integer);
     } else 0;
-    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth };
+    const selected: ?[]const []const u8 = if (object.get("selected_torrent_files")) |value| blk: {
+        if (value == .null) break :blk null;
+        if (value != .array or value.array.items.len == 0 or value.array.items.len > 10_000) return error.InvalidParams;
+        const paths = try allocator.alloc([]const u8, value.array.items.len);
+        errdefer allocator.free(paths);
+        for (value.array.items, 0..) |entry, index| {
+            if (entry != .string) return error.InvalidParams;
+            paths[index] = entry.string;
+        }
+        break :blk paths;
+    } else null;
+    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected };
 }
 
 fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {

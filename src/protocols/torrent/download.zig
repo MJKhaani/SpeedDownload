@@ -56,7 +56,7 @@ pub fn downloadWithControl(
     const map = try metainfo.inspectFileMap(allocator, wrapped);
     defer map.deinit(allocator);
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
-    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, callback, context, &session, control, control_context);
+    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, null, callback, context, &session, control, control_context);
 }
 
 /// Download a validated v1 `.torrent` using its tracker tiers. The destination
@@ -85,6 +85,21 @@ pub fn downloadTorrentFileWithControl(
     control: ?metadata.CheckpointCallback,
     control_context: ?*anyopaque,
 ) !void {
+    return downloadTorrentFileSelectedWithControl(allocator, io, torrent_path, destination, expected_sha256, null, callback, context, control, control_context);
+}
+
+pub fn downloadTorrentFileSelectedWithControl(
+    allocator: Allocator,
+    io: Io,
+    torrent_path: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    selected_files: ?[]const []const u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+) !void {
     try checkControl(control, control_context);
     const bytes = try Io.Dir.readFileAlloc(.cwd(), io, torrent_path, allocator, .limited(metainfo.max_metainfo_bytes));
     defer allocator.free(bytes);
@@ -100,7 +115,7 @@ pub fn downloadTorrentFileWithControl(
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
     defer link.deinit(allocator);
     const session = try metadata.Session.init(io);
-    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, callback, context, &session, control, control_context);
+    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context);
 }
 
 /// Queue worker entry point for a desktop-selected local torrent source URL.
@@ -128,6 +143,7 @@ fn transferValidated(
     first_peer: ?[]const u8,
     destination: []const u8,
     expected_sha256: ?[32]u8,
+    selected_files: ?[]const []const u8,
     callback: ?ProgressCallback,
     context: ?*anyopaque,
     session: *const metadata.Session,
@@ -152,25 +168,52 @@ fn transferValidated(
     const piece_buffer = try allocator.alloc(u8, piece_size);
     defer allocator.free(piece_buffer);
     const count = std.math.cast(usize, info.piece_count) orelse return error.TorrentTooLarge;
+    if (selected_files != null and (info.single_file or expected_sha256 != null)) return error.InvalidTorrentSelection;
+    const needed = try allocator.alloc(bool, count);
+    defer allocator.free(needed);
+    @memset(needed, selected_files == null);
+    if (selected_files) |selected| {
+        if (selected.len == 0) return error.InvalidTorrentSelection;
+        var selected_set = std.StringHashMap(void).init(allocator);
+        defer selected_set.deinit();
+        for (selected) |path| {
+            if (selected_set.contains(path)) return error.InvalidTorrentSelection;
+            try selected_set.put(path, {});
+        }
+        var found_count: usize = 0;
+        for (map.files) |entry| {
+            if (!selected_set.contains(entry.path)) continue;
+            found_count += 1;
+            if (entry.length == 0) continue;
+            const first: usize = @intCast(entry.offset / info.piece_length);
+            const last: usize = @intCast((entry.offset + entry.length - 1) / info.piece_length);
+            @memset(needed[first .. last + 1], true);
+        }
+        if (found_count != selected.len) return error.InvalidTorrentSelection;
+    }
+    var needed_bytes: u64 = 0;
+    for (needed, 0..) |required, index| if (required) {
+        needed_bytes += try pieceBytes(info, @intCast(index));
+    };
     const verified = try allocator.alloc(bool, count);
     defer allocator.free(verified);
-    @memset(verified, false);
+    for (verified, needed) |*done, required| done.* = !required;
     var verified_bytes: u64 = 0;
-    var remaining = try scanVerified(io, file, info, piece_buffer, verified, &verified_bytes);
+    var remaining = try scanVerified(io, file, info, piece_buffer, verified, needed, &verified_bytes);
     try file.setLength(io, info.total_bytes);
-    if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes, info.total_bytes, true);
+    if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes, needed_bytes, true);
 
     if (remaining != 0) {
         var last_error: anyerror = error.NoPeerHasPieces;
         if (first_peer) |peer| {
             try checkControl(control, control_context);
-            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session, control, control_context) catch |err| {
+            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
                 if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                 last_error = err;
             };
         }
         if (remaining != 0) {
-            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, info.total_bytes, session, control, control_context);
+            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, needed_bytes, session, control, control_context);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);
@@ -178,7 +221,7 @@ fn transferValidated(
             for (peers) |peer| {
                 try checkControl(control, control_context);
                 if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
-                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session, control, control_context) catch |err| {
+                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
                     if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                     last_error = err;
                     continue;
@@ -189,23 +232,23 @@ fn transferValidated(
         if (remaining != 0) return last_error;
     }
     try file.sync(io);
-    if (callback) |report| if (context) |ctx| try report(ctx, info.total_bytes, info.total_bytes, true);
+    if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
     try http_download.verifySha256(io, file, expected_sha256);
-    if (callback) |report| if (context) |ctx| try report(ctx, info.total_bytes, info.total_bytes, true);
+    if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
     if (info.single_file) {
         file.close(io);
         file_open = false;
         try http_download.publishNoReplace(cwd, io, part_path, destination);
     } else {
-        try publishFileTree(allocator, io, file, map, info.info_hash, destination, callback, context);
+        try publishFileTree(allocator, io, file, map, info.info_hash, destination, selected_files, needed_bytes, callback, context);
         file.close(io);
         file_open = false;
         cwd.deleteFile(io, part_path) catch {};
     }
 }
 
-fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.FileMap, info_hash: [20]u8, destination: []const u8, callback: ?ProgressCallback, context: ?*anyopaque) !void {
-    if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
+fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.FileMap, info_hash: [20]u8, destination: []const u8, selected_files: ?[]const []const u8, needed_bytes: u64, callback: ?ProgressCallback, context: ?*anyopaque) !void {
+    if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
     const cwd = Io.Dir.cwd();
     const stage = try std.fmt.allocPrint(allocator, "{s}.part-tree", .{destination});
     defer allocator.free(stage);
@@ -239,10 +282,14 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
     // the filesystem folded two torrent paths onto the same directory.
     var created_dirs = std.StringHashMap(void).init(allocator);
     defer created_dirs.deinit();
+    var selected_set = std.StringHashMap(void).init(allocator);
+    defer selected_set.deinit();
+    if (selected_files) |selected| for (selected) |path| try selected_set.put(path, {});
     var buffer: [64 * 1024]u8 = undefined;
     var bytes_since_check: usize = 0;
     var files_since_check: usize = 0;
     for (map.files) |entry| {
+        if (selected_files != null and !selected_set.contains(entry.path)) continue;
         if (std.mem.eql(u8, entry.path, ".speed-download-stage") or std.mem.startsWith(u8, entry.path, ".speed-download-stage/")) return error.ReservedTorrentPath;
         var search_from: usize = 0;
         while (std.mem.indexOfScalarPos(u8, entry.path, search_from, '/')) |slash| {
@@ -269,7 +316,7 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
             copied += amount;
             bytes_since_check += amount;
             if (bytes_since_check >= 8 * 1024 * 1024) {
-                if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
+                if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
                 bytes_since_check = 0;
             }
         }
@@ -277,13 +324,13 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
         output.close(io);
         files_since_check += 1;
         if (files_since_check >= 128) {
-            if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
+            if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
             files_since_check = 0;
         }
     }
     stage_dir.close(io);
     stage_dir_open = false;
-    if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
+    if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
     try Io.Dir.renamePreserve(cwd, stage, cwd, destination, io);
     stage_owned = false;
     const published_marker = try std.fmt.allocPrint(allocator, "{s}/.speed-download-stage", .{destination});
@@ -301,10 +348,12 @@ fn pieceBytes(info: metainfo.Result, index: u64) !usize {
     return @intCast(@min(info.piece_length, info.total_bytes - offset));
 }
 
-fn scanVerified(io: Io, file: Io.File, info: metainfo.Result, buffer: []u8, verified: []bool, verified_bytes: *u64) !usize {
+fn scanVerified(io: Io, file: Io.File, info: metainfo.Result, buffer: []u8, verified: []bool, needed: []const bool, verified_bytes: *u64) !usize {
     const length = try file.length(io);
-    var remaining = verified.len;
+    var remaining: usize = 0;
     for (verified, 0..) |*valid, index| {
+        if (!needed[index]) continue;
+        remaining += 1;
         const piece: u64 = @intCast(index);
         const offset = try pieceOffset(info, piece);
         const size = try pieceBytes(info, piece);
@@ -330,6 +379,7 @@ fn transferFromPeer(
     verified: []bool,
     remaining: *usize,
     verified_bytes: *u64,
+    needed_bytes: u64,
     callback: ?ProgressCallback,
     context: ?*anyopaque,
     session: *const metadata.Session,
@@ -437,7 +487,7 @@ fn transferFromPeer(
             received_blocks += 1;
             received_bytes += amount;
             idle_messages = 0;
-            if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.* + received_bytes, info.total_bytes, false);
+            if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.* + received_bytes, needed_bytes, false);
         }
         var digest: [20]u8 = undefined;
         std.crypto.hash.Sha1.hash(piece_buffer[0..size], &digest, .{});
@@ -448,7 +498,7 @@ fn transferFromPeer(
         verified[@intCast(piece_index)] = true;
         verified_bytes.* += size;
         remaining.* -= 1;
-        if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.*, info.total_bytes, true);
+        if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.*, needed_bytes, true);
     }
 }
 

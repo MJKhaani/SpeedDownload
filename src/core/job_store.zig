@@ -73,6 +73,7 @@ pub const Job = struct {
     destination: []const u8,
     idempotency_key: []const u8,
     expected_sha256: ?[]const u8 = null,
+    selected_torrent_files: ?[]const []const u8 = null,
     state: State = .queued,
     revision: u64 = 1,
     error_message: ?[]const u8 = null,
@@ -98,6 +99,7 @@ pub const AddInput = struct {
     priority: i32 = 0,
     bandwidth_limit_bytes_per_second: u64 = 0,
     expected_sha256: ?[]const u8 = null,
+    selected_torrent_files: ?[]const []const u8 = null,
 };
 
 pub const AddResult = struct {
@@ -698,6 +700,7 @@ pub const Store = struct {
         proxy_mode: ProxyMode,
         proxy_url: ?[]u8,
         expected_sha256: ?[32]u8,
+        selected_torrent_files: ?[]const []const u8,
 
         pub fn deinit(self: DownloadTask, allocator: std.mem.Allocator) void {
             allocator.free(self.id);
@@ -705,6 +708,7 @@ pub const Store = struct {
             if (self.name) |name| allocator.free(name);
             allocator.free(self.destination);
             if (self.proxy_url) |url| allocator.free(url);
+            freeSelectedFiles(allocator, self.selected_torrent_files);
         }
     };
 
@@ -723,7 +727,9 @@ pub const Store = struct {
             const destination = try self.allocator.dupe(u8, job.destination);
             errdefer self.allocator.free(destination);
             const proxy_url = if (self.settings.proxy_url) |value| try self.allocator.dupe(u8, value) else null;
-            return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256) };
+            errdefer if (proxy_url) |value| self.allocator.free(value);
+            const selected = try duplicateSelectedFiles(self.allocator, job.selected_torrent_files);
+            return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256), .selected_torrent_files = selected };
         }
         return error.JobNotFound;
     }
@@ -829,7 +835,9 @@ pub const Store = struct {
         const destination = try self.allocator.dupe(u8, job.destination);
         errdefer self.allocator.free(destination);
         const proxy_url = if (self.settings.proxy_url) |value| try self.allocator.dupe(u8, value) else null;
-        return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256) };
+        errdefer if (proxy_url) |value| self.allocator.free(value);
+        const selected = try duplicateSelectedFiles(self.allocator, job.selected_torrent_files);
+        return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256), .selected_torrent_files = selected };
     }
 
     fn connectionsForJob(self: *const Store, job: Job) u8 {
@@ -1147,6 +1155,8 @@ pub const Store = struct {
         errdefer self.allocator.free(idempotency_key);
         const expected_sha256 = if (input.expected_sha256) |digest| try self.allocator.dupe(u8, digest) else null;
         errdefer if (expected_sha256) |digest| self.allocator.free(digest);
+        const selected_torrent_files = try duplicateSelectedFiles(self.allocator, input.selected_torrent_files);
+        errdefer freeSelectedFiles(self.allocator, selected_torrent_files);
         return .{
             .id = id,
             .url = url,
@@ -1154,6 +1164,7 @@ pub const Store = struct {
             .destination = destination,
             .idempotency_key = idempotency_key,
             .expected_sha256 = expected_sha256,
+            .selected_torrent_files = selected_torrent_files,
             .priority = input.priority,
             .bandwidth_limit_bytes_per_second = input.bandwidth_limit_bytes_per_second,
         };
@@ -1166,6 +1177,7 @@ pub const Store = struct {
         self.allocator.free(job.destination);
         self.allocator.free(job.idempotency_key);
         if (job.expected_sha256) |digest| self.allocator.free(digest);
+        freeSelectedFiles(self.allocator, job.selected_torrent_files);
         if (job.error_message) |message| self.allocator.free(message);
     }
 
@@ -1263,6 +1275,25 @@ pub const Store = struct {
         const digest_value = object.get("expected_sha256") orelse .null;
         if (digest_value != .null and (digest_value != .string or !validSha256(digest_value.string))) return error.InvalidJobStore;
         const expected_sha256 = if (digest_value == .string) try self.allocator.dupe(u8, digest_value.string) else null;
+        const selected_value = object.get("selected_torrent_files") orelse .null;
+        const selected_torrent_files = if (selected_value == .array) blk: {
+            if (selected_value.array.items.len == 0 or selected_value.array.items.len > 10_000) return error.InvalidJobStore;
+            const paths = try self.allocator.alloc([]const u8, selected_value.array.items.len);
+            var count: usize = 0;
+            var total_path_bytes: usize = 0;
+            errdefer {
+                for (paths[0..count]) |path| self.allocator.free(path);
+                self.allocator.free(paths);
+            }
+            for (selected_value.array.items) |item| {
+                if (item != .string or item.string.len == 0 or item.string.len > 16_384) return error.InvalidJobStore;
+                total_path_bytes += item.string.len;
+                if (total_path_bytes > 1024 * 1024) return error.InvalidJobStore;
+                paths[count] = try self.allocator.dupe(u8, item.string);
+                count += 1;
+            }
+            break :blk paths;
+        } else if (selected_value == .null) null else return error.InvalidJobStore;
         const attempts_value = object.get("retry_attempts") orelse std.json.Value{ .integer = 0 };
         if (attempts_value != .integer or attempts_value.integer < 0 or attempts_value.integer > 3) return error.InvalidJobStore;
         const retry_at_value = object.get("retry_at_unix_ms") orelse .null;
@@ -1276,6 +1307,7 @@ pub const Store = struct {
             .destination = try self.allocator.dupe(u8, destination),
             .idempotency_key = try self.allocator.dupe(u8, key),
             .expected_sha256 = expected_sha256,
+            .selected_torrent_files = selected_torrent_files,
             .state = state,
             .revision = @intCast(revision_value.integer),
             .error_message = error_message,
@@ -1300,6 +1332,7 @@ pub const Store = struct {
             .destination = job.destination,
             .idempotency_key = job.idempotency_key,
             .expected_sha256 = job.expected_sha256,
+            .selected_torrent_files = job.selected_torrent_files,
             .state = job.state,
             .revision = job.revision,
             .error_message = job.error_message,
@@ -1520,6 +1553,7 @@ const PersistedJob = struct {
     destination: []const u8,
     idempotency_key: []const u8,
     expected_sha256: ?[]const u8,
+    selected_torrent_files: ?[]const []const u8,
     state: State,
     revision: u64,
     error_message: ?[]const u8,
@@ -1533,6 +1567,28 @@ const PersistedJob = struct {
     bandwidth_limit_bytes_per_second: u64,
 };
 
+fn duplicateSelectedFiles(allocator: std.mem.Allocator, selected: ?[]const []const u8) !?[]const []const u8 {
+    const files = selected orelse return null;
+    const copy = try allocator.alloc([]const u8, files.len);
+    var count: usize = 0;
+    errdefer {
+        for (copy[0..count]) |path| allocator.free(path);
+        allocator.free(copy);
+    }
+    for (files) |path| {
+        copy[count] = try allocator.dupe(u8, path);
+        count += 1;
+    }
+    return copy;
+}
+
+fn freeSelectedFiles(allocator: std.mem.Allocator, selected: ?[]const []const u8) void {
+    if (selected) |files| {
+        for (files) |path| allocator.free(path);
+        allocator.free(files);
+    }
+}
+
 fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
     return try std.fmt.allocPrint(allocator, "{d}", .{value});
 }
@@ -1543,6 +1599,7 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
     if (input.priority < -100 or input.priority > 100) return error.InvalidJob;
     if (input.bandwidth_limit_bytes_per_second > 1_000_000_000_000) return error.InvalidJob;
     if (input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:")) {
+        if (input.selected_torrent_files != null) return error.InvalidJob;
         var link = @import("../protocols/torrent/magnet.zig").inspect(allocator, input.url) catch return error.InvalidJob;
         defer link.deinit(allocator);
     } else if (@import("../protocols/torrent/source.zig").isLocalTorrent(input.url)) {
@@ -1553,8 +1610,25 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
         defer allocator.free(bytes);
         const map = torrent.inspectFileMap(allocator, bytes) catch return error.InvalidJob;
         defer map.deinit(allocator);
+        if (input.selected_torrent_files) |selected| {
+            if (selected.len == 0 or selected.len > map.files.len or map.files.len <= 1 or input.expected_sha256 != null) return error.InvalidJob;
+            var available = std.StringHashMap(void).init(allocator);
+            defer available.deinit();
+            for (map.files) |file| try available.put(file.path, {});
+            var seen = std.StringHashMap(void).init(allocator);
+            defer seen.deinit();
+            var total_path_bytes: usize = 0;
+            for (selected) |selected_path| {
+                if (selected_path.len == 0 or selected_path.len > 16_384) return error.InvalidJob;
+                total_path_bytes += selected_path.len;
+                if (total_path_bytes > 1024 * 1024) return error.InvalidJob;
+                if (!available.contains(selected_path) or seen.contains(selected_path)) return error.InvalidJob;
+                try seen.put(selected_path, {});
+            }
+        }
         if (input.name == null) return error.InvalidJob;
     } else {
+        if (input.selected_torrent_files != null) return error.InvalidJob;
         const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
         if ((!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https") and
             !std.ascii.eqlIgnoreCase(uri.scheme, "ftp") and !std.ascii.eqlIgnoreCase(uri.scheme, "ftps")) or
@@ -1609,7 +1683,13 @@ fn sameInput(job: *const Job, input: AddInput) bool {
         if (input.expected_sha256) |other| std.ascii.eqlIgnoreCase(digest, other) else false
     else
         input.expected_sha256 == null;
-    return same_digest and std.mem.eql(u8, job.url, input.url) and same_name and
+    const same_selected = if (job.selected_torrent_files) |files| blk: {
+        const other = input.selected_torrent_files orelse break :blk false;
+        if (files.len != other.len) break :blk false;
+        for (files, other) |left, right| if (!std.mem.eql(u8, left, right)) break :blk false;
+        break :blk true;
+    } else input.selected_torrent_files == null;
+    return same_digest and same_selected and std.mem.eql(u8, job.url, input.url) and same_name and
         std.mem.eql(u8, job.destination, input.destination) and job.priority == input.priority and
         job.bandwidth_limit_bytes_per_second == input.bandwidth_limit_bytes_per_second;
 }

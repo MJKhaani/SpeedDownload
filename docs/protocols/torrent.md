@@ -105,8 +105,12 @@ Completed pieces are SHA-1 verified before they enter the partial file. Pieces
 and peers are still handled sequentially rather than concurrently.
 
 This is an early compatibility slice. The local `.torrent` probe previews up to
-20 files and reports the full file count to the macOS Add dialog; every file
-is still included in a queued download. It does not upload or seed. File selection, DHT,
+20 files and reports the full file count to the macOS Add dialog. For torrents
+with at most 20 files, the user may include a subset; the job persists the
+chosen paths, skips pieces not overlapping those files, and publishes only
+the selected files. A piece crossing into an unselected file is still fetched
+and verified in full, and progress includes its bytes. For larger torrents,
+the macOS dialog currently includes every file. The engine does not upload or seed. DHT,
 peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a
@@ -130,5 +134,5 @@ The read-only inspector does not access the destination filesystem and cannot
 report its case or Unicode normalization behavior. The transfer publisher
 checks for those collisions while constructing its private staging tree.
 
-Broader tracker/DHT discovery, file selection,
+Broader tracker/DHT discovery, selection in larger torrents and magnets,
 seeding, upload accounting, and swarm interoperability remain incomplete.
