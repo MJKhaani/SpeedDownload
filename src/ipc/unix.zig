@@ -287,6 +287,8 @@ pub fn dispatchMethod(
             const map = torrent.inspectFileMap(arena.allocator(), bytes) catch break :blk error.InvalidTorrentSource;
             defer map.deinit(arena.allocator());
             const total = std.fmt.allocPrint(arena.allocator(), "{d}", .{info.total_bytes}) catch break :blk error.OutOfMemory;
+            const hash_hex = std.fmt.bytesToHex(info.info_hash, .lower);
+            const info_hash = arena.allocator().dupe(u8, &hash_hex) catch break :blk error.OutOfMemory;
             // Reserve ample room for JSON escaping and the rest of the probe
             // envelope so a valid large torrent cannot exceed the IPC frame.
             var preview_count: usize = 0;
@@ -304,7 +306,7 @@ pub fn dispatchMethod(
                     .length = std.fmt.allocPrint(arena.allocator(), "{d}", .{entry.length}) catch break :blk error.OutOfMemory,
                 };
             }
-            const result: http_probe.Result = .{ .final_url = "torrent-file:", .suggested_name = info.name, .total_bytes = total, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Torrent file accepted. The engine verifies each piece and resumes verified pieces.", .torrent_file_count = @intCast(map.files.len), .torrent_files = files };
+            const result: http_probe.Result = .{ .final_url = "torrent-file:", .suggested_name = info.name, .total_bytes = total, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Torrent file accepted. The engine verifies each piece and resumes verified pieces.", .torrent_file_count = @intCast(map.files.len), .torrent_files = files, .torrent_info_hash = info_hash };
             break :blk result;
         } else if (isMagnetUrl(url)) blk: {
             var link = @import("../protocols/torrent/magnet.zig").inspect(arena.allocator(), url) catch break :blk error.InvalidMagnetUri;
@@ -403,6 +405,7 @@ pub fn dispatchMethod(
     const response = jobs.addJson(id, input) catch |err| {
         if (request_id == null) return null;
         if (err == error.InvalidJob) return dispatchError(allocator, request_id, -32010, "Invalid download request");
+        if (err == error.TorrentSourceChanged) return dispatchError(allocator, request_id, -32022, "The torrent file changed since inspection. Inspect it again before adding the download");
         if (err == error.InvalidDestination) return dispatchError(allocator, request_id, -32014, "Destination must be an existing writable directory");
         if (err == error.DestinationExists) return dispatchError(allocator, request_id, -32018, "A file with this name already exists in the destination folder");
         if (err == error.DestinationReserved) return dispatchError(allocator, request_id, -32018, "Another download already uses this destination and filename");
@@ -866,6 +869,12 @@ fn parseAddInput(allocator: std.mem.Allocator, params: std.json.Value) !job_stor
         .null => null,
         else => return error.InvalidParams,
     } else null;
+    const torrent_hash_value = object.get("torrent_info_hash");
+    const torrent_info_hash = if (torrent_hash_value) |value| switch (value) {
+        .string => |text| text,
+        .null => null,
+        else => return error.InvalidParams,
+    } else null;
     const priority: i32 = if (object.get("priority")) |value| blk: {
         if (value != .integer or value.integer < -100 or value.integer > 100) return error.InvalidParams;
         break :blk @intCast(value.integer);
@@ -885,7 +894,7 @@ fn parseAddInput(allocator: std.mem.Allocator, params: std.json.Value) !job_stor
         }
         break :blk paths;
     } else null;
-    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected };
+    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected, .torrent_info_hash = torrent_info_hash };
 }
 
 fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {

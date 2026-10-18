@@ -110,7 +110,9 @@ the full file count to the macOS Add dialog. When the full file map fits,
 the user may include a subset; the job persists the
 chosen paths, skips pieces not overlapping those files, and publishes only
 the selected files. A piece crossing into an unselected file is still fetched
-and verified in full, and progress includes its bytes. When the preview is
+and verified in full, and progress includes its bytes. The Add dialog also
+pins the probed info hash, and the engine rejects a changed source before
+saving its private metainfo snapshot. When the preview is
 incomplete, the macOS dialog currently includes every file. The engine does not upload or seed. DHT,
 peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not

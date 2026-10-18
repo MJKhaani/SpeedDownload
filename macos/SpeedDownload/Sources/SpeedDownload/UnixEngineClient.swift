@@ -93,6 +93,7 @@ struct DownloadProbe: Decodable, Sendable {
     let message: String
     let torrentFileCount: Int?
     let torrentFiles: [TorrentFile]?
+    let torrentInfoHash: String?
 
     enum CodingKeys: String, CodingKey {
         case finalURL = "final_url"
@@ -107,6 +108,7 @@ struct DownloadProbe: Decodable, Sendable {
         case message
         case torrentFileCount = "torrent_file_count"
         case torrentFiles = "torrent_files"
+        case torrentInfoHash = "torrent_info_hash"
     }
 }
 
@@ -222,7 +224,7 @@ struct UnixEngineClient: Sendable {
         return result
     }
 
-    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil) throws -> AddJobResult {
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         let hello = try negotiate(fd: fd)
@@ -240,6 +242,7 @@ struct UnixEngineClient: Sendable {
         }
         if let expectedSHA256 { params["expected_sha256"] = expectedSHA256 }
         if let selectedTorrentFiles { params["selected_torrent_files"] = selectedTorrentFiles }
+        if let torrentInfoHash { params["torrent_info_hash"] = torrentInfoHash }
         let envelope: RPCEnvelope<AddJobResult> = try request(
             fd: fd,
             id: "jobs-add-\(UUID().uuidString)",

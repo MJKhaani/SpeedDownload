@@ -100,6 +100,7 @@ pub const AddInput = struct {
     bandwidth_limit_bytes_per_second: u64 = 0,
     expected_sha256: ?[]const u8 = null,
     selected_torrent_files: ?[]const []const u8 = null,
+    torrent_info_hash: ?[]const u8 = null,
 };
 
 pub const AddResult = struct {
@@ -332,7 +333,7 @@ pub const Store = struct {
             return error.DestinationReserved;
         }
         const source_snapshot = if (@import("../protocols/torrent/source.zig").isLocalTorrent(input.url))
-            self.snapshotTorrentSource(job.id, input.url) catch |err| {
+            self.snapshotTorrentSource(job.id, input.url, input.torrent_info_hash) catch |err| {
                 self.freeJob(job);
                 return err;
             }
@@ -354,13 +355,18 @@ pub const Store = struct {
 
     /// Private immutable metainfo copy. Job IDs are generated before this is
     /// called; linking atomically avoids exposing a partially written source.
-    fn snapshotTorrentSource(self: *Store, job_id: []const u8, url: []const u8) ![]u8 {
+    fn snapshotTorrentSource(self: *Store, job_id: []const u8, url: []const u8, expected_info_hash: ?[]const u8) ![]u8 {
         const source = @import("../protocols/torrent/source.zig");
         const torrent = @import("../protocols/torrent/metainfo.zig");
         const original = try source.pathAlloc(self.allocator, url);
         defer self.allocator.free(original);
         const bytes = try std.Io.Dir.readFileAlloc(.cwd(), self.io, original, self.allocator, .limited(torrent.max_metainfo_bytes));
         defer self.allocator.free(bytes);
+        if (expected_info_hash) |expected| {
+            const info = try torrent.inspect(self.allocator, bytes);
+            const hex = std.fmt.bytesToHex(info.info_hash, .lower);
+            if (!std.ascii.eqlIgnoreCase(expected, &hex)) return error.TorrentSourceChanged;
+        }
         const map = try torrent.inspectFileMap(self.allocator, bytes);
         defer map.deinit(self.allocator);
         const path = try self.torrentSnapshotPath(self.allocator, job_id);
@@ -1598,8 +1604,12 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
     if (input.url.len == 0 or input.url.len > 8192) return error.InvalidJob;
     if (input.priority < -100 or input.priority > 100) return error.InvalidJob;
     if (input.bandwidth_limit_bytes_per_second > 1_000_000_000_000) return error.InvalidJob;
+    if (input.torrent_info_hash) |hash| {
+        if (hash.len != 40) return error.InvalidJob;
+        for (hash) |digit| if (!std.ascii.isHex(digit)) return error.InvalidJob;
+    }
     if (input.url.len >= 7 and std.ascii.eqlIgnoreCase(input.url[0..7], "magnet:")) {
-        if (input.selected_torrent_files != null) return error.InvalidJob;
+        if (input.selected_torrent_files != null or input.torrent_info_hash != null) return error.InvalidJob;
         var link = @import("../protocols/torrent/magnet.zig").inspect(allocator, input.url) catch return error.InvalidJob;
         defer link.deinit(allocator);
     } else if (@import("../protocols/torrent/source.zig").isLocalTorrent(input.url)) {
@@ -1611,7 +1621,7 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
         const map = torrent.inspectFileMap(allocator, bytes) catch return error.InvalidJob;
         defer map.deinit(allocator);
         if (input.selected_torrent_files) |selected| {
-            if (selected.len == 0 or selected.len > map.files.len or map.files.len <= 1 or input.expected_sha256 != null) return error.InvalidJob;
+            if (selected.len == 0 or selected.len > map.files.len or map.files.len <= 1 or input.expected_sha256 != null or input.torrent_info_hash == null) return error.InvalidJob;
             var available = std.StringHashMap(void).init(allocator);
             defer available.deinit();
             for (map.files) |file| try available.put(file.path, {});
@@ -1628,7 +1638,7 @@ fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !voi
         }
         if (input.name == null) return error.InvalidJob;
     } else {
-        if (input.selected_torrent_files != null) return error.InvalidJob;
+        if (input.selected_torrent_files != null or input.torrent_info_hash != null) return error.InvalidJob;
         const uri = std.Uri.parse(input.url) catch return error.InvalidJob;
         if ((!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https") and
             !std.ascii.eqlIgnoreCase(uri.scheme, "ftp") and !std.ascii.eqlIgnoreCase(uri.scheme, "ftps")) or

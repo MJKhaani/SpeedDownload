@@ -157,8 +157,8 @@ struct DashboardView: View {
                 initialURL: incomingDownloadURL,
                 isSubmitting: engine.isSubmitting,
                 probeURL: { url in try await engine.probe(url: url) },
-                submit: { url, name, destination, priority, checksum, selectedFiles in
-                    let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles)
+                submit: { url, name, destination, priority, checksum, selectedFiles, infoHash in
+                    let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash)
                     if added { showingAddDownload = false }
                     return added
                 }
@@ -674,7 +674,7 @@ private struct AddDownloadView: View {
     let initialURL: String
     let isSubmitting: Bool
     let probeURL: (String) async throws -> DownloadProbe
-    let submit: (String, String, String, Int, String?, [String]?) async -> Bool
+    let submit: (String, String, String, Int, String?, [String]?, String?) async -> Bool
 
     private var trimmedURL: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -974,7 +974,8 @@ private struct AddDownloadView: View {
                 selectedFiles = files.map(\.path).filter { selectedTorrentFiles.contains($0) }
             }
         }
-        _ = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles)
+        let added = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles, probeResult?.torrentInfoHash)
+        if !added { validationError = engine.actionError ?? "Could not add this download." }
     }
     private func chooseDestination() {
         let panel = NSOpenPanel(); panel.title = "Choose Download Folder"; panel.prompt = "Choose Folder"

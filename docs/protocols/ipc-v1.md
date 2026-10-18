@@ -117,10 +117,15 @@ an ordered preview of at most 1,000 `{path, length}` entries, further bounded
 to a conservative 128 KiB escaped-response budget. `length` is a
 decimal byte-count string; `path` is relative to the torrent root. A missing
 preview means the protocol does not have a local file map at probe time.
+The probe also returns `torrent_info_hash` as 40 lowercase hexadecimal
+characters. The Add dialog returns it with `jobs.add`; the engine compares it
+with the metainfo it actually saves in its private snapshot and rejects a
+changed source, so a preview cannot silently apply to a different torrent.
 For multi-file local torrents, `jobs.add` accepts `selected_torrent_files` as
 a nonempty array of distinct relative paths returned by the probe. The
 `torrents.file-selection-v1` handshake feature must be present before a client
-sends it. Omission includes all files. Selection is persisted with the job;
+sends it. A selective add requires `torrent_info_hash`; omission of
+`selected_torrent_files` includes all files. Selection is persisted with the job;
 the worker verifies only pieces overlapping selected files and publishes only
 those files. A boundary piece may contain bytes from an unselected file and
 is still needed for SHA-1 verification. Progress measures all required piece
