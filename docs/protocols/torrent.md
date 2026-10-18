@@ -28,7 +28,11 @@ implemented. Multi-file downloads assemble the verified flat piece spool into
 a private staging directory, then publish the complete tree without replacing
 an existing destination. A piece that crosses file boundaries is copied into
 both files only after its SHA-1 hash is verified. A stale staging directory is
-removed on retry only when its ownership marker matches the destination.
+removed on retry only when its ownership marker matches the torrent info hash.
+The publisher creates each parent directory explicitly and rejects a name that
+the filesystem reports as already present under a different spelling. File
+creation is exclusive, so case or Unicode normalization collisions fail before
+the staged tree is published.
 Inspection
 rejects a file layout where one file path is also a parent directory of another.
 
@@ -109,9 +113,9 @@ Windows device names, trailing dots or spaces, byte-identical duplicate file pat
 symlink attributes. It rejects v2/hybrid metainfo until BEP 52 file trees
 and piece layers are implemented.
 
-Before torrent data can be written, the target platform must also check for
-case-insensitive and Unicode-normalized path collisions against its actual
-filesystem. This read-only inspector does not perform that filesystem check.
+The read-only inspector does not access the destination filesystem and cannot
+report its case or Unicode normalization behavior. The transfer publisher
+checks for those collisions while constructing its private staging tree.
 
 Broader tracker/DHT discovery, file selection,
 seeding, upload accounting, and swarm interoperability remain incomplete.

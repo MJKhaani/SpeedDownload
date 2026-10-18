@@ -182,13 +182,33 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
         try marker_file.writeStreamingAll(io, &info_hash);
         try marker_file.sync(io);
     }
+    const stage_dir = try cwd.openDir(io, stage, .{ .follow_symlinks = false });
+    var stage_dir_open = true;
+    defer if (stage_dir_open) stage_dir.close(io);
+    // The stage is private and starts empty except for our marker. Remember
+    // exact directory spellings; if mkdir finds an unrecorded existing name,
+    // the filesystem folded two torrent paths onto the same directory.
+    var created_dirs = std.StringHashMap(void).init(allocator);
+    defer created_dirs.deinit();
     var buffer: [64 * 1024]u8 = undefined;
     for (map.files) |entry| {
         if (std.mem.eql(u8, entry.path, ".speed-download-stage") or std.mem.startsWith(u8, entry.path, ".speed-download-stage/")) return error.ReservedTorrentPath;
-        const relative = try std.fs.path.join(allocator, &.{ stage, entry.path });
-        defer allocator.free(relative);
-        if (std.fs.path.dirname(relative)) |parent| try cwd.createDirPath(io, parent);
-        const output = try cwd.createFile(io, relative, .{ .exclusive = true, .permissions = Io.File.Permissions.fromMode(0o600), .resolve_beneath = true });
+        var search_from: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, entry.path, search_from, '/')) |slash| {
+            const parent = entry.path[0..slash];
+            if (!created_dirs.contains(parent)) {
+                stage_dir.createDir(io, parent, Io.File.Permissions.fromMode(0o700)) catch |err| switch (err) {
+                    error.PathAlreadyExists => return error.ConflictingTorrentPath,
+                    else => return err,
+                };
+                try created_dirs.put(parent, {});
+            }
+            search_from = slash + 1;
+        }
+        const output = stage_dir.createFile(io, entry.path, .{ .exclusive = true, .permissions = Io.File.Permissions.fromMode(0o600), .resolve_beneath = true }) catch |err| switch (err) {
+            error.PathAlreadyExists => return error.ConflictingTorrentPath,
+            else => return err,
+        };
         errdefer output.close(io);
         var copied: u64 = 0;
         while (copied < entry.length) {
@@ -200,6 +220,8 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
         try output.sync(io);
         output.close(io);
     }
+    stage_dir.close(io);
+    stage_dir_open = false;
     try Io.Dir.renamePreserve(cwd, stage, cwd, destination, io);
     stage_owned = false;
     const published_marker = try std.fmt.allocPrint(allocator, "{s}/.speed-download-stage", .{destination});
