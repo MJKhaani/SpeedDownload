@@ -5,7 +5,9 @@
   "description": "JSON payload schemas carried inside the 4-byte little-endian IPC frame. This schema covers client requests; transport framing and per-connection handshake ordering are specified in ipc-v1.md.",
   "oneOf": [
     { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/engineStatus" },
     { "$ref": "#/$defs/jobsList" },
+    { "$ref": "#/$defs/jobsGet" },
     { "$ref": "#/$defs/jobsWait" },
     { "$ref": "#/$defs/jobsAdd" },
     { "$ref": "#/$defs/jobsControl" },
@@ -61,6 +63,15 @@
         }
       ]
     },
+    "engineStatus": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "engine.status" },
+          "params": { "type": "object", "additionalProperties": false }
+        } }
+      ]
+    },
     "jobsList": {
       "allOf": [
         { "$ref": "#/$defs/requestBase" },
@@ -71,12 +82,25 @@
               "type": "object",
               "properties": {
                 "offset": { "type": "integer", "minimum": 0 },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                "state": { "enum": ["queued", "scheduled", "resolving", "connecting", "downloading", "paused", "retry_wait", "verifying", "completed", "failed", "canceled"] },
+                "search": { "type": "string", "minLength": 1, "maxLength": 128 }
               },
               "additionalProperties": false
             }
           }
         }
+      ]
+    },
+    "jobsGet": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.get" },
+          "params": { "type": "object", "required": ["job_id"], "properties": {
+            "job_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }, "additionalProperties": false }
+        } }
       ]
     },
     "jobsWait": {

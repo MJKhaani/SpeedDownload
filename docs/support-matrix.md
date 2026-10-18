@@ -48,6 +48,10 @@ See [Firefox link handoff](browser-firefox.md).
 
 ## Core module check
 
+Current engine API work includes `jobs.get` and filtered `jobs.list` snapshots. Source URL query strings and fragments are omitted from job snapshots; the private job store retains the original transfer URL. Native macOS and x86_64 Windows/Linux engine builds compile on the current host, but cross-builds do not establish Windows or Linux runtime behavior.
+
+Engine work still required for the full specification includes event subscriptions, authenticated proxy and site credentials via OS secret stores, redirect-aware system proxy selection, fuller FTP authentication/proxy coverage, and BitTorrent seeding/upload controls and network capabilities beyond the current v1 transfer path. Native protocol, recovery, and security acceptance checks remain outstanding.
+
 On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, IPC service, or package is validated. The active native GUI/IPC decision and proof gate are recorded in [ADR 0001](adr/0001-native-guis-local-ipc.md).
 
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.

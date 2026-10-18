@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        std.debug.print("Usage: speed-download [engine | torrent-info <file.torrent> | torrent-download <file.torrent> <destination-file> | magnet-info <magnet-uri> | magnet-metadata <magnet-uri> <output.torrent> | magnet-download <magnet-uri> <destination-file> | rpc <status|list|probe|add|control|reorder|delete> ... | [--sha256 <64-hex-digits>] <download-url> <destination>]\n", .{});
+        std.debug.print("Usage: speed-download [engine | torrent-info <file.torrent> | torrent-download <file.torrent> <destination-file> | magnet-info <magnet-uri> | magnet-metadata <magnet-uri> <output.torrent> | magnet-download <magnet-uri> <destination-file> | rpc <status|list|get|probe|add|control|reorder|delete> ... | [--sha256 <64-hex-digits>] <download-url> <destination>]\n", .{});
         return;
     }
     var expected_sha256: ?[32]u8 = null;
@@ -178,6 +178,9 @@ fn runRpc(init: std.process.Init, args: []const []const u8) !void {
     } else if (std.mem.eql(u8, args[2], "list") and args.len == 3) {
         method = "jobs.list";
         params = try allocator.dupe(u8, "{\"offset\":0,\"limit\":50}");
+    } else if (std.mem.eql(u8, args[2], "get") and args.len == 4) {
+        method = "jobs.get";
+        params = try std.json.Stringify.valueAlloc(allocator, .{ .job_id = args[3] }, .{});
     } else if (std.mem.eql(u8, args[2], "probe") and args.len == 4) {
         method = "jobs.probe";
         params = try std.json.Stringify.valueAlloc(allocator, .{ .url = args[3] }, .{});
@@ -229,7 +232,7 @@ fn runRpc(init: std.process.Init, args: []const []const u8) !void {
             .delete_partial = delete_partial,
         }, .{});
     } else {
-        std.debug.print("Usage: speed-download rpc status\n       speed-download rpc list\n       speed-download rpc probe <download-url>\n       speed-download rpc add <download-url> <destination-folder> [name] [--sha256 <64-hex-digits>]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n       speed-download rpc reorder <job-id> <position> <revision>\n       speed-download rpc delete <job-id> <revision> [--delete-partial]\n", .{});
+        std.debug.print("Usage: speed-download rpc status\n       speed-download rpc list\n       speed-download rpc get <job-id>\n       speed-download rpc probe <download-url>\n       speed-download rpc add <download-url> <destination-folder> [name] [--sha256 <64-hex-digits>]\n       speed-download rpc control <job-id> <start|pause|resume|retry|cancel> <revision>\n       speed-download rpc reorder <job-id> <position> <revision>\n       speed-download rpc delete <job-id> <revision> [--delete-partial]\n", .{});
         return error.InvalidRpcArguments;
     }
     defer allocator.free(params);

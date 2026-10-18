@@ -415,47 +415,35 @@ pub const Store = struct {
         }
     }
 
+    pub const ListFilter = struct { state: ?State = null, search: ?[]const u8 = null };
+
     pub fn listJson(self: *Store, request_id: std.json.Value, offset: usize, limit: usize) ![]u8 {
+        return self.listFilteredJson(request_id, offset, limit, .{});
+    }
+
+    pub fn listFilteredJson(self: *Store, request_id: std.json.Value, offset: usize, limit: usize, filter: ListFilter) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const allocator = self.allocator;
         var summaries: std.ArrayList(Summary) = .empty;
         defer summaries.deinit(allocator);
-        const start = @min(offset, self.jobs.items.len);
-        const end = @min(self.jobs.items.len, start +| limit);
-        for (self.jobs.items[start..end]) |job| try summaries.append(allocator, .{
-            .job_id = job.id,
-            .url = redactUrl(job.url),
-            .name = job.name,
-            .destination = job.destination,
-            .expected_sha256 = job.expected_sha256,
-            .state = job.state,
-            .revision = try std.fmt.allocPrint(allocator, "{d}", .{job.revision}),
-            .error_message = job.error_message,
-            .retry_attempts = job.retry_attempts,
-            .retry_at_unix_ms = if (job.retry_at_unix_ms) |value| try std.fmt.allocPrint(allocator, "{d}", .{value}) else null,
-            .completed_bytes = decimalAlloc(allocator, job.completed_bytes) catch return error.OutOfMemory,
-            .received_bytes = if (job.live_received_bytes) |received| decimalAlloc(allocator, received) catch return error.OutOfMemory else null,
-            .total_bytes = if (job.live_total_bytes orelse job.total_bytes) |total| decimalAlloc(allocator, total) catch return error.OutOfMemory else null,
-            .requested_control = job.requested_control,
-            .priority = job.priority,
-            .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
-            .workers = job.workers[0..job.worker_count],
-            .torrent_peer_count = job.torrent_peer_count,
-            .torrent_seeder_count = job.torrent_seeder_count,
-            .torrent_leecher_count = job.torrent_leecher_count,
-        });
-        defer for (summaries.items) |summary| allocator.free(summary.revision);
-        defer for (summaries.items) |summary| {
-            allocator.free(summary.completed_bytes);
-            if (summary.retry_at_unix_ms) |value| allocator.free(value);
-            if (summary.received_bytes) |received| allocator.free(received);
-            if (summary.total_bytes) |total| allocator.free(total);
-        };
-        const total = try std.fmt.allocPrint(allocator, "{d}", .{self.jobs.items.len});
+        defer for (summaries.items) |summary| freeSummary(allocator, summary);
+        var matching: usize = 0;
+        for (self.jobs.items) |*job| {
+            if (filter.state) |state| if (job.state != state) continue;
+            if (filter.search) |search| {
+                const name = job.name orelse "";
+                if (std.ascii.findIgnoreCase(name, search) == null and
+                    std.ascii.findIgnoreCase(redactUrl(job.url), search) == null) continue;
+            }
+            if (matching >= offset and summaries.items.len < limit)
+                try summaries.append(allocator, try makeSummary(allocator, job));
+            matching += 1;
+        }
+        const total = try std.fmt.allocPrint(allocator, "{d}", .{matching});
         defer allocator.free(total);
-        const next_offset = if (end < self.jobs.items.len)
-            try std.fmt.allocPrint(allocator, "{d}", .{end})
+        const next_offset = if (offset +| summaries.items.len < matching)
+            try std.fmt.allocPrint(allocator, "{d}", .{offset +| summaries.items.len})
         else
             null;
         defer if (next_offset) |value| allocator.free(value);
@@ -468,6 +456,22 @@ pub const Store = struct {
                 .next_offset = next_offset,
             },
         }, .{});
+    }
+
+    pub fn getJson(self: *Store, request_id: std.json.Value, job_id: []const u8) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            const summary = try makeSummary(self.allocator, job);
+            defer freeSummary(self.allocator, summary);
+            return std.json.Stringify.valueAlloc(self.allocator, .{
+                .jsonrpc = "2.0",
+                .id = request_id,
+                .result = .{ .job = summary },
+            }, .{});
+        }
+        return error.JobNotFound;
     }
 
     pub fn statusJson(self: *Store, request_id: std.json.Value, engine_instance_id: []const u8, uptime_seconds: u64) ![]u8 {
@@ -1610,6 +1614,49 @@ const Summary = struct {
     torrent_leecher_count: ?u32,
 };
 
+fn makeSummary(allocator: std.mem.Allocator, job: *const Job) !Summary {
+    const revision = try std.fmt.allocPrint(allocator, "{d}", .{job.revision});
+    errdefer allocator.free(revision);
+    const retry_at: ?[]const u8 = if (job.retry_at_unix_ms) |value| try std.fmt.allocPrint(allocator, "{d}", .{value}) else null;
+    errdefer if (retry_at) |value| allocator.free(value);
+    const completed = try decimalAlloc(allocator, job.completed_bytes);
+    errdefer allocator.free(completed);
+    const received: ?[]const u8 = if (job.live_received_bytes) |value| try decimalAlloc(allocator, value) else null;
+    errdefer if (received) |value| allocator.free(value);
+    const total: ?[]const u8 = if (job.live_total_bytes orelse job.total_bytes) |value| try decimalAlloc(allocator, value) else null;
+    errdefer if (total) |value| allocator.free(value);
+    return .{
+        .job_id = job.id,
+        .url = redactUrl(job.url),
+        .name = job.name,
+        .destination = job.destination,
+        .expected_sha256 = job.expected_sha256,
+        .state = job.state,
+        .revision = revision,
+        .error_message = job.error_message,
+        .retry_attempts = job.retry_attempts,
+        .retry_at_unix_ms = retry_at,
+        .completed_bytes = completed,
+        .received_bytes = received,
+        .total_bytes = total,
+        .requested_control = job.requested_control,
+        .priority = job.priority,
+        .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
+        .workers = job.workers[0..job.worker_count],
+        .torrent_peer_count = job.torrent_peer_count,
+        .torrent_seeder_count = job.torrent_seeder_count,
+        .torrent_leecher_count = job.torrent_leecher_count,
+    };
+}
+
+fn freeSummary(allocator: std.mem.Allocator, summary: Summary) void {
+    allocator.free(summary.revision);
+    if (summary.retry_at_unix_ms) |value| allocator.free(value);
+    allocator.free(summary.completed_bytes);
+    if (summary.received_bytes) |value| allocator.free(value);
+    if (summary.total_bytes) |value| allocator.free(value);
+}
+
 const PersistedJob = struct {
     id: []const u8,
     url: []const u8,
@@ -1771,7 +1818,9 @@ fn getString(object: std.json.ObjectMap, key: []const u8) ![]const u8 {
 fn redactUrl(url: []const u8) []const u8 {
     if (url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:")) return "magnet:";
     if (@import("../protocols/torrent/source.zig").isLocalTorrent(url)) return "torrent-file:";
-    return url;
+    const query = std.mem.indexOfScalar(u8, url, '?') orelse url.len;
+    const fragment = std.mem.indexOfScalar(u8, url, '#') orelse url.len;
+    return url[0..@min(query, fragment)];
 }
 
 fn deleteFileIfPresent(dir: std.Io.Dir, io: std.Io, path: []const u8) !void {

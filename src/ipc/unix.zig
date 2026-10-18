@@ -25,6 +25,17 @@ const LocalTime = extern struct {
 };
 extern "c" fn time(?*c.time_t) c.time_t;
 extern "c" fn localtime_r(*const c.time_t, *LocalTime) ?*LocalTime;
+const WindowsSystemTime = extern struct {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+};
+extern "kernel32" fn GetLocalTime(*WindowsSystemTime) callconv(.winapi) void;
 const SocketPath = [*:0]const u8;
 const max_socket_path_bytes = if (builtin.os.tag == .macos) 104 else 108;
 const max_ipc_clients = 32;
@@ -227,8 +238,19 @@ pub fn dispatchMethod(
     }
     if (std.mem.eql(u8, method, "jobs.list")) {
         const page = parseListPage(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
-        if (request_id) |id| return @as(?[]u8, try jobs.listJson(id, page.offset, page.limit));
+        if (request_id) |id| return @as(?[]u8, try jobs.listFilteredJson(id, page.offset, page.limit, .{ .state = page.state, .search = page.search }));
         return null;
+    }
+    if (std.mem.eql(u8, method, "jobs.get")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object or value.object.count() != 1) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const job_id = stringField(value.object, "job_id") orelse return dispatchError(allocator, request_id, -32602, "Invalid job ID");
+        if (job_id.len == 0 or job_id.len > 128) return dispatchError(allocator, request_id, -32602, "Invalid job ID");
+        return jobs.getJson(id, job_id) catch |err| {
+            if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+            return err;
+        };
     }
     if (std.mem.eql(u8, method, "jobs.wait")) {
         const id = request_id orelse return null;
@@ -424,7 +446,7 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "engine.status", "jobs.list", "jobs.wait", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";
@@ -749,12 +771,19 @@ fn reserveBandwidth(next_ns: *i96, current_limit: *u64, limit: u64, bytes: u64, 
 }
 
 fn localWeekSlot() ?usize {
-    var now: c.time_t = 0;
-    if (time(&now) == -1) return null;
-    var local: LocalTime = undefined;
-    if (localtime_r(&now, &local) == null) return null;
-    if (local.tm_wday < 0 or local.tm_wday > 6 or local.tm_hour < 0 or local.tm_hour > 23) return null;
-    return @as(usize, @intCast(local.tm_wday)) * 24 + @as(usize, @intCast(local.tm_hour));
+    if (comptime builtin.os.tag == .windows) {
+        var local: WindowsSystemTime = undefined;
+        GetLocalTime(&local);
+        if (local.day_of_week > 6 or local.hour > 23) return null;
+        return @as(usize, local.day_of_week) * 24 + @as(usize, local.hour);
+    } else {
+        var now: c.time_t = 0;
+        if (time(&now) == -1) return null;
+        var local: LocalTime = undefined;
+        if (localtime_r(&now, &local) == null) return null;
+        if (local.tm_wday < 0 or local.tm_wday > 6 or local.tm_hour < 0 or local.tm_hour > 23) return null;
+        return @as(usize, @intCast(local.tm_wday)) * 24 + @as(usize, @intCast(local.tm_hour));
+    }
 }
 
 fn queueWindowOpen(engine: *EngineContext) bool {
@@ -857,11 +886,12 @@ fn parseJobControl(params: ?std.json.Value) !JobControl {
     return .{ .job_id = job_id, .action = action, .expected_revision = expected_revision };
 }
 
-const ListPage = struct { offset: usize = 0, limit: usize = 50 };
+const ListPage = struct { offset: usize = 0, limit: usize = 50, state: ?job_store.State = null, search: ?[]const u8 = null };
 
 fn parseListPage(params: ?std.json.Value) !ListPage {
     const value = params orelse return .{};
     if (value != .object) return error.InvalidParams;
+    if (value.object.count() > 4) return error.InvalidParams;
     var page = ListPage{};
     if (value.object.get("offset")) |offset_value| {
         if (offset_value != .integer or offset_value.integer < 0) return error.InvalidParams;
@@ -871,6 +901,21 @@ fn parseListPage(params: ?std.json.Value) !ListPage {
         if (limit_value != .integer or limit_value.integer < 1 or limit_value.integer > 50)
             return error.InvalidParams;
         page.limit = @intCast(limit_value.integer);
+    }
+    if (value.object.get("state")) |state_value| {
+        if (state_value != .string) return error.InvalidParams;
+        page.state = std.meta.stringToEnum(job_store.State, state_value.string) orelse return error.InvalidParams;
+    }
+    if (value.object.get("search")) |search_value| {
+        if (search_value != .string or search_value.string.len == 0 or search_value.string.len > 128 or
+            !std.unicode.utf8ValidateSlice(search_value.string)) return error.InvalidParams;
+        page.search = search_value.string;
+    }
+    var fields = value.object.iterator();
+    while (fields.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!std.mem.eql(u8, key, "offset") and !std.mem.eql(u8, key, "limit") and
+            !std.mem.eql(u8, key, "state") and !std.mem.eql(u8, key, "search")) return error.InvalidParams;
     }
     return page;
 }

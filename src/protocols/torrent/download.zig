@@ -338,11 +338,13 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
         error.FileNotFound => {},
         else => return err,
     }
-    try cwd.createDir(io, stage, Io.File.Permissions.fromMode(0o700));
+    const private_dir: Io.File.Permissions = if (@import("builtin").os.tag == .windows) .default_dir else .fromMode(0o700);
+    const private_file: Io.File.Permissions = if (@import("builtin").os.tag == .windows) .default_file else .fromMode(0o600);
+    try cwd.createDir(io, stage, private_dir);
     var stage_owned = true;
     errdefer if (stage_owned) cwd.deleteTree(io, stage) catch {};
     {
-        const marker_file = try cwd.createFile(io, marker, .{ .exclusive = true, .permissions = Io.File.Permissions.fromMode(0o600) });
+        const marker_file = try cwd.createFile(io, marker, .{ .exclusive = true, .permissions = private_file });
         defer marker_file.close(io);
         try marker_file.writeStreamingAll(io, &info_hash);
         try marker_file.sync(io);
@@ -368,7 +370,7 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
         while (std.mem.indexOfScalarPos(u8, entry.path, search_from, '/')) |slash| {
             const parent = entry.path[0..slash];
             if (!created_dirs.contains(parent)) {
-                stage_dir.createDir(io, parent, Io.File.Permissions.fromMode(0o700)) catch |err| switch (err) {
+                stage_dir.createDir(io, parent, private_dir) catch |err| switch (err) {
                     error.PathAlreadyExists => return error.ConflictingTorrentPath,
                     else => return err,
                 };
@@ -376,7 +378,7 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
             }
             search_from = slash + 1;
         }
-        const output = stage_dir.createFile(io, entry.path, .{ .exclusive = true, .permissions = Io.File.Permissions.fromMode(0o600), .resolve_beneath = true }) catch |err| switch (err) {
+        const output = stage_dir.createFile(io, entry.path, .{ .exclusive = true, .permissions = private_file, .resolve_beneath = true }) catch |err| switch (err) {
             error.PathAlreadyExists => return error.ConflictingTorrentPath,
             else => return err,
         };
