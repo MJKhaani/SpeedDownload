@@ -287,7 +287,15 @@ pub fn dispatchMethod(
             const map = torrent.inspectFileMap(arena.allocator(), bytes) catch break :blk error.InvalidTorrentSource;
             defer map.deinit(arena.allocator());
             const total = std.fmt.allocPrint(arena.allocator(), "{d}", .{info.total_bytes}) catch break :blk error.OutOfMemory;
-            const result: http_probe.Result = .{ .final_url = "torrent-file:", .suggested_name = info.name, .total_bytes = total, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Torrent file accepted. The engine verifies each piece and resumes verified pieces." };
+            const preview_count = @min(map.files.len, 20);
+            const files = arena.allocator().alloc(http_probe.Result.TorrentFile, preview_count) catch break :blk error.OutOfMemory;
+            for (files, map.files[0..preview_count]) |*preview, entry| {
+                preview.* = .{
+                    .path = arena.allocator().dupe(u8, entry.path) catch break :blk error.OutOfMemory,
+                    .length = std.fmt.allocPrint(arena.allocator(), "{d}", .{entry.length}) catch break :blk error.OutOfMemory,
+                };
+            }
+            const result: http_probe.Result = .{ .final_url = "torrent-file:", .suggested_name = info.name, .total_bytes = total, .status_code = 0, .http_version = "BitTorrent", .content_type = "application/x-bittorrent", .range_supported = false, .resume_supported = true, .multipart_supported = false, .message = "Torrent file accepted. The engine verifies each piece and resumes verified pieces.", .torrent_file_count = @intCast(map.files.len), .torrent_files = files };
             break :blk result;
         } else if (isMagnetUrl(url)) blk: {
             var link = @import("../protocols/torrent/magnet.zig").inspect(arena.allocator(), url) catch break :blk error.InvalidMagnetUri;

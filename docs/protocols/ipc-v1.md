@@ -111,7 +111,13 @@ magnet transfers rather than bypassing the configured proxy.
 The Unix engine also advertises `torrents.local-file-v1-single-file`.
 The macOS Add Download file picker submits a `torrent-file:///` URL with an
 absolute, percent-encoded `.torrent` path. `jobs.probe` reads at most 8 MiB,
-validates the metainfo, and returns the single-file name and size. `jobs.add`
+validates the metainfo, and returns the root name and total size. For local
+`.torrent` sources it also returns `torrent_file_count` and `torrent_files`,
+an ordered preview of at most 20 `{path, length}` entries. `length` is a
+decimal byte-count string; `path` is relative to the torrent root. A missing
+preview means the protocol does not have a local file map at probe time.
+The preview is read-only: the current queue worker still downloads all files.
+`jobs.add`
 requires a safe output name and validates the selected torrent again. The
 engine stores the local source URL privately, redacts its path from job
 summaries, and saves a private metainfo snapshot before acknowledging the job.

@@ -104,7 +104,9 @@ accepts out-of-order responses only for requested block offsets and lengths.
 Completed pieces are SHA-1 verified before they enter the partial file. Pieces
 and peers are still handled sequentially rather than concurrently.
 
-This is an early compatibility slice. It does not upload or seed. File selection, DHT,
+This is an early compatibility slice. The local `.torrent` probe previews up to
+20 files and reports the full file count to the macOS Add dialog; every file
+is still included in a queued download. It does not upload or seed. File selection, DHT,
 peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a

@@ -775,6 +775,29 @@ private struct AddDownloadView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if let files = probeResult.torrentFiles, let count = probeResult.torrentFileCount, count > 1 {
+                    DisclosureGroup("Files (\(count))") {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(Array(files.enumerated()), id: \.offset) { _, file in
+                                HStack(spacing: 8) {
+                                    Text(file.path).lineLimit(1).truncationMode(.middle)
+                                    Spacer(minLength: 8)
+                                    Text(formattedSize(file.length)).foregroundStyle(.secondary)
+                                }
+                                .font(.caption)
+                            }
+                            if count > files.count {
+                                Text("Showing the first \(files.count) files")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("All files are included in this download.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 5)
+                    }
+                    .font(.callout)
+                }
+
                 DisclosureGroup("Connection details") {
                     VStack(spacing: 6) {
                         probeDetail("Redirected to", value: probeResult.finalURL)

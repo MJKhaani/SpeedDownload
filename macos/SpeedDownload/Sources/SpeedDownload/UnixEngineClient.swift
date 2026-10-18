@@ -77,6 +77,10 @@ struct JobChangeResult: Decodable, Sendable {
 }
 
 struct DownloadProbe: Decodable, Sendable {
+    struct TorrentFile: Decodable, Sendable {
+        let path: String
+        let length: String
+    }
     let finalURL: String
     let suggestedName: String
     let totalBytes: String?
@@ -87,6 +91,8 @@ struct DownloadProbe: Decodable, Sendable {
     let resumeSupported: Bool
     let multipartSupported: Bool
     let message: String
+    let torrentFileCount: Int?
+    let torrentFiles: [TorrentFile]?
 
     enum CodingKeys: String, CodingKey {
         case finalURL = "final_url"
@@ -99,6 +105,8 @@ struct DownloadProbe: Decodable, Sendable {
         case resumeSupported = "resume_supported"
         case multipartSupported = "multipart_supported"
         case message
+        case torrentFileCount = "torrent_file_count"
+        case torrentFiles = "torrent_files"
     }
 }
 

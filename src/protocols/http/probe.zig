@@ -5,6 +5,11 @@ const std = @import("std");
 const http = std.http;
 
 pub const Result = struct {
+    pub const TorrentFile = struct {
+        path: []const u8,
+        length: []const u8,
+    };
+
     final_url: []const u8,
     suggested_name: []const u8,
     total_bytes: ?[]const u8,
@@ -15,6 +20,8 @@ pub const Result = struct {
     resume_supported: bool,
     multipart_supported: bool,
     message: []const u8,
+    torrent_file_count: ?u32 = null,
+    torrent_files: ?[]const TorrentFile = null,
 };
 
 pub fn inspect(allocator: std.mem.Allocator, io: std.Io, url: []const u8) !Result {
