@@ -779,30 +779,30 @@ private struct AddDownloadView: View {
                 if let files = probeResult.torrentFiles, let count = probeResult.torrentFileCount, count > 1 {
                     DisclosureGroup("Files (\(count))") {
                         VStack(alignment: .leading, spacing: 5) {
-                            ForEach(Array(files.enumerated()), id: \.offset) { _, file in
-                                HStack(spacing: 8) {
-                                    if count == files.count {
-                                        Toggle("Include \(file.path)", isOn: Binding(
-                                            get: { selectedTorrentFiles.contains(file.path) },
-                                            set: { enabled in
-                                                if enabled { selectedTorrentFiles.insert(file.path) }
-                                                else { selectedTorrentFiles.remove(file.path) }
-                                            }
-                                        ))
-                                        .labelsHidden()
-                                    }
-                                    Text(file.path).lineLimit(1).truncationMode(.middle)
-                                    Spacer(minLength: 8)
-                                    Text(formattedSize(file.length)).foregroundStyle(.secondary)
+                            if count == files.count {
+                                HStack(spacing: 12) {
+                                    Button("Select All") { selectedTorrentFiles = Set(files.map(\.path)) }
+                                    Button("Select None") { selectedTorrentFiles.removeAll() }
                                 }
+                                .buttonStyle(.borderless)
                                 .font(.caption)
+                            }
+                            if files.count > 10 {
+                                ScrollView(.vertical) {
+                                    LazyVStack(alignment: .leading, spacing: 5) {
+                                        torrentFileRows(files, complete: count == files.count)
+                                    }
+                                }
+                                .frame(height: 240)
+                            } else {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    torrentFileRows(files, complete: count == files.count)
+                                }
                             }
                             if count > files.count {
                                 Text("Showing the first \(files.count) files")
                                     .font(.caption).foregroundStyle(.secondary)
-                            }
-                            if count > files.count {
-                                Text("All files are included. File selection is available for torrents with up to \(files.count) files.")
+                                Text("All files are included. This torrent exceeds the file selection preview limit.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -832,6 +832,27 @@ private struct AddDownloadView: View {
         } else if !trimmedURL.isEmpty {
             Text("Enter a link or choose a .torrent file to inspect the download.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func torrentFileRows(_ files: [DownloadProbe.TorrentFile], complete: Bool) -> some View {
+        ForEach(Array(files.enumerated()), id: \.offset) { _, file in
+            HStack(spacing: 8) {
+                if complete {
+                    Toggle("Include \(file.path)", isOn: Binding(
+                        get: { selectedTorrentFiles.contains(file.path) },
+                        set: { enabled in
+                            if enabled { selectedTorrentFiles.insert(file.path) }
+                            else { selectedTorrentFiles.remove(file.path) }
+                        }
+                    ))
+                    .labelsHidden()
+                }
+                Text(file.path).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(formattedSize(file.length)).foregroundStyle(.secondary)
+            }
+            .font(.caption)
         }
     }
 

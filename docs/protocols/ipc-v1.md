@@ -113,7 +113,8 @@ The macOS Add Download file picker submits a `torrent-file:///` URL with an
 absolute, percent-encoded `.torrent` path. `jobs.probe` reads at most 8 MiB,
 validates the metainfo, and returns the root name and total size. For local
 `.torrent` sources it also returns `torrent_file_count` and `torrent_files`,
-an ordered preview of at most 20 `{path, length}` entries. `length` is a
+an ordered preview of at most 1,000 `{path, length}` entries, further bounded
+to a conservative 128 KiB escaped-response budget. `length` is a
 decimal byte-count string; `path` is relative to the torrent root. A missing
 preview means the protocol does not have a local file map at probe time.
 For multi-file local torrents, `jobs.add` accepts `selected_torrent_files` as
@@ -125,8 +126,8 @@ those files. A boundary piece may contain bytes from an unselected file and
 is still needed for SHA-1 verification. Progress measures all required piece
 bytes, including such boundary bytes. Whole-download `expected_sha256` is not
 accepted with a subset. The macOS Add dialog offers selection when the
-preview contains the complete file map (up to 20 files); larger torrents
-currently include all files through that dialog.
+preview contains the complete file map; torrents that exceed the bounded
+preview currently include all files through that dialog.
 `jobs.add`
 requires a safe output name and validates the selected torrent again. The
 engine stores the local source URL privately, redacts its path from job

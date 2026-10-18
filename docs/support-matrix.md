@@ -1,6 +1,6 @@
 # Platform Support and Feasibility Matrix
 
-**Status date:** 2026-10-15
+**Status date:** 2026-10-18
 **Current project phase:** macOS engine/client implementation alongside Phase 1–3 work; Phase 0 native CI results remain unavailable
 **Meaning:** “Not validated” means no native build/runtime evidence is available. Cross-compilation alone cannot change a target to supported.
 
@@ -20,12 +20,13 @@ validated. See [FTP source status](protocols/ftp.md) for its limits.
 The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
 inspection. It also has source for BEP 9 metadata retrieval from explicit
 `x.pe` peers, HTTP(S) tracker compact IPv4/IPv6 or dictionary peers, or UDP tracker compact IPv4/IPv6 peers, but this path has not
-been exercised against a live peer. Initial single-file v1 magnet payload
+been exercised against a live peer. Initial v1 magnet payload
 transfer source now compiles and routes through the macOS/Unix engine queue.
-The macOS Add Download dialog can also select a single-file v1 `.torrent`
+The macOS Add Download dialog can also select a v1 `.torrent`
 for that queue. Pieces are verified and rehashed independently on resume,
-but neither source path has been exercised against a live swarm. DHT,
-multi-file torrents, and seeding remain unimplemented.
+but neither source path has been exercised against a live swarm. Multi-file
+payloads compile, and the Add dialog permits a file subset when its bounded
+preview includes the full map. DHT and seeding remain unimplemented.
 See [BitTorrent status](protocols/torrent.md).
 
 | OS | CPU | Engine/CLI | Native GUI | IPC/runtime package | Status / next evidence |

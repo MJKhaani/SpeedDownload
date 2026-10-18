@@ -287,7 +287,16 @@ pub fn dispatchMethod(
             const map = torrent.inspectFileMap(arena.allocator(), bytes) catch break :blk error.InvalidTorrentSource;
             defer map.deinit(arena.allocator());
             const total = std.fmt.allocPrint(arena.allocator(), "{d}", .{info.total_bytes}) catch break :blk error.OutOfMemory;
-            const preview_count = @min(map.files.len, 20);
+            // Reserve ample room for JSON escaping and the rest of the probe
+            // envelope so a valid large torrent cannot exceed the IPC frame.
+            var preview_count: usize = 0;
+            var preview_budget: usize = 0;
+            for (map.files) |entry| {
+                const cost = entry.path.len * 6 + 128;
+                if (preview_count == 1_000 or preview_budget + cost > 128 * 1024) break;
+                preview_budget += cost;
+                preview_count += 1;
+            }
             const files = arena.allocator().alloc(http_probe.Result.TorrentFile, preview_count) catch break :blk error.OutOfMemory;
             for (files, map.files[0..preview_count]) |*preview, entry| {
                 preview.* = .{
