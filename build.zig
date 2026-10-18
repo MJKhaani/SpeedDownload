@@ -52,6 +52,17 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(speed_download);
 
+    const browser_host = b.addExecutable(.{
+        .name = "speed-download-browser-host",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/browser_host.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = target.result.os.tag == .macos or target.result.os.tag == .linux,
+        }),
+    });
+    b.installArtifact(browser_host);
+
     const ipc_primitives = b.addObject(.{
         .name = "speed-download-ipc",
         .root_module = b.createModule(.{

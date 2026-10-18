@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Speed Download",
+  "version": "0.1.0",
+  "description": "Send a link you choose to the local Speed Download engine.",
+  "permissions": ["contextMenus", "nativeMessaging"],
+  "background": { "scripts": ["background.js"] },
+  "action": { "default_title": "Speed Download" },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "speed-download@mjkhaani.github",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  }
+}

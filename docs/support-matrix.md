@@ -29,6 +29,11 @@ payloads compile, and the Add dialog permits a file subset when its bounded
 preview includes the full map. DHT and seeding remain unimplemented.
 See [BitTorrent status](protocols/torrent.md).
 
+The macOS bundle includes an experimental Firefox native-messaging host and
+the repository includes a context-menu extension. The Zig host compiles, but
+Firefox registration, extension signing, and a live handoff are not verified.
+See [Firefox link handoff](browser-firefox.md).
+
 | OS | CPU | Engine/CLI | Native GUI | IPC/runtime package | Status / next evidence |
 |---|---|---:|---:|---:|---|
 | Windows | x86 (32-bit) | Not validated | Not implemented | Not implemented | Blocked for Phase 0; assess 32-bit support separately. |
