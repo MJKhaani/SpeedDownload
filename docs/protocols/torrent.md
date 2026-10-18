@@ -46,6 +46,8 @@ the optional display name, up to 32 HTTP, HTTPS, or UDP tracker URLs, and up
 to 16 explicit peer addresses.
 Output is JSON with `status: "metadata_required"`. URI length, parameter
 count, decoded values, and percent escapes are bounded and checked.
+Magnet tracker URLs reject embedded credentials and fragments. Duplicate
+tracker URLs are ignored while preserving their first occurrence.
 
 For a magnet with an `x.pe` direct peer address, an HTTP(S) tracker returning
 compact IPv4/IPv6 or dictionary peers, or a UDP tracker returning compact IPv4/IPv6 peers,

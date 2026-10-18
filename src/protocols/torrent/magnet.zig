@@ -57,9 +57,19 @@ pub fn inspect(allocator: Allocator, uri: []const u8) !Result {
             if (name != null or value.len == 0 or value.len > 255 or !std.unicode.utf8ValidateSlice(value) or hasControl(value)) return error.InvalidDisplayName;
             name = try allocator.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "tr")) {
-            if (trackers.items.len >= 32 or value.len == 0 or value.len > 2048 or hasControl(value)) return error.InvalidTracker;
+            if (value.len == 0 or value.len > 2048 or hasControl(value)) return error.InvalidTracker;
             const parsed = std.Uri.parse(value) catch return error.InvalidTracker;
-            if (parsed.host == null or !(std.ascii.eqlIgnoreCase(parsed.scheme, "http") or std.ascii.eqlIgnoreCase(parsed.scheme, "https") or std.ascii.eqlIgnoreCase(parsed.scheme, "udp"))) return error.InvalidTracker;
+            if (parsed.host == null or parsed.user != null or parsed.password != null or parsed.fragment != null or
+                !(std.ascii.eqlIgnoreCase(parsed.scheme, "http") or std.ascii.eqlIgnoreCase(parsed.scheme, "https") or std.ascii.eqlIgnoreCase(parsed.scheme, "udp"))) return error.InvalidTracker;
+            var duplicate = false;
+            for (trackers.items) |tracker| {
+                if (std.mem.eql(u8, tracker, value)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            if (trackers.items.len >= 32) return error.InvalidTracker;
             try trackers.append(allocator, try allocator.dupe(u8, value));
         } else if (std.mem.eql(u8, key, "x.pe")) {
             if (peers.items.len >= 16 or value.len == 0 or value.len > 255 or hasControl(value)) return error.InvalidPeerAddress;
