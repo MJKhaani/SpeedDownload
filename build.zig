@@ -66,7 +66,7 @@ pub fn build(b: *std.Build) void {
     const ipc_unix = b.addObject(.{
         .name = "speed-download-ipc-unix",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ipc/unix.zig"),
+            .root_source_file = b.path("src/ipc_unix_build.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,

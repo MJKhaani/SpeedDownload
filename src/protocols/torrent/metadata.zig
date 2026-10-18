@@ -11,6 +11,20 @@ const max_metadata_blocks = metainfo.max_metainfo_bytes / block_size;
 const max_message = 128 * 1024;
 const timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
 
+/// Control outcomes that must leave metadata discovery immediately instead of
+/// falling through to another peer or tracker.
+pub const CheckpointError = error{ TransferPauseRequested, TransferCancelRequested, TransferSchedulePaused };
+/// Called on the worker thread; the context remains owned by the caller.
+pub const CheckpointCallback = *const fn (*anyopaque) CheckpointError!void;
+
+fn checkpoint(callback: ?CheckpointCallback, context: ?*anyopaque) CheckpointError!void {
+    if (callback) |check| if (context) |ctx| try check(ctx);
+}
+
+fn isCheckpointError(err: anyerror) bool {
+    return err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused;
+}
+
 pub const Session = struct {
     peer_id: [20]u8,
     key: [4]u8,
@@ -43,10 +57,13 @@ pub const Fetched = struct {
 /// owned slices must be released by the caller.
 pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result) !Fetched {
     const session = try Session.init(io);
-    return fetchWithSourceSession(allocator, io, link, &session);
+    return fetchWithSourceSession(allocator, io, link, &session, null, null);
 }
 
-pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.Result, session: *const Session) !Fetched {
+/// Fetch metadata while allowing an engine worker to stop between network
+/// attempts and peer frames. Pass both callback and context to enable checks;
+/// callback errors are returned unchanged. The returned buffers are caller-owned.
+pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.Result, session: *const Session, control: ?CheckpointCallback, control_context: ?*anyopaque) !Fetched {
     var last_error: anyerror = error.NoReachablePeer;
     var attempted = std.StringHashMap(void).init(allocator);
     defer {
@@ -55,8 +72,10 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         attempted.deinit();
     }
     for (link.peers) |peer| {
+        try checkpoint(control, control_context);
         if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
-        const bytes = fetchPeer(allocator, io, peer, link.info_hash, session) catch |err| {
+        const bytes = fetchPeer(allocator, io, peer, link.info_hash, session, control, control_context) catch |err| {
+            if (isCheckpointError(err)) return err;
             last_error = err;
             continue;
         };
@@ -64,6 +83,7 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         return .{ .info = bytes, .peer = try allocator.dupe(u8, peer) };
     }
     for (link.trackers) |tracker| {
+        try checkpoint(control, control_context);
         const parsed = std.Uri.parse(tracker) catch continue;
         const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session) catch |err| {
             last_error = err;
@@ -74,8 +94,10 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
             allocator.free(peers);
         }
         for (peers) |peer| {
+            try checkpoint(control, control_context);
             if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
-            const bytes = fetchPeer(allocator, io, peer, link.info_hash, session) catch |err| {
+            const bytes = fetchPeer(allocator, io, peer, link.info_hash, session, control, control_context) catch |err| {
+                if (isCheckpointError(err)) return err;
                 last_error = err;
                 continue;
             };
@@ -456,7 +478,7 @@ fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
     return peers;
 }
 
-fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u8, session: *const Session) ![]u8 {
+fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u8, session: *const Session, control: ?CheckpointCallback, control_context: ?*anyopaque) ![]u8 {
     const separator = std.mem.lastIndexOfScalar(u8, address, ':') orelse return error.InvalidPeerAddress;
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
     const host = address[0..separator];
@@ -494,6 +516,7 @@ fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u
     var metadata_size: ?usize = null;
     var messages: usize = 0;
     while (peer_extension == null or metadata_size == null) {
+        try checkpoint(control, control_context);
         messages += 1;
         if (messages > 64) return error.PeerMetadataUnavailable;
         const frame = try wire.readFrame(allocator);
@@ -519,6 +542,7 @@ fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u
     var received_blocks: usize = 0;
     var idle_messages: usize = 0;
     while (received_blocks < blocks) {
+        try checkpoint(control, control_context);
         while (requested_blocks < blocks and requested_blocks - received_blocks < max_in_flight_blocks) {
             const request = try std.fmt.allocPrint(allocator, "d8:msg_typei0e5:piecei{d}ee", .{requested_blocks});
             defer allocator.free(request);

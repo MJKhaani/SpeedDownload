@@ -72,6 +72,10 @@ with the same peer ID and key, and keeps peers from either successful response.
 Each transfer attempt also reuses that peer ID and key across metadata
 discovery, HTTP(S)/UDP tracker announces, and TCP peer handshakes. A new
 attempt after pause or restart creates a new session identity.
+The queued magnet worker checks pause, cancel, and queue schedule state between
+peer and tracker attempts and while receiving metadata blocks. A blocked socket
+read can still take up to its 15-second timeout before the worker observes a
+new control request.
 DHT is not supported. It does not
 download payload pieces or seed.
 

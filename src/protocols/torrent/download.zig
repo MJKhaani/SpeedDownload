@@ -25,11 +25,28 @@ pub fn download(
     callback: ?ProgressCallback,
     context: ?*anyopaque,
 ) !void {
+    return downloadWithControl(allocator, io, url, destination, expected_sha256, callback, context, null, null);
+}
+
+/// Download a magnet transfer with an optional metadata-stage control check.
+/// The progress callback remains responsible for checks during payload work.
+pub fn downloadWithControl(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+) !void {
     var link = try magnet.inspect(allocator, url);
     defer link.deinit(allocator);
     const session = try metadata.Session.init(io);
-    const fetched = try metadata.fetchWithSourceSession(allocator, io, &link, &session);
+    const fetched = try metadata.fetchWithSourceSession(allocator, io, &link, &session, control, control_context);
     defer fetched.deinit(allocator);
+    if (control) |check| if (control_context) |ctx| try check(ctx);
     const wrapped = try allocator.alloc(u8, fetched.info.len + "d4:info".len + 1);
     defer allocator.free(wrapped);
     @memcpy(wrapped[0..7], "d4:info");
