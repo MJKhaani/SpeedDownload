@@ -56,7 +56,7 @@ pub fn downloadWithControl(
     const map = try metainfo.inspectFileMap(allocator, wrapped);
     defer map.deinit(allocator);
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
-    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, callback, context, &session);
+    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, callback, context, &session, control, control_context);
 }
 
 /// Download a validated v1 `.torrent` using its tracker tiers. The destination
@@ -70,6 +70,22 @@ pub fn downloadTorrentFile(
     callback: ?ProgressCallback,
     context: ?*anyopaque,
 ) !void {
+    return downloadTorrentFileWithControl(allocator, io, torrent_path, destination, expected_sha256, callback, context, null, null);
+}
+
+/// Download a local torrent with control checks during tracker and peer waits.
+pub fn downloadTorrentFileWithControl(
+    allocator: Allocator,
+    io: Io,
+    torrent_path: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+) !void {
+    try checkControl(control, control_context);
     const bytes = try Io.Dir.readFileAlloc(.cwd(), io, torrent_path, allocator, .limited(metainfo.max_metainfo_bytes));
     defer allocator.free(bytes);
     const info = try metainfo.inspect(allocator, bytes);
@@ -84,14 +100,23 @@ pub fn downloadTorrentFile(
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
     defer link.deinit(allocator);
     const session = try metadata.Session.init(io);
-    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, callback, context, &session);
+    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, callback, context, &session, control, control_context);
 }
 
 /// Queue worker entry point for a desktop-selected local torrent source URL.
 pub fn downloadTorrentSource(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8, callback: ?ProgressCallback, context: ?*anyopaque) !void {
+    return downloadTorrentSourceWithControl(allocator, io, url, destination, expected_sha256, callback, context, null, null);
+}
+
+/// Queue worker entry point with control checks during tracker and peer waits.
+pub fn downloadTorrentSourceWithControl(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8, callback: ?ProgressCallback, context: ?*anyopaque, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque) !void {
     const path = try @import("source.zig").pathAlloc(allocator, url);
     defer allocator.free(path);
-    try downloadTorrentFile(allocator, io, path, destination, expected_sha256, callback, context);
+    try downloadTorrentFileWithControl(allocator, io, path, destination, expected_sha256, callback, context, control, control_context);
+}
+
+fn checkControl(control: ?metadata.CheckpointCallback, context: ?*anyopaque) metadata.CheckpointError!void {
+    if (control) |check| if (context) |ctx| try check(ctx);
 }
 
 fn transferValidated(
@@ -106,7 +131,10 @@ fn transferValidated(
     callback: ?ProgressCallback,
     context: ?*anyopaque,
     session: *const metadata.Session,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
 ) !void {
+    try checkControl(control, control_context);
     const cwd = Io.Dir.cwd();
     if (cwd.statFile(io, destination, .{})) |_| return error.DestinationExists else |err| switch (err) {
         error.FileNotFound => {},
@@ -135,20 +163,22 @@ fn transferValidated(
     if (remaining != 0) {
         var last_error: anyerror = error.NoPeerHasPieces;
         if (first_peer) |peer| {
-            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session) catch |err| {
+            try checkControl(control, control_context);
+            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session, control, control_context) catch |err| {
                 if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                 last_error = err;
             };
         }
         if (remaining != 0) {
-            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, info.total_bytes, session);
+            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, info.total_bytes, session, control, control_context);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);
             }
             for (peers) |peer| {
+                try checkControl(control, control_context);
                 if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
-                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session) catch |err| {
+                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, callback, context, session, control, control_context) catch |err| {
                     if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
                     last_error = err;
                     continue;
@@ -303,7 +333,10 @@ fn transferFromPeer(
     callback: ?ProgressCallback,
     context: ?*anyopaque,
     session: *const metadata.Session,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
 ) !void {
+    try checkControl(control, control_context);
     const separator = std.mem.lastIndexOfScalar(u8, address, ':') orelse return error.InvalidPeerAddress;
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
     const host = address[0..separator];
@@ -331,6 +364,7 @@ fn transferFromPeer(
     try socket_writer.interface.flush();
     var response: [68]u8 = undefined;
     try readExact(io, stream, &response);
+    try checkControl(control, control_context);
     if (response[0] != 19 or !std.mem.eql(u8, response[1..20], "BitTorrent protocol") or
         !std.mem.eql(u8, response[28..48], &info.info_hash)) return error.PeerHandshakeMismatch;
     try socket_writer.interface.writeAll(&.{ 0, 0, 0, 1, 2 }); // interested
@@ -341,12 +375,14 @@ fn transferFromPeer(
     var availability: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
     var bitfield_known = false;
     piece_loop: while (remaining.* != 0) {
+        try checkControl(control, control_context);
         const piece_index = nextAvailablePiece(verified, &availability, bitfield_known) orelse return error.PeerMissingPieces;
         const size = try pieceBytes(info, piece_index);
         var unchoke_messages: usize = 0;
         var has_piece: ?bool = if (pieceInBitfield(&availability, piece_index)) true else if (bitfield_known) false else null;
         if (has_piece == false) continue :piece_loop;
         while (choked) {
+            try checkControl(control, control_context);
             unchoke_messages += 1;
             if (unchoke_messages > 128) return error.PeerChoked;
             const frame = try readFrame(io, stream, &frame_buffer);
@@ -362,6 +398,7 @@ fn transferFromPeer(
         var received_bytes: usize = 0;
         var idle_messages: usize = 0;
         while (received_blocks < block_count) {
+            try checkControl(control, control_context);
             while (requested_blocks < block_count and requested_blocks - received_blocks < max_in_flight_blocks) {
                 const begin = requested_blocks * block_size;
                 const amount = @min(block_size, size - begin);
@@ -374,6 +411,7 @@ fn transferFromPeer(
             }
             try socket_writer.interface.flush();
             const frame = try readFrame(io, stream, &frame_buffer);
+            try checkControl(control, control_context);
             if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
             try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
             if (has_piece == false) return error.PeerMissingPieces;

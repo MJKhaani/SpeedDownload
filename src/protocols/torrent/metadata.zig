@@ -118,8 +118,9 @@ fn markPeerAttempted(allocator: Allocator, attempted: *std.StringHashMap(void), 
 
 /// Discover compact tracker peers for a transfer. `downloaded` counts verified
 /// payload bytes; `total_bytes` comes from hash-verified torrent metadata.
-/// The caller owns every returned address and the outer slice.
-pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, downloaded: u64, total_bytes: u64, session: *const Session) ![][]u8 {
+/// The caller owns every returned address and the outer slice. Pass both
+/// control and context to stop between tracker requests.
+pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, downloaded: u64, total_bytes: u64, session: *const Session, control: ?CheckpointCallback, control_context: ?*anyopaque) ![][]u8 {
     if (downloaded > total_bytes) return error.InvalidTorrentProgress;
     const max_peers = 80;
     var peers: std.ArrayList([]u8) = .empty;
@@ -137,6 +138,7 @@ pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, do
         };
     }
     for (link.trackers) |tracker| {
+        try checkpoint(control, control_context);
         if (peers.items.len == max_peers) break;
         const parsed = std.Uri.parse(tracker) catch continue;
         const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session) catch continue;
