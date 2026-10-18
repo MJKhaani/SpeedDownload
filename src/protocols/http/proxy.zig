@@ -152,11 +152,15 @@ fn parseSystemProxyConfig(output: []const u8) !SystemProxyConfig {
                 continue;
             }
             const entry_separator = std.mem.indexOf(u8, line, " : ") orelse return error.InvalidSystemProxy;
-            if (config.exception_count == config.exceptions.len) return error.InvalidSystemProxy;
             const value = line[entry_separator + 3 ..];
-            const index = config.exception_count;
-            config.exception_lengths[index] = try copyHost(&config.exceptions[index], value);
-            config.exception_count += 1;
+            var entries = std.mem.splitScalar(u8, value, ',');
+            while (entries.next()) |raw_entry| {
+                const entry = std.mem.trim(u8, raw_entry, " \t");
+                if (config.exception_count == config.exceptions.len) return error.InvalidSystemProxy;
+                const index = config.exception_count;
+                config.exception_lengths[index] = try copyException(&config.exceptions[index], entry);
+                config.exception_count += 1;
+            }
             continue;
         }
         const separator = std.mem.indexOf(u8, line, " : ") orelse continue;
@@ -197,10 +201,12 @@ fn bypassesSystemProxy(config: SystemProxyConfig, target: std.Uri) bool {
         .raw => |value| value,
         .percent_encoded => |value| value,
     };
-    if (config.exclude_simple_hostnames and std.mem.indexOfScalar(u8, host, '.') == null) return true;
+    if (config.exclude_simple_hostnames and std.mem.indexOfScalar(u8, host, '.') == null and !isIp6Literal(host)) return true;
     for (0..config.exception_count) |index| {
         const pattern = config.exceptions[index][0..config.exception_lengths[index]];
-        if (hostPatternMatches(pattern, host)) return true;
+        if (std.mem.indexOfScalar(u8, pattern, '/') != null) {
+            if (cidrExceptionMatches(pattern, host)) return true;
+        } else if (hostPatternMatches(pattern, host)) return true;
     }
     return false;
 }
@@ -234,4 +240,75 @@ fn copyHost(destination: *[256]u8, value: []const u8) !usize {
         return error.InvalidSystemProxy;
     @memcpy(destination[0..value.len], value);
     return value.len;
+}
+
+fn copyException(destination: *[256]u8, value: []const u8) !usize {
+    if (value.len == 0 or value.len > destination.len) return error.InvalidSystemProxy;
+    for (value) |byte| if (byte <= 0x20 or byte == 0x7f or byte == '@')
+        return error.InvalidSystemProxy;
+    if (std.mem.indexOfScalar(u8, value, '/') != null and parseCidr(value) == null)
+        return error.InvalidSystemProxy;
+    @memcpy(destination[0..value.len], value);
+    return value.len;
+}
+
+const Cidr = union(enum) {
+    ip4: struct { bytes: [4]u8, prefix: u8 },
+    ip6: struct { bytes: [16]u8, prefix: u8 },
+};
+
+fn parseCidr(pattern: []const u8) ?Cidr {
+    const slash = std.mem.indexOfScalar(u8, pattern, '/') orelse return null;
+    const network = pattern[0..slash];
+    const prefix_text = pattern[slash + 1 ..];
+    if (network.len == 0 or prefix_text.len == 0) return null;
+    for (prefix_text) |byte| if (!std.ascii.isDigit(byte)) return null;
+    const prefix = std.fmt.parseInt(u8, prefix_text, 10) catch return null;
+    if (std.mem.indexOfScalar(u8, network, ':') != null) {
+        if (prefix > 128) return null;
+        const address = std.Io.net.IpAddress.parseIp6(network, 0) catch return null;
+        return .{ .ip6 = .{ .bytes = address.ip6.bytes, .prefix = prefix } };
+    }
+    if (prefix > 32) return null;
+    // macOS accepts abbreviated IPv4 networks such as 169.254/16.
+    var bytes: [4]u8 = @splat(0);
+    var parts = std.mem.splitScalar(u8, network, '.');
+    var count: usize = 0;
+    while (parts.next()) |part| {
+        if (count == bytes.len or part.len == 0) return null;
+        for (part) |byte| if (!std.ascii.isDigit(byte)) return null;
+        bytes[count] = std.fmt.parseInt(u8, part, 10) catch return null;
+        count += 1;
+    }
+    return .{ .ip4 = .{ .bytes = bytes, .prefix = prefix } };
+}
+
+fn isIp6Literal(host: []const u8) bool {
+    const bare = if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') host[1 .. host.len - 1] else host;
+    _ = std.Io.net.IpAddress.parseIp6(bare, 0) catch return false;
+    return true;
+}
+
+fn cidrExceptionMatches(pattern: []const u8, host: []const u8) bool {
+    const cidr = parseCidr(pattern) orelse return false;
+    switch (cidr) {
+        .ip4 => |network| {
+            const address = std.Io.net.IpAddress.parseIp4(host, 0) catch return false;
+            return prefixMatches(4, network.bytes, address.ip4.bytes, network.prefix);
+        },
+        .ip6 => |network| {
+            const bare = if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') host[1 .. host.len - 1] else host;
+            const address = std.Io.net.IpAddress.parseIp6(bare, 0) catch return false;
+            return prefixMatches(16, network.bytes, address.ip6.bytes, network.prefix);
+        },
+    }
+}
+
+fn prefixMatches(comptime length: usize, network: [length]u8, address: [length]u8, prefix: u8) bool {
+    const full_bytes: usize = prefix / 8;
+    if (!std.mem.eql(u8, network[0..full_bytes], address[0..full_bytes])) return false;
+    const remaining: u8 = prefix % 8;
+    if (remaining == 0) return true;
+    const mask: u8 = @truncate(@as(u16, 0xff00) >> @intCast(remaining));
+    return network[full_bytes] & mask == address[full_bytes] & mask;
 }
