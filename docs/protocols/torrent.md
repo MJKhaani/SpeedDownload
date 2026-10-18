@@ -136,7 +136,9 @@ the full file count to the macOS Add dialog. When the full file map fits,
 the user may include a subset; the job persists the
 chosen paths, skips pieces not overlapping those files, and publishes only
 the selected files. A piece crossing into an unselected file is still fetched
-and verified in full, and progress includes its bytes. The Add dialog also
+and verified in full, and progress includes its bytes. Tracker announces
+still report bytes remaining against the full torrent size, so a file subset
+is not advertised as a complete torrent. The Add dialog also
 pins the probed info hash, and the engine rejects a changed source before
 saving its private metainfo snapshot. When the preview is
 incomplete, the macOS dialog currently includes every file. The engine does not upload or seed. DHT,

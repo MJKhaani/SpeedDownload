@@ -253,7 +253,9 @@ fn transferValidated(
             };
         }
         if (remaining != 0) {
-            const peers = try metadata.collectPeersWithStats(allocator, io, link, verified_bytes, needed_bytes, session, control, control_context, stats, stats_context);
+            // Tracker `left` describes the full torrent, even when the user
+            // selected only some files. Progress still uses needed_bytes.
+            const peers = try metadata.collectPeersWithStats(allocator, io, link, verified_bytes, info.total_bytes, session, control, control_context, stats, stats_context);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);
