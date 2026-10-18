@@ -41,6 +41,22 @@ pub fn downloadWithControl(
     control: ?metadata.CheckpointCallback,
     control_context: ?*anyopaque,
 ) !void {
+    return downloadWithStats(allocator, io, url, destination, expected_sha256, callback, context, control, control_context, null, null);
+}
+
+pub fn downloadWithStats(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+    stats: ?metadata.StatsCallback,
+    stats_context: ?*anyopaque,
+) !void {
     var link = try magnet.inspect(allocator, url);
     defer link.deinit(allocator);
     const session = try metadata.Session.init(io);
@@ -56,7 +72,7 @@ pub fn downloadWithControl(
     const map = try metainfo.inspectFileMap(allocator, wrapped);
     defer map.deinit(allocator);
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
-    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, null, callback, context, &session, control, control_context);
+    try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, null, callback, context, &session, control, control_context, stats, stats_context);
 }
 
 /// Download a validated v1 `.torrent` using its tracker tiers. The destination
@@ -100,6 +116,23 @@ pub fn downloadTorrentFileSelectedWithControl(
     control: ?metadata.CheckpointCallback,
     control_context: ?*anyopaque,
 ) !void {
+    return downloadTorrentFileSelectedWithStats(allocator, io, torrent_path, destination, expected_sha256, selected_files, callback, context, control, control_context, null, null);
+}
+
+pub fn downloadTorrentFileSelectedWithStats(
+    allocator: Allocator,
+    io: Io,
+    torrent_path: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    selected_files: ?[]const []const u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+    stats: ?metadata.StatsCallback,
+    stats_context: ?*anyopaque,
+) !void {
     try checkControl(control, control_context);
     const bytes = try Io.Dir.readFileAlloc(.cwd(), io, torrent_path, allocator, .limited(metainfo.max_metainfo_bytes));
     defer allocator.free(bytes);
@@ -115,7 +148,7 @@ pub fn downloadTorrentFileSelectedWithControl(
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
     defer link.deinit(allocator);
     const session = try metadata.Session.init(io);
-    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context);
+    try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context, stats, stats_context);
 }
 
 /// Queue worker entry point for a desktop-selected local torrent source URL.
@@ -125,9 +158,13 @@ pub fn downloadTorrentSource(allocator: Allocator, io: Io, url: []const u8, dest
 
 /// Queue worker entry point with control checks during tracker and peer waits.
 pub fn downloadTorrentSourceWithControl(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8, callback: ?ProgressCallback, context: ?*anyopaque, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque) !void {
+    return downloadTorrentSourceWithStats(allocator, io, url, destination, expected_sha256, callback, context, control, control_context, null, null);
+}
+
+pub fn downloadTorrentSourceWithStats(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8, callback: ?ProgressCallback, context: ?*anyopaque, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque, stats: ?metadata.StatsCallback, stats_context: ?*anyopaque) !void {
     const path = try @import("source.zig").pathAlloc(allocator, url);
     defer allocator.free(path);
-    try downloadTorrentFileWithControl(allocator, io, path, destination, expected_sha256, callback, context, control, control_context);
+    try downloadTorrentFileSelectedWithStats(allocator, io, path, destination, expected_sha256, null, callback, context, control, control_context, stats, stats_context);
 }
 
 fn checkControl(control: ?metadata.CheckpointCallback, context: ?*anyopaque) metadata.CheckpointError!void {
@@ -149,6 +186,8 @@ fn transferValidated(
     session: *const metadata.Session,
     control: ?metadata.CheckpointCallback,
     control_context: ?*anyopaque,
+    stats: ?metadata.StatsCallback,
+    stats_context: ?*anyopaque,
 ) !void {
     try checkControl(control, control_context);
     const cwd = Io.Dir.cwd();
@@ -213,7 +252,7 @@ fn transferValidated(
             };
         }
         if (remaining != 0) {
-            const peers = try metadata.collectPeers(allocator, io, link, verified_bytes, needed_bytes, session, control, control_context);
+            const peers = try metadata.collectPeersWithStats(allocator, io, link, verified_bytes, needed_bytes, session, control, control_context, stats, stats_context);
             defer {
                 for (peers) |peer| allocator.free(peer);
                 allocator.free(peers);

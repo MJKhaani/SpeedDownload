@@ -96,6 +96,12 @@ metadata. If that peer cannot continue, it announces the verified downloaded
 byte count and remaining size to trackers and tries other discovered peers.
 The transfer list removes duplicate addresses and stops asking trackers once
 it has 80 distinct peers.
+While a transfer is active, the engine reports the number of distinct
+discovered peer addresses (capped at 80). HTTP and UDP tracker responses may
+also supply seeder and leecher counts; these are the most recent successful
+tracker's reported values, not a global swarm census or active connection
+count. Missing values remain unknown. The macOS inspector displays them only
+for an active torrent.
 For each TCP peer, BITFIELD and HAVE messages record which pieces it reports;
 the engine chooses any unverified piece available from that peer. A peer that
 sends no bitfield leaves availability unknown until a piece request succeeds

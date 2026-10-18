@@ -26,6 +26,9 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let bandwidthLimitBytesPerSecond: UInt64?
     let expectedSHA256: String?
     let workers: [DownloadWorker]?
+    let torrentPeerCount: UInt32?
+    let torrentSeederCount: UInt32?
+    let torrentLeecherCount: UInt32?
 
     var id: String { jobID }
 
@@ -43,6 +46,9 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         case bandwidthLimitBytesPerSecond = "bandwidth_limit_bytes_per_second"
         case expectedSHA256 = "expected_sha256"
         case workers
+        case torrentPeerCount = "torrent_peer_count"
+        case torrentSeederCount = "torrent_seeder_count"
+        case torrentLeecherCount = "torrent_leecher_count"
     }
 }
 

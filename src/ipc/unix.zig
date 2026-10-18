@@ -467,13 +467,14 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     defer engine.allocator.free(destination);
 
     var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id };
+    if (isTorrentFileUrl(task.url) or isMagnetUrl(task.url)) engine.jobs.resetTorrentStats(task.id);
     var retry_hint: @import("../protocols/http/retry_after.zig").Hint = .init(0);
     const transfer = if (isTorrentFileUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
         break :blk downloadStoredTorrent(engine, task, destination, &progress);
     } else if (isMagnetUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
-        break :blk @import("../protocols/torrent/download.zig").downloadWithControl(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), checkTorrentControl, @ptrCast(&progress));
+        break :blk @import("../protocols/torrent/download.zig").downloadWithStats(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), checkTorrentControl, @ptrCast(&progress), updateTorrentStats, @ptrCast(&progress));
     } else if (isFtpUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedFtpProxy;
         break :blk @import("../protocols/ftp/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
@@ -517,12 +518,12 @@ fn downloadStoredTorrent(engine: *EngineContext, task: job_store.Store.DownloadT
         else => return err,
     };
     if (exists) {
-        return @import("../protocols/torrent/download.zig").downloadTorrentFileSelectedWithControl(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, task.selected_torrent_files, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress));
+        return @import("../protocols/torrent/download.zig").downloadTorrentFileSelectedWithStats(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, task.selected_torrent_files, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress), updateTorrentStats, @ptrCast(progress));
     }
     // Jobs queued before source snapshots were introduced can still resume
     // from the original selected file when it remains available.
     if (task.selected_torrent_files != null) return error.MissingTorrentSnapshot;
-    return @import("../protocols/torrent/download.zig").downloadTorrentSourceWithControl(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress));
+    return @import("../protocols/torrent/download.zig").downloadTorrentSourceWithStats(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress), updateTorrentStats, @ptrCast(progress));
 }
 
 fn checkTorrentControl(context: *anyopaque) @import("../protocols/torrent/metadata.zig").CheckpointError!void {
@@ -530,6 +531,11 @@ fn checkTorrentControl(context: *anyopaque) @import("../protocols/torrent/metada
     if (progress.engine.jobs.requestedControl(progress.job_id)) |control|
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
     if (!queueWindowOpen(progress.engine)) return error.TransferSchedulePaused;
+}
+
+fn updateTorrentStats(context: *anyopaque, peers: u32, counts: @import("../protocols/torrent/metadata.zig").TrackerCounts) void {
+    const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    progress.engine.jobs.updateTorrentStats(progress.job_id, peers, counts.seeders, counts.leechers);
 }
 
 fn retryableDownloadError(err: anyerror) bool {

@@ -146,6 +146,13 @@ for trusted local clients and must not be accepted by browser handoff bridges.
 
 `jobs.list` keeps `completed_bytes` as the durable resume checkpoint. While a transfer is active, it also exposes `received_bytes` for live UI progress and may expose a `total_bytes` learned from response headers before a durable checkpoint exists. These live fields are not persisted as completed data. The `workers` array includes a single connection for sequential HTTP transfers when the total size is known; its progress is also live and clears when the transfer stops. Clients should label received bytes as transfer progress rather than verified or resumable bytes.
 
+For active torrent jobs, `jobs.list` may expose ephemeral `torrent_peer_count`,
+`torrent_seeder_count`, and `torrent_leecher_count` integers. Peer count is
+the deduplicated discovered address list, capped at 80; seed and leecher
+counts come from the most recent tracker that supplied them. Null means
+unknown. These values are not persisted and do not claim active connections
+or an accurate global swarm census.
+
 Transient connection and truncated-response errors may put a job in `retry_wait`. The summary then includes `retry_attempts` (0–3) and `retry_at_unix_ms` (a decimal millisecond timestamp string, or `null`). These fields are persisted with the job. The scheduler promotes due retries to `queued` before selecting work. Manual pause, cancel, and immediate retry remain available while waiting; integrity and destination errors do not retry automatically.
 
 The engine reevaluates the queue window every five seconds and immediately after settings changes or a new job. Outside an active window, queued jobs become scheduled and active HTTP transfers stop at the next progress callback, retaining their partial data. They resume through the normal queue when the window opens. The global download bandwidth setting is shared across HTTP workers and jobs, with the scheduled limit selected by the current local hour. A job's own cap is applied independently; both caps remain effective. A changed connection default applies when a job starts; resumed segmented transfers run no more than that many workers concurrently.

@@ -445,6 +445,15 @@ struct DashboardView: View {
                 Divider()
                 VStack(spacing: 7) {
                     inspectorField("Status", stateTitle(for: job))
+                    if job.state == "downloading", let peers = job.torrentPeerCount {
+                        inspectorField("Peers", "\(peers) discovered")
+                        if let seeds = job.torrentSeederCount {
+                            inspectorField("Seeds", "\(seeds) reported by tracker")
+                        }
+                        if let leechers = job.torrentLeecherCount {
+                            inspectorField("Leechers", "\(leechers) reported by tracker")
+                        }
+                    }
                     if job.state == "retry_wait", let retryAt = job.retryAtUnixMS.flatMap(Double.init) {
                         inspectorField("Retry", "\(job.retryAttempts ?? 0) of 3 · \(Date(timeIntervalSince1970: retryAt / 1000).formatted(date: .omitted, time: .shortened))")
                     }

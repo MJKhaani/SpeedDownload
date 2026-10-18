@@ -89,6 +89,9 @@ pub const Job = struct {
     bandwidth_limit_bytes_per_second: u64 = 0,
     workers: [32]WorkerProgress = @splat(.{}),
     worker_count: usize = 0,
+    torrent_peer_count: ?u32 = null,
+    torrent_seeder_count: ?u32 = null,
+    torrent_leecher_count: ?u32 = null,
 };
 
 pub const AddInput = struct {
@@ -438,6 +441,9 @@ pub const Store = struct {
             .priority = job.priority,
             .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
             .workers = job.workers[0..job.worker_count],
+            .torrent_peer_count = job.torrent_peer_count,
+            .torrent_seeder_count = job.torrent_seeder_count,
+            .torrent_leecher_count = job.torrent_leecher_count,
         });
         defer for (summaries.items) |summary| allocator.free(summary.revision);
         defer for (summaries.items) |summary| {
@@ -1130,6 +1136,32 @@ pub const Store = struct {
         }
     }
 
+    pub fn resetTorrentStats(self: *Store, job_id: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            job.torrent_peer_count = null;
+            job.torrent_seeder_count = null;
+            job.torrent_leecher_count = null;
+            _ = self.change_sequence.fetchAdd(1, .release);
+            return;
+        }
+    }
+
+    pub fn updateTorrentStats(self: *Store, job_id: []const u8, peers: u32, seeders: ?u32, leechers: ?u32) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id) or job.state != .downloading) continue;
+            job.torrent_peer_count = peers;
+            if (seeders) |count| job.torrent_seeder_count = count;
+            if (leechers) |count| job.torrent_leecher_count = count;
+            _ = self.change_sequence.fetchAdd(1, .release);
+            return;
+        }
+    }
+
     fn newId(self: *Store) ![]u8 {
         var bytes: [16]u8 = undefined;
         try self.io.randomSecure(&bytes);
@@ -1550,6 +1582,9 @@ const Summary = struct {
     priority: i32,
     bandwidth_limit_bytes_per_second: u64,
     workers: []const WorkerProgress,
+    torrent_peer_count: ?u32,
+    torrent_seeder_count: ?u32,
+    torrent_leecher_count: ?u32,
 };
 
 const PersistedJob = struct {
