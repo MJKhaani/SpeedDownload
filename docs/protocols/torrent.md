@@ -56,8 +56,9 @@ BEP 10/BEP 9 metadata exchange:
 speed-download magnet-metadata 'magnet:?xt=urn:btih:<hash>&tr=https%3A%2F%2Ftracker.example%2Fannounce' output.torrent
 ```
 
-The engine caps each peer message and the resulting metadata, requests 16 KiB
-blocks sequentially, verifies the complete SHA-1 info hash, then validates
+The engine caps each peer message and the resulting metadata, keeps up to eight
+16 KiB metadata block requests in flight, accepts only requested blocks with
+the expected length, and verifies the complete SHA-1 info hash before validating
 the same paths, sizes, and piece hashes as `.torrent` inspection before
 creating `output.torrent`. All magnet trackers are retained in its
 `announce-list`. An existing output file is never replaced. The command

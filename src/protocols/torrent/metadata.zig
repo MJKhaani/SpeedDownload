@@ -6,6 +6,8 @@ const magnet = @import("magnet.zig");
 const metainfo = @import("metainfo.zig");
 
 const block_size = 16 * 1024;
+const max_in_flight_blocks = 8;
+const max_metadata_blocks = metainfo.max_metainfo_bytes / block_size;
 const max_message = 128 * 1024;
 const timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
 
@@ -511,28 +513,48 @@ fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u
     const metadata = try allocator.alloc(u8, size);
     errdefer allocator.free(metadata);
     const blocks = (size + block_size - 1) / block_size;
-    for (0..blocks) |index| {
-        const request = try std.fmt.allocPrint(allocator, "d8:msg_typei0e5:piecei{d}ee", .{index});
-        defer allocator.free(request);
-        try wire.sendExtended(peer_extension.?, request);
-        var attempts: usize = 0;
-        while (true) {
-            attempts += 1;
-            if (attempts > 64) return error.MetadataPieceUnavailable;
-            const frame = try wire.readFrame(allocator);
-            defer allocator.free(frame);
-            if (frame.len < 2 or frame[0] != 20 or frame[1] != 1) continue;
-            const header = try parseDictionary(frame[2..]);
-            if (header.piece != index or header.msg_type == null) continue;
-            if (header.msg_type.? == 2) return error.MetadataPieceRejected;
-            if (header.msg_type.? != 1 or header.total_size != size) return error.InvalidMetadataPiece;
-            const offset = index * block_size;
-            const expected = @min(block_size, size - offset);
-            const payload = frame[2 + header.end ..];
-            if (payload.len != expected) return error.InvalidMetadataPiece;
-            @memcpy(metadata[offset .. offset + expected], payload);
-            break;
+    if (blocks > max_metadata_blocks) return error.MetadataTooLarge;
+    var received: [max_metadata_blocks]bool = @splat(false);
+    var requested_blocks: usize = 0;
+    var received_blocks: usize = 0;
+    var idle_messages: usize = 0;
+    while (received_blocks < blocks) {
+        while (requested_blocks < blocks and requested_blocks - received_blocks < max_in_flight_blocks) {
+            const request = try std.fmt.allocPrint(allocator, "d8:msg_typei0e5:piecei{d}ee", .{requested_blocks});
+            defer allocator.free(request);
+            try wire.sendExtended(peer_extension.?, request);
+            requested_blocks += 1;
         }
+        const frame = try wire.readFrame(allocator);
+        defer allocator.free(frame);
+        if (frame.len < 2 or frame[0] != 20 or frame[1] != 1) {
+            idle_messages += 1;
+            if (idle_messages > 64) return error.MetadataPieceUnavailable;
+            continue;
+        }
+        const header = try parseDictionary(frame[2..]);
+        const index = header.piece orelse return error.InvalidMetadataPiece;
+        if (index >= requested_blocks or header.msg_type == null) return error.InvalidMetadataPiece;
+        if (header.msg_type.? == 2) return error.MetadataPieceRejected;
+        if (header.msg_type.? != 1) {
+            idle_messages += 1;
+            if (idle_messages > 64) return error.MetadataPieceUnavailable;
+            continue;
+        }
+        if (header.total_size != size) return error.InvalidMetadataPiece;
+        const offset = index * block_size;
+        const expected = @min(block_size, size - offset);
+        const payload = frame[2 + header.end ..];
+        if (payload.len != expected) return error.InvalidMetadataPiece;
+        if (received[index]) {
+            idle_messages += 1;
+            if (idle_messages > 64) return error.MetadataPieceUnavailable;
+            continue;
+        }
+        @memcpy(metadata[offset .. offset + expected], payload);
+        received[index] = true;
+        received_blocks += 1;
+        idle_messages = 0;
     }
     var digest: [20]u8 = undefined;
     std.crypto.hash.Sha1.hash(metadata, &digest, .{});
