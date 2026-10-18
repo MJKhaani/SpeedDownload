@@ -32,9 +32,8 @@ removed on retry only when its ownership marker matches the torrent info hash.
 The publisher creates each parent directory explicitly and rejects a name that
 the filesystem reports as already present under a different spelling. File
 creation is exclusive, so case or Unicode normalization collisions fail before
-the staged tree is published.
-Inspection
-rejects a file layout where one file path is also a parent directory of another.
+the staged tree is published. Inspection rejects a file layout where one file
+path is also a parent directory of another.
 
 The engine also inspects BitTorrent v1 magnet URIs with
 `speed-download magnet-info 'magnet:?xt=urn:btih:…&dn=…&tr=…&x.pe=host:port'`.
@@ -59,6 +58,7 @@ the same paths, sizes, and piece hashes as `.torrent` inspection before
 creating `output.torrent`. All magnet trackers are retained in its
 `announce-list`. An existing output file is never replaced. The command
 contacts an explicit peer first, then HTTP(S) and UDP trackers in magnet order.
+An address returned by multiple trackers is contacted once per metadata attempt.
 HTTP(S) trackers may return compact IPv4 `peers`, IPv6 `peers6`, or BEP 3
 `peers` dictionaries with an IP/hostname and port. UDP tracker discovery
 accepts IPv4 and IPv6 responses according to the tracker socket's address
@@ -85,6 +85,8 @@ pause/cancel controls, progress, and optional whole-file SHA-256 check apply.
 The engine first requests payload pieces from the peer that supplied the
 metadata. If that peer cannot continue, it announces the verified downloaded
 byte count and remaining size to trackers and tries other discovered peers.
+The transfer list removes duplicate addresses and stops asking trackers once
+it has 80 distinct peers.
 For each TCP peer, BITFIELD and HAVE messages record which pieces it reports;
 the engine chooses any unverified piece available from that peer. A peer that
 sends no bitfield leaves availability unknown until a piece request succeeds

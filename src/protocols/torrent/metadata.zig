@@ -46,7 +46,14 @@ pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result)
 
 pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.Result, session: *const Session) !Fetched {
     var last_error: anyerror = error.NoReachablePeer;
+    var attempted = std.StringHashMap(void).init(allocator);
+    defer {
+        var keys = attempted.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        attempted.deinit();
+    }
     for (link.peers) |peer| {
+        if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
         const bytes = fetchPeer(allocator, io, peer, link.info_hash, session) catch |err| {
             last_error = err;
             continue;
@@ -65,6 +72,7 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
             allocator.free(peers);
         }
         for (peers) |peer| {
+            if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
             const bytes = fetchPeer(allocator, io, peer, link.info_hash, session) catch |err| {
                 last_error = err;
                 continue;
@@ -76,17 +84,28 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
     return last_error;
 }
 
+fn markPeerAttempted(allocator: Allocator, attempted: *std.StringHashMap(void), peer: []const u8) !bool {
+    if (attempted.contains(peer)) return false;
+    const owned = try allocator.dupe(u8, peer);
+    errdefer allocator.free(owned);
+    try attempted.put(owned, {});
+    return true;
+}
+
 /// Discover compact tracker peers for a transfer. `downloaded` counts verified
 /// payload bytes; `total_bytes` comes from hash-verified torrent metadata.
 /// The caller owns every returned address and the outer slice.
 pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, downloaded: u64, total_bytes: u64, session: *const Session) ![][]u8 {
     if (downloaded > total_bytes) return error.InvalidTorrentProgress;
+    const max_peers = 80;
     var peers: std.ArrayList([]u8) = .empty;
     errdefer {
         for (peers.items) |peer| allocator.free(peer);
         peers.deinit(allocator);
     }
     for (link.peers) |peer| {
+        if (peers.items.len == max_peers) break;
+        if (containsPeer(peers.items, peer)) continue;
         const owned = try allocator.dupe(u8, peer);
         peers.append(allocator, owned) catch |err| {
             allocator.free(owned);
@@ -94,18 +113,28 @@ pub fn collectPeers(allocator: Allocator, io: Io, link: *const magnet.Result, do
         };
     }
     for (link.trackers) |tracker| {
+        if (peers.items.len == max_peers) break;
         const parsed = std.Uri.parse(tracker) catch continue;
         const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session) catch continue;
         defer allocator.free(discovered);
-        const take = @min(discovered.len, 80 - peers.items.len);
-        peers.ensureUnusedCapacity(allocator, take) catch |err| {
+        peers.ensureUnusedCapacity(allocator, @min(discovered.len, max_peers - peers.items.len)) catch |err| {
             for (discovered) |peer| allocator.free(peer);
             return err;
         };
-        for (discovered[0..take]) |peer| peers.appendAssumeCapacity(peer);
-        for (discovered[take..]) |peer| allocator.free(peer);
+        for (discovered) |peer| {
+            if (peers.items.len == max_peers or containsPeer(peers.items, peer)) {
+                allocator.free(peer);
+            } else {
+                peers.appendAssumeCapacity(peer);
+            }
+        }
     }
     return peers.toOwnedSlice(allocator);
+}
+
+fn containsPeer(peers: []const []u8, candidate: []const u8) bool {
+    for (peers) |peer| if (std.mem.eql(u8, peer, candidate)) return true;
+    return false;
 }
 
 fn discoverTrackerPeers(allocator: Allocator, io: Io, tracker: []const u8, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64, session: *const Session) ![][]u8 {
