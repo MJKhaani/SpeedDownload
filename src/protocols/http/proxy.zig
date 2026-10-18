@@ -200,13 +200,32 @@ fn bypassesSystemProxy(config: SystemProxyConfig, target: std.Uri) bool {
     if (config.exclude_simple_hostnames and std.mem.indexOfScalar(u8, host, '.') == null) return true;
     for (0..config.exception_count) |index| {
         const pattern = config.exceptions[index][0..config.exception_lengths[index]];
-        if (std.ascii.eqlIgnoreCase(host, pattern)) return true;
-        if (std.mem.startsWith(u8, pattern, "*.")) {
-            const suffix = pattern[1..];
-            if (host.len > suffix.len and std.ascii.eqlIgnoreCase(host[host.len - suffix.len ..], suffix)) return true;
-        }
+        if (hostPatternMatches(pattern, host)) return true;
     }
     return false;
+}
+
+fn hostPatternMatches(pattern: []const u8, host: []const u8) bool {
+    var pattern_index: usize = 0;
+    var host_index: usize = 0;
+    var last_star: ?usize = null;
+    var retry_host: usize = 0;
+    while (host_index < host.len) {
+        if (pattern_index < pattern.len and std.ascii.toLower(pattern[pattern_index]) == std.ascii.toLower(host[host_index])) {
+            pattern_index += 1;
+            host_index += 1;
+        } else if (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+            last_star = pattern_index;
+            pattern_index += 1;
+            retry_host = host_index;
+        } else if (last_star) |star| {
+            retry_host += 1;
+            host_index = retry_host;
+            pattern_index = star + 1;
+        } else return false;
+    }
+    while (pattern_index < pattern.len and pattern[pattern_index] == '*') : (pattern_index += 1) {}
+    return pattern_index == pattern.len;
 }
 
 fn copyHost(destination: *[256]u8, value: []const u8) !usize {
