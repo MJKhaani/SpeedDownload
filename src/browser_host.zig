@@ -86,6 +86,9 @@ fn settingsWithEngineStart(allocator: std.mem.Allocator, init: std.process.Init)
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .ignore,
+            // Firefox may tear down the native host's process group when its
+            // one-message connection closes. The engine must survive it.
+            .pgid = 0,
         });
         for (0..80) |_| {
             std.Io.sleep(init.io, .fromMilliseconds(50), .awake) catch {};
