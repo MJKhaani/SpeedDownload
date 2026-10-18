@@ -98,6 +98,7 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
         const bytes = fetchPeer(allocator, io, peer, link.info_hash, session, control, control_context) catch |err| {
             if (isCheckpointError(err)) return err;
+            if (err == error.OutOfMemory) return err;
             last_error = err;
             continue;
         };
@@ -109,6 +110,7 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
         const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session, &counts) catch |err| {
+            if (err == error.OutOfMemory) return err;
             last_error = err;
             continue;
         };
@@ -121,6 +123,7 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
             if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
             const bytes = fetchPeer(allocator, io, peer, link.info_hash, session, control, control_context) catch |err| {
                 if (isCheckpointError(err)) return err;
+                if (err == error.OutOfMemory) return err;
                 last_error = err;
                 continue;
             };
@@ -255,6 +258,7 @@ fn discoverUdpPeers(allocator: Allocator, io: Io, tracker: []const u8, uri: std.
     for (addresses) |maybe_address| {
         const address = maybe_address orelse continue;
         const found = discoverUdpPeersAtAddress(allocator, io, address, info_hash, downloaded, left, session, !session.hasAnnounced(tracker), counts) catch |err| {
+            if (err == error.OutOfMemory) return err;
             last_error = err;
             continue;
         };

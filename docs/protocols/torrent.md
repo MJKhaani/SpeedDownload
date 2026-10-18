@@ -121,6 +121,10 @@ or fails. It keeps up to eight 16 KiB requests in flight for one piece and
 accepts out-of-order responses only for requested block offsets and lengths.
 Completed pieces are SHA-1 verified before they enter the partial file. Pieces
 and peers are still handled sequentially rather than concurrently.
+If one peer disconnects, lacks needed pieces, or sends a bad piece, the engine
+tries other discovered peers. Storage, allocation, and progress callback
+failures stop the attempt immediately. If the available peers lack needed
+pieces, the queue can retry later so newly discovered peers may complete it.
 
 This is an early compatibility slice. The local `.torrent` probe previews up to
 1,000 files within a conservative 128 KiB escaped-response budget and reports

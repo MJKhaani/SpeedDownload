@@ -247,7 +247,7 @@ fn transferValidated(
         if (first_peer) |peer| {
             try checkControl(control, control_context);
             transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
-                if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
+                if (!canTryAnotherPeer(err)) return err;
                 last_error = err;
             };
         }
@@ -261,7 +261,7 @@ fn transferValidated(
                 try checkControl(control, control_context);
                 if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
                 transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
-                    if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused) return err;
+                    if (!canTryAnotherPeer(err)) return err;
                     last_error = err;
                     continue;
                 };
@@ -284,6 +284,37 @@ fn transferValidated(
         file_open = false;
         cwd.deleteFile(io, part_path) catch {};
     }
+}
+
+// A failed peer can be replaced; local storage and callback failures must
+// reach the queue unchanged instead of being hidden by later peer attempts.
+fn canTryAnotherPeer(err: anyerror) bool {
+    return switch (err) {
+        error.InvalidPeerAddress,
+        error.PeerHandshakeMismatch,
+        error.PeerClosed,
+        error.PeerChoked,
+        error.PeerMissingPieces,
+        error.PeerPieceUnavailable,
+        error.UnexpectedPeerPiece,
+        error.InvalidPeerHave,
+        error.InvalidPeerBitfield,
+        error.PeerMessageTooLarge,
+        error.TorrentPieceHashMismatch,
+        error.ConnectionResetByPeer,
+        error.ConnectionTimedOut,
+        error.ConnectionRefused,
+        error.NetworkUnreachable,
+        error.HostUnreachable,
+        error.NetworkDown,
+        error.SocketUnconnected,
+        error.EndOfStream,
+        error.BrokenPipe,
+        error.Timeout,
+        error.WriteFailed,
+        => true,
+        else => false,
+    };
 }
 
 fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.FileMap, info_hash: [20]u8, destination: []const u8, selected_files: ?[]const []const u8, needed_bytes: u64, callback: ?ProgressCallback, context: ?*anyopaque) !void {
