@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer request.parsed.deinit();
 
-    const settings = client.call(allocator, init, "settings.get", "{}") catch {
+    const settings = settingsWithEngineStart(allocator, init) catch {
         try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Speed Download engine is unavailable" });
         return;
     };
@@ -70,6 +70,31 @@ pub fn main(init: std.process.Init) !void {
     };
     defer job_id.parsed.deinit();
     try reply(allocator, init.io, .{ .version = 1, .ok = true, .job_id = job_id.id });
+}
+
+fn settingsWithEngineStart(allocator: std.mem.Allocator, init: std.process.Init) ![]u8 {
+    return client.call(allocator, init, "settings.get", "{}") catch |err| {
+        if (err != error.EndpointUnavailable) return err;
+        const host_path = try std.process.executablePathAlloc(init.io, allocator);
+        defer allocator.free(host_path);
+        const helper_path = try std.fs.path.join(allocator, &.{ std.fs.path.dirname(host_path) orelse return error.InvalidHostPath, "speed-download" });
+        defer allocator.free(helper_path);
+        // Native messaging can only wake the engine shipped beside this host.
+        // Never resolve an engine through PATH or browser-controlled input.
+        _ = try std.process.spawn(init.io, .{
+            .argv = &.{ helper_path, "engine" },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        for (0..80) |_| {
+            std.Io.sleep(init.io, .fromMilliseconds(50), .awake) catch {};
+            if (client.call(allocator, init, "settings.get", "{}")) |settings| return settings else |retry_err| {
+                if (retry_err != error.EndpointUnavailable) return retry_err;
+            }
+        }
+        return error.EndpointUnavailable;
+    };
 }
 
 const Request = struct {

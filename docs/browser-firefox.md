@@ -18,8 +18,10 @@ bash macos/SpeedDownload/package-app.sh
 bash extensions/firefox/install-macos.sh "dist/Speed Download.app"
 ```
 
-Set the default download folder in Speed Download Settings → Downloads and
-keep the GUI or engine running. For local development, load
+Set the default download folder in Speed Download Settings → Downloads. The
+native host connects to a running engine or starts the engine bundled in the
+same app when it is closed, then waits briefly for its per-user IPC endpoint.
+The GUI does not need to be open. For local development, load
 `extensions/firefox/manifest.json` as a temporary extension through Firefox's
 `about:debugging` page. The extension shows **OK** on its toolbar badge after
 the engine accepts a link, or **!** if handoff fails. Browser installation,
