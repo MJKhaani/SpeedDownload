@@ -34,6 +34,10 @@ the filesystem reports as already present under a different spelling. File
 creation is exclusive, so case or Unicode normalization collisions fail before
 the staged tree is published. Inspection rejects a file layout where one file
 path is also a parent directory of another.
+During assembly, the engine checks queue schedule, pause, and cancel requests
+after 8 MiB of copied data or 128 files, and again before publication. If interrupted,
+it discards the private staging tree; the verified flat spool remains available
+for pause or scheduled resume, and cancel removes it through the queue worker.
 
 The engine also inspects BitTorrent v1 magnet URIs with
 `speed-download magnet-info 'magnet:?xt=urn:btih:…&dn=…&tr=…&x.pe=host:port'`.

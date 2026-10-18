@@ -144,19 +144,21 @@ fn transferValidated(
     try file.sync(io);
     if (callback) |report| if (context) |ctx| try report(ctx, info.total_bytes, info.total_bytes, true);
     try http_download.verifySha256(io, file, expected_sha256);
+    if (callback) |report| if (context) |ctx| try report(ctx, info.total_bytes, info.total_bytes, true);
     if (info.single_file) {
         file.close(io);
         file_open = false;
         try http_download.publishNoReplace(cwd, io, part_path, destination);
     } else {
-        try publishFileTree(allocator, io, file, map, info.info_hash, destination);
+        try publishFileTree(allocator, io, file, map, info.info_hash, destination, callback, context);
         file.close(io);
         file_open = false;
         cwd.deleteFile(io, part_path) catch {};
     }
 }
 
-fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.FileMap, info_hash: [20]u8, destination: []const u8) !void {
+fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.FileMap, info_hash: [20]u8, destination: []const u8, callback: ?ProgressCallback, context: ?*anyopaque) !void {
+    if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
     const cwd = Io.Dir.cwd();
     const stage = try std.fmt.allocPrint(allocator, "{s}.part-tree", .{destination});
     defer allocator.free(stage);
@@ -191,6 +193,8 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
     var created_dirs = std.StringHashMap(void).init(allocator);
     defer created_dirs.deinit();
     var buffer: [64 * 1024]u8 = undefined;
+    var bytes_since_check: usize = 0;
+    var files_since_check: usize = 0;
     for (map.files) |entry| {
         if (std.mem.eql(u8, entry.path, ".speed-download-stage") or std.mem.startsWith(u8, entry.path, ".speed-download-stage/")) return error.ReservedTorrentPath;
         var search_from: usize = 0;
@@ -216,12 +220,23 @@ fn publishFileTree(allocator: Allocator, io: Io, spool: Io.File, map: metainfo.F
             if (try spool.readPositionalAll(io, buffer[0..amount], entry.offset + copied) != amount) return error.ShortPartialFileRead;
             try output.writeStreamingAll(io, buffer[0..amount]);
             copied += amount;
+            bytes_since_check += amount;
+            if (bytes_since_check >= 8 * 1024 * 1024) {
+                if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
+                bytes_since_check = 0;
+            }
         }
         try output.sync(io);
         output.close(io);
+        files_since_check += 1;
+        if (files_since_check >= 128) {
+            if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
+            files_since_check = 0;
+        }
     }
     stage_dir.close(io);
     stage_dir_open = false;
+    if (callback) |report| if (context) |ctx| try report(ctx, map.total_bytes, map.total_bytes, true);
     try Io.Dir.renamePreserve(cwd, stage, cwd, destination, io);
     stage_owned = false;
     const published_marker = try std.fmt.allocPrint(allocator, "{s}/.speed-download-stage", .{destination});
