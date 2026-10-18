@@ -7,6 +7,9 @@ pub const Result = struct {
     display_name: ?[]u8,
     trackers: [][]u8,
     peers: [][]u8,
+    /// Exclusive URL indices for BEP 12 tiers. Zero means one flat tier.
+    tracker_tier_ends: [32]u8 = @splat(0),
+    tracker_tier_count: u8 = 0,
 
     pub fn deinit(self: *Result, allocator: Allocator) void {
         if (self.display_name) |name| allocator.free(name);

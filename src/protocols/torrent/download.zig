@@ -139,13 +139,14 @@ pub fn downloadTorrentFileSelectedWithStats(
     const info = try metainfo.inspect(allocator, bytes);
     const map = try metainfo.inspectFileMap(allocator, bytes);
     defer map.deinit(allocator);
-    const trackers = try metainfo.trackerUrls(allocator, io, info);
+    const tracker_list = try metainfo.trackerUrls(allocator, io, info);
+    const trackers = tracker_list.urls;
     const peers = allocator.alloc([]u8, 0) catch |err| {
         for (trackers) |tracker| allocator.free(tracker);
         allocator.free(trackers);
         return err;
     };
-    var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
+    var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers, .tracker_tier_ends = tracker_list.tier_ends, .tracker_tier_count = tracker_list.tier_count };
     defer link.deinit(allocator);
     var session = try metadata.Session.init(io);
     try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context, stats, stats_context);

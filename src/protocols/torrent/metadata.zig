@@ -46,11 +46,53 @@ pub const Session = struct {
     }
 
     fn markAnnounced(self: *Session, tracker: []const u8) void {
-        if (self.hasAnnounced(tracker) or self.announced_count == self.announced_trackers.len) return;
+        for (self.announced_trackers[0..self.announced_count], 0..) |announced, index| {
+            if (!std.mem.eql(u8, announced, tracker)) continue;
+            // Keep the most recently successful tracker last. Later announce
+            // passes can promote it within its original BEP 12 tier.
+            var position = index;
+            while (position + 1 < self.announced_count) : (position += 1)
+                self.announced_trackers[position] = self.announced_trackers[position + 1];
+            self.announced_trackers[self.announced_count - 1] = tracker;
+            return;
+        }
+        if (self.announced_count == self.announced_trackers.len) return;
         self.announced_trackers[self.announced_count] = tracker;
         self.announced_count += 1;
     }
 };
+
+fn trackerOrder(link: *const magnet.Result, session: *const Session) [32]u8 {
+    var order: [32]u8 = @splat(0);
+    var next: usize = 0;
+    var start: usize = 0;
+    const tier_count: usize = if (link.tracker_tier_count == 0) 1 else link.tracker_tier_count;
+    for (0..tier_count) |tier| {
+        const end: usize = if (link.tracker_tier_count == 0) link.trackers.len else link.tracker_tier_ends[tier];
+        var preferred: ?usize = null;
+        var recent = session.announced_count;
+        while (recent > 0 and preferred == null) {
+            recent -= 1;
+            for (start..end) |index| {
+                if (std.mem.eql(u8, link.trackers[index], session.announced_trackers[recent])) {
+                    preferred = index;
+                    break;
+                }
+            }
+        }
+        if (preferred) |index| {
+            order[next] = @intCast(index);
+            next += 1;
+        }
+        for (start..end) |index| {
+            if (preferred != null and preferred.? == index) continue;
+            order[next] = @intCast(index);
+            next += 1;
+        }
+        start = end;
+    }
+    return order;
+}
 
 pub fn fetch(allocator: Allocator, io: Io, link: *const magnet.Result) ![]u8 {
     const found = try fetchWithSource(allocator, io, link);
@@ -105,7 +147,9 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         errdefer allocator.free(bytes);
         return .{ .info = bytes, .peer = try allocator.dupe(u8, peer) };
     }
-    for (link.trackers) |tracker| {
+    const order = trackerOrder(link, session);
+    for (order[0..link.trackers.len]) |index| {
+        const tracker = link.trackers[index];
         try checkpoint(control, control_context);
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
@@ -170,7 +214,9 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
     if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), .{});
     var last_tracker_error: ?anyerror = null;
     var tracker_responded = false;
-    for (link.trackers) |tracker| {
+    const order = trackerOrder(link, session);
+    for (order[0..link.trackers.len]) |index| {
+        const tracker = link.trackers[index];
         try checkpoint(control, control_context);
         if (peers.items.len == max_peers) break;
         const parsed = std.Uri.parse(tracker) catch continue;

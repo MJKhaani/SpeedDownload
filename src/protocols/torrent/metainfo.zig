@@ -426,10 +426,18 @@ fn validateFileDirectoryLayout(allocator: Allocator, files: []const FileEntry) !
     }
 }
 
-/// Return owned tracker URLs from BEP 12 tiers, or the primary announce URL
-/// when no tier list exists. The caller frees each URL and the outer slice.
-pub fn trackerUrls(allocator: Allocator, io: Io, info: Result) ![][]u8 {
+pub const TrackerList = struct {
+    urls: [][]u8,
+    tier_ends: [32]u8 = @splat(0),
+    tier_count: u8 = 0,
+};
+
+/// Return owned tracker URLs and their BEP 12 tier boundaries. The caller
+/// frees each URL and the outer slice.
+pub fn trackerUrls(allocator: Allocator, io: Io, info: Result) !TrackerList {
     var urls: std.ArrayList([]u8) = .empty;
+    var tiers: [32]u8 = @splat(0);
+    var tier_count: u8 = 0;
     errdefer {
         for (urls.items) |url| allocator.free(url);
         urls.deinit(allocator);
@@ -454,14 +462,22 @@ pub fn trackerUrls(allocator: Allocator, io: Io, info: Result) ![][]u8 {
                 const selected = tier_start + std.mem.readInt(u32, &random_bytes, .little) % @as(u32, @intCast(remaining));
                 std.mem.swap([]u8, &urls.items[tier_start + remaining - 1], &urls.items[selected]);
             }
+            if (urls.items.len > tier_start) {
+                tiers[tier_count] = @intCast(urls.items.len);
+                tier_count += 1;
+            }
         }
         try cursor.take('e');
         if (cursor.position != encoded.len) return error.InvalidTorrentTrackers;
     } else if (info.announce) |primary| {
         try appendTracker(allocator, &urls, primary);
+        if (urls.items.len != 0) {
+            tiers[0] = 1;
+            tier_count = 1;
+        }
     }
     if (urls.items.len == 0) return error.NoTorrentTrackers;
-    return urls.toOwnedSlice(allocator);
+    return .{ .urls = try urls.toOwnedSlice(allocator), .tier_ends = tiers, .tier_count = tier_count };
 }
 
 fn appendTracker(allocator: Allocator, urls: *std.ArrayList([]u8), value: []const u8) !void {
