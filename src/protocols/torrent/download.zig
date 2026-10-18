@@ -59,7 +59,7 @@ pub fn downloadWithStats(
 ) !void {
     var link = try magnet.inspect(allocator, url);
     defer link.deinit(allocator);
-    const session = try metadata.Session.init(io);
+    var session = try metadata.Session.init(io);
     const fetched = try metadata.fetchWithSourceSession(allocator, io, &link, &session, control, control_context);
     defer fetched.deinit(allocator);
     if (control) |check| if (control_context) |ctx| try check(ctx);
@@ -147,7 +147,7 @@ pub fn downloadTorrentFileSelectedWithStats(
     };
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers };
     defer link.deinit(allocator);
-    const session = try metadata.Session.init(io);
+    var session = try metadata.Session.init(io);
     try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context, stats, stats_context);
 }
 
@@ -183,7 +183,7 @@ fn transferValidated(
     selected_files: ?[]const []const u8,
     callback: ?ProgressCallback,
     context: ?*anyopaque,
-    session: *const metadata.Session,
+    session: *metadata.Session,
     control: ?metadata.CheckpointCallback,
     control_context: ?*anyopaque,
     stats: ?metadata.StatsCallback,

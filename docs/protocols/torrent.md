@@ -72,6 +72,9 @@ with the same peer ID and key, and keeps peers from either successful response.
 Each transfer attempt also reuses that peer ID and key across metadata
 discovery, HTTP(S)/UDP tracker announces, and TCP peer handshakes. A new
 attempt after pause or restart creates a new session identity.
+The session sends `started` on its first successful HTTP(S) or UDP announce
+to each tracker. Later announces to that tracker use the ordinary event. A
+failed request leaves the tracker eligible for a `started` retry.
 Queued magnet and local `.torrent` workers check pause, cancel, and queue
 schedule state between tracker and peer attempts, during metadata retrieval,
 and while waiting for payload peer messages. A blocked socket read can still
