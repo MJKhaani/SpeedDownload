@@ -69,6 +69,10 @@ HTTP(S) trackers may return compact IPv4 `peers`, IPv6 `peers6`, or BEP 3
 accepts IPv4 and IPv6 responses according to the tracker socket's address
 family. For dual-stack hostnames, it announces to one address of each family
 with the same peer ID and key, and keeps peers from either successful response.
+UDP tracker connect and announce requests are retried once after a timeout;
+replies from another sender or transaction are ignored. A tracker error reply
+is reported as a rejection rather than a malformed response. If both attempts
+time out, the queued job treats the timeout as a retryable network failure.
 Each transfer attempt also reuses that peer ID and key across metadata
 discovery, HTTP(S)/UDP tracker announces, and TCP peer handshakes. A new
 attempt after pause or restart creates a new session identity.

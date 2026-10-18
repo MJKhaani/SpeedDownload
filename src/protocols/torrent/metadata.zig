@@ -282,7 +282,6 @@ fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAdd
     };
     const socket = try local.bind(io, .{ .mode = .dgram });
     defer socket.close(io);
-    const udp_timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
     var transaction_bytes: [4]u8 = undefined;
     try io.randomSecure(&transaction_bytes);
     const connect_transaction = std.mem.readInt(u32, &transaction_bytes, .big);
@@ -290,14 +289,10 @@ fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAdd
     std.mem.writeInt(u64, connect[0..8], 0x41727101980, .big);
     std.mem.writeInt(u32, connect[8..12], 0, .big);
     std.mem.writeInt(u32, connect[12..16], connect_transaction, .big);
-    try socket.sendTimeout(io, &address, &connect, udp_timeout);
     var response_buffer: [2048]u8 = undefined;
-    const connected = try socket.receiveTimeout(io, &response_buffer, udp_timeout);
-    if (connected.flags.trunc or !std.meta.eql(connected.from, address) or connected.data.len < 16 or
-        std.mem.readInt(u32, connected.data[0..4], .big) != 0 or
-        std.mem.readInt(u32, connected.data[4..8], .big) != connect_transaction)
-        return error.InvalidTrackerResponse;
-    const connection_id = std.mem.readInt(u64, connected.data[8..16], .big);
+    const connected = try udpTrackerExchange(&socket, io, &address, &connect, 0, connect_transaction, &response_buffer);
+    if (connected.len < 16) return error.InvalidTrackerResponse;
+    const connection_id = std.mem.readInt(u64, connected[8..16], .big);
 
     try io.randomSecure(&transaction_bytes);
     const announce_transaction = std.mem.readInt(u32, &transaction_bytes, .big);
@@ -312,20 +307,38 @@ fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAdd
     std.mem.writeInt(u32, announce[80..84], if (started) 2 else 0, .big);
     @memcpy(announce[88..92], &session.key);
     std.mem.writeInt(u32, announce[92..96], 50, .big);
-    try socket.sendTimeout(io, &address, &announce, udp_timeout);
-    const received = try socket.receiveTimeout(io, &response_buffer, udp_timeout);
+    const received = try udpTrackerExchange(&socket, io, &address, &announce, 1, announce_transaction, &response_buffer);
     const stride: usize = if (address == .ip4) 6 else 18;
-    if (received.flags.trunc or !std.meta.eql(received.from, address) or received.data.len < 20 or
-        std.mem.readInt(u32, received.data[0..4], .big) != 1 or
-        std.mem.readInt(u32, received.data[4..8], .big) != announce_transaction or
-        (received.data.len - 20) % stride != 0)
+    if (received.len < 20 or (received.len - 20) % stride != 0)
         return error.InvalidTrackerResponse;
-    counts.leechers = std.mem.readInt(u32, received.data[12..16], .big);
-    counts.seeders = std.mem.readInt(u32, received.data[16..20], .big);
+    counts.leechers = std.mem.readInt(u32, received[12..16], .big);
+    counts.seeders = std.mem.readInt(u32, received[16..20], .big);
     return if (address == .ip4)
-        peersFromCompact(allocator, received.data[20..])
+        peersFromCompact(allocator, received[20..])
     else
-        peersFromCompact6(allocator, received.data[20..]);
+        peersFromCompact6(allocator, received[20..]);
+}
+
+fn udpTrackerExchange(socket: *const Io.net.Socket, io: Io, address: *const Io.net.IpAddress, request: []const u8, action: u32, transaction: u32, buffer: []u8) ![]const u8 {
+    const delays_ms = [_]i64{ 5_000, 10_000 };
+    for (delays_ms) |delay_ms| {
+        const wait: Io.Timeout = (Io.Timeout{ .duration = .{ .raw = .fromMilliseconds(delay_ms), .clock = .awake } }).toDeadline(io);
+        try socket.sendTimeout(io, address, request, wait);
+        var ignored: usize = 0;
+        while (ignored < 4) : (ignored += 1) {
+            const packet = socket.receiveTimeout(io, buffer, wait) catch |err| switch (err) {
+                error.Timeout => break,
+                else => return err,
+            };
+            if (packet.flags.trunc or !std.meta.eql(packet.from, address.*) or packet.data.len < 8) continue;
+            if (std.mem.readInt(u32, packet.data[4..8], .big) != transaction) continue;
+            const response_action = std.mem.readInt(u32, packet.data[0..4], .big);
+            if (response_action == 3) return error.TrackerRejected;
+            if (response_action != action) return error.InvalidTrackerResponse;
+            return packet.data;
+        }
+    }
+    return error.Timeout;
 }
 
 fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_hash: [20]u8, downloaded: u64, left: u64, session: *Session, counts: *TrackerCounts) ![][]u8 {

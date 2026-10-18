@@ -542,6 +542,7 @@ fn retryableDownloadError(err: anyerror) bool {
     return switch (err) {
         error.ConnectionResetByPeer,
         error.ConnectionTimedOut,
+        error.Timeout,
         error.ConnectionRefused,
         error.NetworkUnreachable,
         error.HostUnreachable,
