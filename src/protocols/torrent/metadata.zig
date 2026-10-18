@@ -150,12 +150,19 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
         };
     }
     if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), .{});
+    var last_tracker_error: ?anyerror = null;
+    var tracker_responded = false;
     for (link.trackers) |tracker| {
         try checkpoint(control, control_context);
         if (peers.items.len == max_peers) break;
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
-        const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session, &counts) catch continue;
+        const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session, &counts) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            last_tracker_error = err;
+            continue;
+        };
+        tracker_responded = true;
         defer allocator.free(discovered);
         peers.ensureUnusedCapacity(allocator, @min(discovered.len, max_peers - peers.items.len)) catch |err| {
             for (discovered) |peer| allocator.free(peer);
@@ -170,6 +177,7 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
         }
         if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
     }
+    if (peers.items.len == 0 and !tracker_responded) return last_tracker_error orelse error.NoTorrentPeers;
     return peers.toOwnedSlice(allocator);
 }
 

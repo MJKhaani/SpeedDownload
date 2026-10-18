@@ -96,6 +96,11 @@ metadata. If that peer cannot continue, it announces the verified downloaded
 byte count and remaining size to trackers and tries other discovered peers.
 The transfer list removes duplicate addresses and stops asking trackers once
 it has 80 distinct peers.
+If every tracker request fails and there is no explicit peer, the transfer
+reports the last tracker error so the engine can retry transient network
+failures. A valid empty tracker response still means no peers are currently
+available. Peers from successful trackers remain usable when another tracker
+fails.
 While a transfer is active, the engine reports the number of distinct
 discovered peer addresses (capped at 80). HTTP and UDP tracker responses may
 also supply seeder and leecher counts; these are the most recent successful
