@@ -17,12 +17,23 @@ browser.contextMenus.onClicked.addListener(async (info) => {
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) {
       throw new Error("Only public HTTP and HTTPS links are supported");
     }
-    result = await browser.runtime.sendNativeMessage(HOST, {
+    const request = {
       version: 1,
       action: "add",
       url: info.linkUrl,
       idempotency_key: crypto.randomUUID(),
-    });
+    };
+    try {
+      result = await browser.runtime.sendNativeMessage(HOST, request);
+    } catch (firstError) {
+      // The host may have persisted the job before its reply was lost. Reuse
+      // the same key so the engine returns that job instead of creating another.
+      try {
+        result = await browser.runtime.sendNativeMessage(HOST, request);
+      } catch {
+        throw firstError;
+      }
+    }
     if (!result || result.version !== 1 || result.ok !== true) {
       throw new Error(result?.error_message || "Speed Download rejected the link");
     }

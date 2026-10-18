@@ -7,7 +7,10 @@ a bundled native host. The host accepts only the extension ID declared in
 rejects credentials and fragments in URLs, reads the engine's saved default
 download folder, and calls only `settings.get` and `jobs.add` through the
 existing per-user IPC. The engine persists the job before the host acknowledges
-it. No cookies, authorization headers, page text, or arbitrary IPC methods are
+it. If the native-message connection breaks, the extension retries once with
+the same idempotency key so an acknowledged or uncertain submission cannot
+create a duplicate job. Explicit engine rejections are reported without a
+retry. No cookies, authorization headers, page text, or arbitrary IPC methods are
 passed from Firefox.
 
 Build the macOS bundle, place it at its intended final path, then register the
