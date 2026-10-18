@@ -2,6 +2,7 @@
 //! filesystem writes are performed here.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 pub const max_metainfo_bytes = 8 * 1024 * 1024;
 const max_depth = 32;
@@ -427,7 +428,7 @@ fn validateFileDirectoryLayout(allocator: Allocator, files: []const FileEntry) !
 
 /// Return owned tracker URLs from BEP 12 tiers, or the primary announce URL
 /// when no tier list exists. The caller frees each URL and the outer slice.
-pub fn trackerUrls(allocator: Allocator, info: Result) ![][]u8 {
+pub fn trackerUrls(allocator: Allocator, io: Io, info: Result) ![][]u8 {
     var urls: std.ArrayList([]u8) = .empty;
     errdefer {
         for (urls.items) |url| allocator.free(url);
@@ -440,11 +441,19 @@ pub fn trackerUrls(allocator: Allocator, info: Result) ![][]u8 {
         while (cursor.position < encoded.len and encoded[cursor.position] != 'e') {
             try cursor.count();
             try cursor.take('l');
+            const tier_start = urls.items.len;
             while (cursor.position < encoded.len and encoded[cursor.position] != 'e') {
                 const value = try cursor.string();
                 try appendTracker(allocator, &urls, value);
             }
             try cursor.take('e');
+            var remaining = urls.items.len - tier_start;
+            while (remaining > 1) : (remaining -= 1) {
+                var random_bytes: [4]u8 = undefined;
+                try io.randomSecure(&random_bytes);
+                const selected = tier_start + std.mem.readInt(u32, &random_bytes, .little) % @as(u32, @intCast(remaining));
+                std.mem.swap([]u8, &urls.items[tier_start + remaining - 1], &urls.items[selected]);
+            }
         }
         try cursor.take('e');
         if (cursor.position != encoded.len) return error.InvalidTorrentTrackers;

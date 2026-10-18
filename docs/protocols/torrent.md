@@ -23,8 +23,8 @@ job is deleted.
 The parser accepts up to 32 distinct usable tracker URLs and ignores the
 primary `announce` when an `announce-list` is present, following
 [BEP 12](https://www.bittorrent.org/beps/bep_0012.html). It visits tiers in
-file order; within-tier shuffling and successful-tracker promotion are not
-implemented. Multi-file downloads assemble the verified flat piece spool into
+file order and shuffles usable URLs within each tier on each transfer attempt.
+Successful-tracker promotion is not implemented. Multi-file downloads assemble the verified flat piece spool into
 a private staging directory, then publish the complete tree without replacing
 an existing destination. A piece that crosses file boundaries is copied into
 both files only after its SHA-1 hash is verified. A stale staging directory is

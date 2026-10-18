@@ -139,7 +139,7 @@ pub fn downloadTorrentFileSelectedWithStats(
     const info = try metainfo.inspect(allocator, bytes);
     const map = try metainfo.inspectFileMap(allocator, bytes);
     defer map.deinit(allocator);
-    const trackers = try metainfo.trackerUrls(allocator, info);
+    const trackers = try metainfo.trackerUrls(allocator, io, info);
     const peers = allocator.alloc([]u8, 0) catch |err| {
         for (trackers) |tracker| allocator.free(tracker);
         allocator.free(trackers);
