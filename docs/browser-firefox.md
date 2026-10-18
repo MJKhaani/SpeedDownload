@@ -13,6 +13,10 @@ create a duplicate job. Explicit engine rejections are reported without a
 retry. No cookies, authorization headers, page text, or arbitrary IPC methods are
 passed from Firefox.
 
+The toolbar popup checks whether the native host can reach the engine. This
+read-only check does not start the engine or create a job. A context-menu link
+handoff starts the bundled engine if needed.
+
 Build the macOS bundle, place it at its intended final path, then register the
 host for the current user:
 
@@ -27,7 +31,8 @@ same app when it is closed, then waits briefly for its per-user IPC endpoint.
 The engine starts in its own process group so it can outlive Firefox's
 one-message native host. The GUI does not need to be open. For local development, load
 `extensions/firefox/manifest.json` as a temporary extension through Firefox's
-`about:debugging` page. The extension shows **OK** on its toolbar badge after
+`about:debugging` page. Clicking its toolbar button shows connection status;
+the extension shows **OK** on its toolbar badge after
 the engine accepts a link, or **!** if handoff fails. Browser installation,
 extension signing, upgrade, and live-browser verification have not been done.
 If the app is moved, rerun `install-macos.sh` with its new path. The installer

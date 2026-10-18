@@ -36,10 +36,23 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(message);
     const request = parseRequest(allocator, message) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Invalid link handoff" });
+        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Invalid native request" });
         return;
     };
     defer request.parsed.deinit();
+    if (request.action == .status) {
+        const current = client.call(allocator, init, "settings.get", "{}") catch |err| {
+            if (err == error.EndpointUnavailable) {
+                try reply(allocator, init.io, .{ .version = 1, .ok = true, .engine_running = false });
+            } else {
+                try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Could not contact the engine" });
+            }
+            return;
+        };
+        defer allocator.free(current);
+        try reply(allocator, init.io, .{ .version = 1, .ok = true, .engine_running = true });
+        return;
+    }
 
     const settings = settingsWithEngineStart(allocator, init) catch {
         try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Speed Download engine is unavailable" });
@@ -53,9 +66,9 @@ pub fn main(init: std.process.Init) !void {
     defer destination.parsed.deinit();
 
     const params = try std.json.Stringify.valueAlloc(allocator, .{
-        .url = request.url,
+        .url = request.url.?,
         .destination = destination.folder,
-        .idempotency_key = request.key,
+        .idempotency_key = request.key.?,
         .priority = @as(i32, 0),
     }, .{});
     defer allocator.free(params);
@@ -102,27 +115,34 @@ fn settingsWithEngineStart(allocator: std.mem.Allocator, init: std.process.Init)
 
 const Request = struct {
     parsed: std.json.Parsed(std.json.Value),
-    url: []const u8,
-    key: []const u8,
+    action: enum { add, status },
+    url: ?[]const u8 = null,
+    key: ?[]const u8 = null,
 };
 
 fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, message, .{});
     errdefer parsed.deinit();
-    if (parsed.value != .object or parsed.value.object.count() != 4) return error.InvalidRequest;
+    if (parsed.value != .object) return error.InvalidRequest;
     const object = parsed.value.object;
     const version = object.get("version") orelse return error.InvalidRequest;
     const action = object.get("action") orelse return error.InvalidRequest;
+    if (version != .integer or version.integer != 1 or action != .string) return error.InvalidRequest;
+    if (std.mem.eql(u8, action.string, "status")) {
+        if (object.count() != 2) return error.InvalidRequest;
+        return .{ .parsed = parsed, .action = .status };
+    }
+    if (!std.mem.eql(u8, action.string, "add") or object.count() != 4) return error.InvalidRequest;
     const url = object.get("url") orelse return error.InvalidRequest;
     const key = object.get("idempotency_key") orelse return error.InvalidRequest;
-    if (version != .integer or version.integer != 1 or action != .string or !std.mem.eql(u8, action.string, "add") or url != .string or key != .string)
+    if (url != .string or key != .string)
         return error.InvalidRequest;
     if (url.string.len == 0 or url.string.len > 8192 or !validUuid(key.string)) return error.InvalidRequest;
     const uri = std.Uri.parse(url.string) catch return error.InvalidRequest;
     if (!(std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or uri.fragment != null)
         return error.InvalidRequest;
-    return .{ .parsed = parsed, .url = url.string, .key = key.string };
+    return .{ .parsed = parsed, .action = .add, .url = url.string, .key = key.string };
 }
 
 fn validUuid(value: []const u8) bool {
@@ -186,6 +206,7 @@ const Reply = struct {
     version: u8,
     ok: bool,
     job_id: ?[]const u8 = null,
+    engine_running: ?bool = null,
     error_message: ?[]const u8 = null,
 };
 
