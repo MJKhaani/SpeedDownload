@@ -120,7 +120,7 @@ pub fn pipeName(allocator: Allocator) ![:0]u16 {
 }
 
 pub fn serve(allocator: Allocator, config: Config) !void {
-    var engine = unix_service.EngineContext{ .allocator = allocator, .io = config.jobs.io, .jobs = config.jobs };
+    var engine = unix_service.EngineContext{ .allocator = allocator, .io = config.jobs.io, .jobs = config.jobs, .engine_instance_id = config.server.engine_instance_id, .started_ns = std.Io.Clock.now(.awake, config.jobs.io).nanoseconds };
     const identity = try currentIdentity(allocator);
     defer allocator.free(identity.sid);
     const pipe_name_utf8 = try std.fmt.allocPrint(allocator, "\\\\.\\pipe\\SpeedDownload-{s}-{d}", .{ identity.sid, identity.session_id });

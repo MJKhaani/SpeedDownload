@@ -50,6 +50,8 @@ pub const EngineContext = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     jobs: *job_store.Store,
+    engine_instance_id: []const u8,
+    started_ns: i96,
     active_workers: std.atomic.Value(u32) = .init(0),
     active_clients: std.atomic.Value(u32) = .init(0),
     bandwidth_mutex: std.Io.Mutex = .init,
@@ -80,7 +82,7 @@ pub fn serve(allocator: std.mem.Allocator, config: Config) !void {
 }
 
 fn serveUnix(allocator: std.mem.Allocator, config: Config) !void {
-    var engine = EngineContext{ .allocator = allocator, .io = config.jobs.io, .jobs = config.jobs };
+    var engine = EngineContext{ .allocator = allocator, .io = config.jobs.io, .jobs = config.jobs, .engine_instance_id = config.server.engine_instance_id, .started_ns = std.Io.Clock.now(.awake, config.jobs.io).nanoseconds };
     var paths = try makePaths(allocator, config);
     defer paths.deinit(allocator);
 
@@ -218,6 +220,11 @@ pub fn dispatchMethod(
     const jobs = engine.jobs;
     jobs.logAction(loggedMethod(method), "received");
     defer jobs.logAction(loggedMethod(method), "finished");
+    if (std.mem.eql(u8, method, "engine.status")) {
+        const id = request_id orelse return null;
+        const elapsed = std.Io.Clock.now(.awake, engine.io).nanoseconds - engine.started_ns;
+        return @as(?[]u8, try jobs.statusJson(id, engine.engine_instance_id, @intCast(@max(0, @divTrunc(elapsed, std.time.ns_per_s)))));
+    }
     if (std.mem.eql(u8, method, "jobs.list")) {
         const page = parseListPage(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         if (request_id) |id| return @as(?[]u8, try jobs.listJson(id, page.offset, page.limit));
@@ -417,7 +424,7 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "jobs.list", "jobs.wait", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "jobs.list", "jobs.wait", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";

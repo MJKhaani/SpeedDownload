@@ -470,6 +470,29 @@ pub const Store = struct {
         }, .{});
     }
 
+    pub fn statusJson(self: *Store, request_id: std.json.Value, engine_instance_id: []const u8, uptime_seconds: u64) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var active: usize = 0;
+        var waiting: usize = 0;
+        var paused: usize = 0;
+        for (self.jobs.items) |job| switch (job.state) {
+            .resolving, .connecting, .downloading, .verifying => active += 1,
+            .queued, .scheduled, .retry_wait => waiting += 1,
+            .paused => paused += 1,
+            else => {},
+        };
+        return std.json.Stringify.valueAlloc(self.allocator, .{
+            .jsonrpc = "2.0",
+            .id = request_id,
+            .result = .{
+                .engine_instance_id = engine_instance_id,
+                .uptime_seconds = uptime_seconds,
+                .jobs = .{ .total = self.jobs.items.len, .active = active, .waiting = waiting, .paused = paused },
+            },
+        }, .{});
+    }
+
     pub fn addJson(self: *Store, request_id: std.json.Value, input: AddInput) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

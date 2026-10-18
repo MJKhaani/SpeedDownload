@@ -59,6 +59,7 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | Method | Client→server | Response | Security / semantics |
 |---|---|---|---|
 | `engine.hello` | Version + client capabilities | Negotiated version + engine ID | First method on every connection |
+| `engine.status` | `{}` | Engine instance ID, uptime in seconds, and total/active/waiting/paused job counts | No job URLs or credentials; available through `speed-download rpc status` |
 | `engine.status` | `{}` | Engine uptime/capabilities/state | No secrets, never leaks credentials |
 | `jobs.list` | Pagination/safe filters | Authoritative job summaries + revision | Bounded page size |
 | `jobs.wait` | In-memory change cursor | New cursor + changed flag, within 5 seconds | Bounded long poll; client fetches a fresh `jobs.list` snapshot when changed |
