@@ -156,7 +156,8 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         var counts: TrackerCounts = .{};
         const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session, &counts) catch |err| {
             if (err == error.OutOfMemory) return err;
-            last_error = err;
+            if (counts.retry_delay_seconds != null) if (stats) |report| if (stats_context) |ctx| report(ctx, 0, counts);
+            if (err == error.TrackerRetryRequested or last_error != error.TrackerRetryRequested) last_error = err;
             continue;
         };
         defer {
@@ -225,7 +226,8 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
         var counts: TrackerCounts = .{};
         const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session, &counts) catch |err| {
             if (err == error.OutOfMemory) return err;
-            last_tracker_error = err;
+            if (counts.retry_delay_seconds != null) if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
+            if (err == error.TrackerRetryRequested or last_tracker_error == null or last_tracker_error.? != error.TrackerRetryRequested) last_tracker_error = err;
             continue;
         };
         tracker_responded = true;
@@ -434,7 +436,7 @@ fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_has
         try bytes.appendSlice(allocator, chunk[0..amount]);
     }
     complete = true;
-    const compact = try parseTrackerPeers(bytes.items);
+    const compact = try parseTrackerPeers(bytes.items, &counts.retry_delay_seconds);
     session.markAnnounced(tracker);
     counts.* = compact.counts;
     var peers = try peersFromCompact(allocator, compact.ipv4);
@@ -565,10 +567,12 @@ fn percentEncode(bytes: []const u8) [60]u8 {
 
 const CompactPeers = struct { ipv4: []const u8 = "", ipv6: []const u8 = "", expanded: []const u8 = "", has_peers: bool = false, counts: TrackerCounts = .{} };
 
-fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
+fn parseTrackerPeers(bytes: []const u8, retry_delay_seconds: *?u32) !CompactPeers {
     if (bytes.len < 2 or bytes[0] != 'd') return error.InvalidTrackerResponse;
     var cursor: usize = 1;
     var peers: CompactPeers = .{};
+    var failed = false;
+    var retry_never = false;
     while (cursor < bytes.len and bytes[cursor] != 'e') {
         const key = try parseString(bytes, &cursor);
         if (std.mem.eql(u8, key, "peers")) {
@@ -590,10 +594,37 @@ fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
             peers.counts.leechers = std.math.cast(u32, try parseUnsigned(bytes, &cursor)) orelse return error.InvalidTrackerResponse;
         } else if (std.mem.eql(u8, key, "failure reason")) {
             _ = try parseString(bytes, &cursor);
-            return error.TrackerRejected;
+            failed = true;
+        } else if (std.mem.eql(u8, key, "retry in")) {
+            if (cursor < bytes.len and bytes[cursor] == 'i') {
+                const minutes = @min(try parseUnsigned(bytes, &cursor), 60);
+                retry_delay_seconds.* = @max(@as(u32, 1), @as(u32, @intCast(minutes)) * 60);
+            } else {
+                const value = try parseString(bytes, &cursor);
+                if (std.mem.eql(u8, value, "never")) {
+                    retry_never = true;
+                } else {
+                    if (value.len == 0) return error.InvalidTrackerResponse;
+                    var minutes: u32 = 0;
+                    for (value) |digit| {
+                        if (!std.ascii.isDigit(digit)) return error.InvalidTrackerResponse;
+                        minutes = @min(minutes *| 10 +| (digit - '0'), 60);
+                    }
+                    retry_delay_seconds.* = @max(@as(u32, 1), minutes * 60);
+                }
+            }
         } else try skipValue(bytes, &cursor, 0);
     }
     if (cursor + 1 != bytes.len) return error.InvalidTrackerResponse;
+    if (failed) {
+        if (retry_never) {
+            retry_delay_seconds.* = null;
+            return error.TrackerRejected;
+        }
+        if (retry_delay_seconds.* != null) return error.TrackerRetryRequested;
+        return error.TrackerRejected;
+    }
+    retry_delay_seconds.* = null;
     if (!peers.has_peers) return error.NoTrackerPeers;
     if (peers.ipv4.len % 6 != 0 or peers.ipv6.len % 18 != 0) return error.InvalidTrackerResponse;
     return peers;

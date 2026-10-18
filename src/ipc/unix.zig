@@ -565,6 +565,7 @@ fn retryableDownloadError(err: anyerror) bool {
         error.FtpServerBusy,
         error.NoReachablePeer,
         error.NoTrackerPeers,
+        error.TrackerRetryRequested,
         error.NoTorrentPeers,
         error.NoPeerHasPieces,
         error.PeerMissingPieces,

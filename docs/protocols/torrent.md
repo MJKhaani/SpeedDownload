@@ -80,6 +80,9 @@ time out, the queued job treats the timeout as a retryable network failure.
 Successful HTTP(S) and UDP tracker responses also supply a bounded interval
 hint to the queue. If the transfer later fails transiently, its next attempt
 waits at least as long as the largest interval received (up to one hour).
+An HTTP(S) tracker failure with the BEP 31 `retry in` value schedules a
+bounded retry after the specified minutes; `retry in=never` stays a permanent
+rejection. Other tracker URLs can still be tried in the current attempt.
 Each transfer attempt also reuses that peer ID and key across metadata
 discovery, HTTP(S)/UDP tracker announces, and TCP peer handshakes. A new
 attempt after pause or restart creates a new session identity.
