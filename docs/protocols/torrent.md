@@ -77,6 +77,9 @@ UDP tracker connect and announce requests are retried once after a timeout;
 replies from another sender or transaction are ignored. A tracker error reply
 is reported as a rejection rather than a malformed response. If both attempts
 time out, the queued job treats the timeout as a retryable network failure.
+Successful HTTP(S) and UDP tracker responses also supply a bounded interval
+hint to the queue. If the transfer later fails transiently, its next attempt
+waits at least as long as the largest interval received (up to one hour).
 Each transfer attempt also reuses that peer ID and key across metadata
 discovery, HTTP(S)/UDP tracker announces, and TCP peer handshakes. A new
 attempt after pause or restart creates a new session identity.

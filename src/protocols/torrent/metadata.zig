@@ -113,6 +113,7 @@ pub const Fetched = struct {
 pub const TrackerCounts = struct {
     seeders: ?u32 = null,
     leechers: ?u32 = null,
+    retry_delay_seconds: ?u32 = null,
 };
 
 pub const StatsCallback = *const fn (*anyopaque, u32, TrackerCounts) void;
@@ -121,13 +122,13 @@ pub const StatsCallback = *const fn (*anyopaque, u32, TrackerCounts) void;
 /// owned slices must be released by the caller.
 pub fn fetchWithSource(allocator: Allocator, io: Io, link: *const magnet.Result) !Fetched {
     var session = try Session.init(io);
-    return fetchWithSourceSession(allocator, io, link, &session, null, null);
+    return fetchWithSourceSession(allocator, io, link, &session, null, null, null, null);
 }
 
 /// Fetch metadata while allowing an engine worker to stop between network
 /// attempts and peer frames. Pass both callback and context to enable checks;
 /// callback errors are returned unchanged. The returned buffers are caller-owned.
-pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.Result, session: *Session, control: ?CheckpointCallback, control_context: ?*anyopaque) !Fetched {
+pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.Result, session: *Session, control: ?CheckpointCallback, control_context: ?*anyopaque, stats: ?StatsCallback, stats_context: ?*anyopaque) !Fetched {
     var last_error: anyerror = error.NoReachablePeer;
     var attempted = std.StringHashMap(void).init(allocator);
     defer {
@@ -162,6 +163,7 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
             for (peers) |peer| allocator.free(peer);
             allocator.free(peers);
         }
+        if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.len), counts);
         for (peers) |peer| {
             try checkpoint(control, control_context);
             if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
@@ -363,6 +365,7 @@ fn discoverUdpPeersAtAddress(allocator: Allocator, io: Io, address: Io.net.IpAdd
         return error.InvalidTrackerResponse;
     counts.leechers = std.mem.readInt(u32, received[12..16], .big);
     counts.seeders = std.mem.readInt(u32, received[16..20], .big);
+    counts.retry_delay_seconds = @min(std.mem.readInt(u32, received[8..12], .big), 3600);
     return if (address == .ip4)
         peersFromCompact(allocator, received[20..])
     else
@@ -578,6 +581,9 @@ fn parseTrackerPeers(bytes: []const u8) !CompactPeers {
         } else if (std.mem.eql(u8, key, "peers6")) {
             peers.has_peers = true;
             peers.ipv6 = try parseString(bytes, &cursor);
+        } else if (std.mem.eql(u8, key, "interval") or std.mem.eql(u8, key, "min interval")) {
+            const seconds = @min(try parseUnsigned(bytes, &cursor), 3600);
+            peers.counts.retry_delay_seconds = @max(peers.counts.retry_delay_seconds orelse 0, @as(u32, @intCast(seconds)));
         } else if (std.mem.eql(u8, key, "complete")) {
             peers.counts.seeders = std.math.cast(u32, try parseUnsigned(bytes, &cursor)) orelse return error.InvalidTrackerResponse;
         } else if (std.mem.eql(u8, key, "incomplete")) {

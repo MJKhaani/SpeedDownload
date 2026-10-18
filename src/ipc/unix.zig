@@ -466,9 +466,9 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     };
     defer engine.allocator.free(destination);
 
-    var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id };
-    if (isTorrentFileUrl(task.url) or isMagnetUrl(task.url)) engine.jobs.resetTorrentStats(task.id);
     var retry_hint: @import("../protocols/http/retry_after.zig").Hint = .init(0);
+    var progress = DownloadProgressContext{ .engine = engine, .job_id = task.id, .retry_hint = &retry_hint };
+    if (isTorrentFileUrl(task.url) or isMagnetUrl(task.url)) engine.jobs.resetTorrentStats(task.id);
     const transfer = if (isTorrentFileUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedTorrentProxy;
         break :blk downloadStoredTorrent(engine, task, destination, &progress);
@@ -535,6 +535,11 @@ fn checkTorrentControl(context: *anyopaque) @import("../protocols/torrent/metada
 
 fn updateTorrentStats(context: *anyopaque, peers: u32, counts: @import("../protocols/torrent/metadata.zig").TrackerCounts) void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    if (counts.retry_delay_seconds) |seconds| {
+        const hint = progress.retry_hint orelse unreachable;
+        const current = hint.load(.acquire);
+        if (seconds > current) hint.store(seconds, .release);
+    }
     progress.engine.jobs.updateTorrentStats(progress.job_id, peers, counts.seeders, counts.leechers);
 }
 
@@ -671,6 +676,7 @@ fn deletePartial(engine: *EngineContext, destination: []const u8) void {
 const DownloadProgressContext = struct {
     engine: *EngineContext,
     job_id: []const u8,
+    retry_hint: ?*@import("../protocols/http/retry_after.zig").Hint = null,
     progress_mutex: std.Io.Mutex = .init,
     worker_updates_seen: bool = false,
     worker_downloaded: [32]u64 = @splat(0),

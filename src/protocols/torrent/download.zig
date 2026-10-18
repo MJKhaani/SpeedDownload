@@ -60,7 +60,7 @@ pub fn downloadWithStats(
     var link = try magnet.inspect(allocator, url);
     defer link.deinit(allocator);
     var session = try metadata.Session.init(io);
-    const fetched = try metadata.fetchWithSourceSession(allocator, io, &link, &session, control, control_context);
+    const fetched = try metadata.fetchWithSourceSession(allocator, io, &link, &session, control, control_context, stats, stats_context);
     defer fetched.deinit(allocator);
     if (control) |check| if (control_context) |ctx| try check(ctx);
     const wrapped = try allocator.alloc(u8, fetched.info.len + "d4:info".len + 1);
