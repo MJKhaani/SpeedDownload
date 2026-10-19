@@ -60,6 +60,10 @@ remaining range at a durable checkpoint. The original request is closed after
 its shortened head is synced; the idle worker requests only the new tail.
 If an HTTP range probe or worker receives 429 or 503, the engine saves a
 retry delay and halves that job's next-attempt connection cap, down to one.
+Automatic retries apply 75–125% jitter to their short exponential backoff so
+jobs failing together do not reconnect at the same instant. A valid
+`Retry-After` delay remains a minimum, capped at one hour; jitter never
+shortens that server-requested wait.
 If a worker receives 403 after the range probe succeeded, Automatic mode also
 uses a bounded retry with fewer connections. Fixed mode retains the configured
 count.

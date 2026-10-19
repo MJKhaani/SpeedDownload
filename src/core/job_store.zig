@@ -1049,7 +1049,14 @@ pub const Store = struct {
             if (!std.mem.eql(u8, job.id, job_id)) continue;
             if (job.state != .downloading or job.requested_control != null or job.retry_attempts >= 3) return false;
             const attempt = job.retry_attempts + 1;
-            const delay_seconds: i64 = @max(@as(i64, 1) << @intCast(attempt), @min(@as(i64, minimum_delay_seconds), 3600));
+            const backoff_seconds: i64 = @as(i64, 1) << @intCast(attempt);
+            var random_bytes: [2]u8 = undefined;
+            const jitter_permille: i64 = if (self.io.randomSecure(&random_bytes)) |_|
+                750 + @as(i64, std.mem.readInt(u16, &random_bytes, .little) % 501)
+            else |_|
+                1000;
+            const jittered_backoff = @max(@as(i64, 1), @divTrunc(backoff_seconds * jitter_permille + 999, 1000));
+            const delay_seconds: i64 = @max(jittered_backoff, @min(@as(i64, minimum_delay_seconds), 3600));
             const now_ms: i64 = @intCast(@divTrunc(std.Io.Clock.now(.real, self.io).nanoseconds, std.time.ns_per_ms));
             const next_ms = std.math.add(i64, now_ms, delay_seconds * 1000) catch return error.RetryTimeOverflow;
             const new_connections: ?u8 = if (rate_limited_connections) |count| @max(@as(u8, 1), count / 2) else job.adaptive_connections;
