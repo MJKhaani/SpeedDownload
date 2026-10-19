@@ -11,7 +11,7 @@ const max_peers = 64;
 const packet_limit = 2048;
 
 const Node = struct { id: ?[20]u8, address: Io.net.IpAddress };
-const Response = struct { nodes: []const u8 = "", nodes6: []const u8 = "", values: [64][]const u8 = undefined, values_len: usize = 0 };
+const Response = struct { id: ?[20]u8 = null, nodes: []const u8 = "", nodes6: []const u8 = "", values: [64][]const u8 = undefined, values_len: usize = 0 };
 
 pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?control_contract.CheckpointCallback, context: ?*anyopaque) ![][]u8 {
     var nodes: [max_nodes]Node = undefined;
@@ -46,6 +46,7 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
         const response = query(allocator, io, node.address, own_id, info_hash) catch continue;
         defer allocator.free(response);
         const decoded = parseResponse(response) catch continue;
+        nodes[next].id = decoded.id;
         for (decoded.values[0..decoded.values_len]) |compact| {
             if (peers.items.len == max_peers) break;
             const address = compactAddress(compact) orelse continue;
@@ -80,10 +81,12 @@ fn closestUnqueried(nodes: *const [max_nodes]Node, count: usize, queried: *const
         }
         const previous = nodes[best.?];
         if (node.id == null) {
-            if (previous.id != null) best = index;
             continue;
         }
-        if (previous.id == null) continue;
+        if (previous.id == null) {
+            best = index;
+            continue;
+        }
         for (0..20) |byte_index| {
             const candidate = node.id.?[byte_index] ^ target[byte_index];
             const selected = previous.id.?[byte_index] ^ target[byte_index];
@@ -100,7 +103,10 @@ fn addNode(nodes: *[max_nodes]Node, count: *usize, node: Node) void {
         .ip4 => |ip| if (!publicIp4(ip.bytes)) return,
         .ip6 => |ip| if (!publicIp6(ip.bytes)) return,
     }
-    for (nodes[0..count.*]) |existing| if (std.meta.eql(existing.address, node.address)) return;
+    for (nodes[0..count.*]) |*existing| if (std.meta.eql(existing.address, node.address)) {
+        if (existing.id == null) existing.id = node.id;
+        return;
+    };
     nodes[count.*] = node;
     count.* += 1;
 }
@@ -228,11 +234,12 @@ fn parseResponse(bytes: []const u8) !Response {
 fn parseResult(bytes: []const u8, cursor: *usize, result: *Response) !void {
     if (cursor.* >= bytes.len or bytes[cursor.*] != 'd') return error.InvalidDhtResponse;
     cursor.* += 1;
-    var has_id = false;
     while (cursor.* < bytes.len and bytes[cursor.*] != 'e') {
         const key = try parseString(bytes, cursor);
         if (std.mem.eql(u8, key, "id")) {
-            has_id = (try parseString(bytes, cursor)).len == 20;
+            const id = try parseString(bytes, cursor);
+            if (id.len != 20) return error.InvalidDhtResponse;
+            result.id = id[0..20].*;
         } else if (std.mem.eql(u8, key, "nodes")) {
             result.nodes = try parseString(bytes, cursor);
         } else if (std.mem.eql(u8, key, "nodes6")) {
@@ -251,7 +258,7 @@ fn parseResult(bytes: []const u8, cursor: *usize, result: *Response) !void {
             cursor.* += 1;
         } else try skip(bytes, cursor, 0);
     }
-    if (cursor.* >= bytes.len or !has_id) return error.InvalidDhtResponse;
+    if (cursor.* >= bytes.len or result.id == null) return error.InvalidDhtResponse;
     cursor.* += 1;
 }
 
