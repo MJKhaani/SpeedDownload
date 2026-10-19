@@ -9,6 +9,9 @@ interoperability has not been validated against a server matrix.
 `AUTH TLS`, validates the certificate against the platform trust store,
 logs in over TLS, then requires `PBSZ 0` and `PROT P` before transferring
 data. A server that cannot protect both channels is rejected.
+`ftps://host:990/path` selects implicit FTPS: TLS is established and the
+certificate validated before the server greeting. `AUTH TLS` is not sent on
+that port. Data connections still require private `PROT P` protection.
 
 The implementation logs in anonymously, switches to binary mode, asks for
 `SIZE` and `MDTM`, and transfers over one passive data connection. It tries
@@ -27,8 +30,8 @@ weaker change detectors than a strong HTTP ETag; a server that changes bytes
 without changing either value cannot be detected by these checks. The
 optional SHA-256 digest provides end-to-end verification when supplied.
 
-Current limits: anonymous FTP and explicit FTPS only; no credentials,
-implicit FTPS, active mode, multipart FTP, legacy non-UTF-8 path encoding,
+Current limits: anonymous FTP and FTPS only; no credentials,
+active mode, multipart FTP, legacy non-UTF-8 path encoding,
 or FTP proxy transport. A configured custom proxy fails the FTP operation
 instead of bypassing it. System proxy configuration is currently applied
 to HTTP and HTTPS; FTP and FTPS connect directly. Plain FTP and FTPS control

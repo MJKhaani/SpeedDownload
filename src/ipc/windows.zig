@@ -8,6 +8,7 @@
 const std = @import("std");
 const windows = std.os.windows;
 const protocol = @import("root.zig");
+const subscription = @import("subscription.zig");
 const frame = @import("frame.zig");
 const job_store = @import("../core/job_store.zig");
 const unix_service = @import("unix.zig");
@@ -94,6 +95,14 @@ extern "kernel32" fn WriteFile(
     bytes_to_write: u32,
     bytes_written: *u32,
     overlapped: ?*anyopaque,
+) callconv(.winapi) i32;
+extern "kernel32" fn PeekNamedPipe(
+    pipe: windows.HANDLE,
+    buffer: ?[*]u8,
+    buffer_size: u32,
+    bytes_read: ?*u32,
+    available: ?*u32,
+    bytes_left_this_message: ?*u32,
 ) callconv(.winapi) i32;
 extern "advapi32" fn OpenProcessToken(process: windows.HANDLE, access: u32, token: *windows.HANDLE) callconv(.winapi) i32;
 extern "advapi32" fn GetTokenInformation(
@@ -231,6 +240,9 @@ fn handleClientThread(allocator: Allocator, pipe: windows.HANDLE, server: unix_s
 
 fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_service.ServerIdentity, engine: *unix_service.EngineContext) !void {
     var session = protocol.Session{ .dispatch = unix_service.dispatchMethod, .context = @ptrCast(engine) };
+    var active_subscription: ?subscription.Started = null;
+    defer if (active_subscription) |item| item.deinit(allocator);
+    var event_sequence: u64 = 0;
     var request_frame = try allocator.alloc(u8, frame.header_bytes + frame.max_payload_bytes);
     defer allocator.free(request_frame);
     var header: [frame.header_bytes]u8 = undefined;
@@ -244,6 +256,21 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
     };
 
     while (true) {
+        if (active_subscription) |*item| {
+            var available: u32 = 0;
+            if (PeekNamedPipe(pipe, null, 0, null, &available, null) == 0) return;
+            if (available == 0) {
+                Sleep(item.interval_ms);
+                const cursor = engine.jobs.changeCursor();
+                if (cursor == item.cursor) continue;
+                event_sequence += 1;
+                const notice = try subscription.eventFrame(allocator, item.id, server.engine_instance_id, event_sequence, cursor);
+                defer allocator.free(notice);
+                try writeAll(pipe, notice);
+                item.cursor = cursor;
+                continue;
+            }
+        }
         try readExact(pipe, &header);
         const length = std.mem.readInt(u32, &header, .little);
         if (length == 0 or length > frame.max_payload_bytes) return;
@@ -255,9 +282,26 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
             request_frame[0 .. frame.header_bytes + length],
             server_info,
         );
+        const started = subscription.started(allocator, request_frame[frame.header_bytes .. frame.header_bytes + length], result.response_frame) catch |err| {
+            if (result.response_frame) |response| allocator.free(response);
+            return err;
+        };
         if (result.response_frame) |response| {
-            defer allocator.free(response);
-            try writeAll(pipe, response);
+            writeAll(pipe, response) catch |err| {
+                allocator.free(response);
+                if (started) |item| item.deinit(allocator);
+                return err;
+            };
+            allocator.free(response);
+        }
+        if (active_subscription != null and session.subscription_id == null) {
+            active_subscription.?.deinit(allocator);
+            active_subscription = null;
+        }
+        if (started) |item| {
+            active_subscription = item;
+            session.subscription_id = item.id;
+            event_sequence = 0;
         }
     }
 }

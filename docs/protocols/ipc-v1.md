@@ -1,6 +1,6 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, macOS/Linux Unix transport with same-UID checks, Windows named-pipe source with a user/session DACL, and persistent `jobs.add`/`jobs.list`/`jobs.get`/`jobs.control`/`jobs.set-bandwidth`/`jobs.reorder`/`jobs.delete` RPCs are implemented. The listener is reachable via `speed-download engine`; `jobs.control` starts, pauses, resumes, retries, and cancels jobs. `jobs.set-bandwidth` changes a saved per-job speed cap while a transfer is active; `jobs.reorder` changes the persisted FIFO position of inactive jobs; `jobs.delete` removes an inactive job record and optionally its partial data, without deleting a completed destination file. Linux GTK and Windows WinUI client source is present. Windows and Linux engines cross-compile for x86_64; their runtime and native client validation remain pending. Event subscriptions are not implemented.
+- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, macOS/Linux Unix transport with same-UID checks, Windows named-pipe source with a user/session DACL, and persistent `jobs.add`/`jobs.list`/`jobs.get`/`jobs.control`/`jobs.set-bandwidth`/`jobs.reorder`/`jobs.delete` RPCs are implemented. The listener is reachable via `speed-download engine`; `jobs.control` starts, pauses, resumes, retries, and cancels jobs. `jobs.set-bandwidth` changes a saved per-job speed cap while a transfer is active; `jobs.reorder` changes the persisted FIFO position of inactive jobs; `jobs.delete` removes an inactive job record and optionally its partial data, without deleting a completed destination file. Linux GTK and Windows WinUI client source is present. Windows and Linux engines cross-compile for x86_64; their runtime and native client validation remain pending. A bounded invalidation subscription stream is implemented; the macOS client consumes it when available, while per-job deltas and Linux/Windows native client adoption remain pending.
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
@@ -34,13 +34,13 @@ The first request on each connection **MUST** be `engine.hello`. Until successfu
 Example request (`id` correlates only request and response):
 
 ```json
-{"jsonrpc":"2.0","id":"hello-1","method":"engine.hello","params":{"protocol":{"major":1,"minor":0},"client":{"kind":"macos-gui","version":"0.1.0"},"features":["jobs.subscribe"]}}
+{"jsonrpc":"2.0","id":"hello-1","method":"engine.hello","params":{"protocol":{"major":1,"minor":0},"client":{"kind":"macos-gui","version":"0.1.0"},"features":["jobs.change-stream-v1"]}}
 ```
 
 Example response:
 
 ```json
-{"jsonrpc":"2.0","id":"hello-1","result":{"protocol":{"major":1,"minor":0},"engine_version":"0.1.0","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","features":["jobs.subscribe"],"session_id":"a89d9a74-94d3-459a-8248-7ea8caa449bc"}}
+{"jsonrpc":"2.0","id":"hello-1","result":{"protocol":{"major":1,"minor":0},"engine_version":"0.1.0","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","features":["jobs.change-stream-v1"],"session_id":"a89d9a74-94d3-459a-8248-7ea8caa449bc"}}
 ```
 
 IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` changes on every daemon start; `session_id` is one connection session and is not an authentication token. API implementations must not use version strings or client-supplied `kind` as a basis for authorization.
@@ -71,8 +71,8 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `jobs.delete` | `job_id`, `expected_revision`, optional `delete_partial` | Deleted job identifier | Reject active jobs and stale revisions; preserve completed destination files; partial file cleanup is opt-in |
 | `jobs.start` / `jobs.pause` / `jobs.resume` / `jobs.retry` | `job_id`, key, optional `expected_revision` | Updated job state/revision | Valid state transitions, idempotent operations |
 | `jobs.cancel` | `job_id`, explicit partial-file policy | Final state | Never conflate pause with deleting partial data |
-| `jobs.subscribe` | Optional filters, refresh/coalescing hints | `subscription_id`, initial snapshot and cursor | Atomic snapshot-to-event boundary, bounded resources |
-| `jobs.unsubscribe` | `subscription_id` | Confirmation | Clean subscriber state |
+| `jobs.subscribe` | Optional `max_updates_per_second` (1–10) | `subscription_id`, first 20 job summaries, total, next offset, and cursor | Dedicated connection; atomic first page and cursor; bounded invalidation notices |
+| `jobs.unsubscribe` | `subscription_id` | Confirmation | Must be sent on the same connection; closing it also unsubscribes |
 | `settings.get` | Scopes | Redacted public settings | No credentials in snapshots |
 | `settings.update` | Changed fields, key and expected revision | New revision | Validate settings and authorize sensitive changes |
 | `schedule.set` | Rule, key, expected revision | Stored rule/revision | Time-zone and DST rules apply |
@@ -96,7 +96,7 @@ report `range_supported: false` and `multipart_supported: false`. FTP resume
 is reported only when the server provides `SIZE`, `MDTM`, and `REST`. The FTP
 transfer uses one passive data connection. A configured custom proxy fails
 FTP operations; system proxy mode currently leaves FTP and FTPS direct.
-Authenticated FTP, implicit FTPS, and FTP proxy transport are not available yet.
+Authenticated FTP and FTP proxy transport are not available yet. `ftps://` uses explicit TLS by default; port 990 selects implicit TLS before the server greeting.
 
 The `torrents.magnet-v1-single-file` feature indicates that `jobs.probe` and
 `jobs.add` accept v1 `magnet:` links on the Unix engine. The probe returns
@@ -158,7 +158,7 @@ Transient connection and truncated-response errors may put a job in `retry_wait`
 
 The engine reevaluates the queue window every five seconds and immediately after settings changes or a new job. Outside an active window, queued jobs become scheduled and active HTTP transfers stop at the next progress callback, retaining their partial data. They resume through the normal queue when the window opens. The global download bandwidth setting is shared across HTTP workers and jobs, with the scheduled limit selected by the current local hour. A job's own cap is applied independently; both caps remain effective. A changed connection default applies when a job starts; resumed segmented transfers run no more than that many workers concurrently.
 
-`jobs.wait` is an interim change signal used by the macOS client while full `jobs.subscribe` notifications are pending. The client sends a decimal-string `cursor`; the engine waits up to five seconds and returns `{ "cursor": "...", "changed": true|false }`. A cursor of `"0"` returns the current cursor immediately. Change detection is in memory and includes live received-byte and worker updates; it does not replace persisted job revisions. The client must reset its cursor after reconnecting to a new engine instance, then fetch authoritative pages with `jobs.list`. Wait checks are coalesced to 200 ms. The 30-second IPC socket timeout bounds a stalled client separately.
+`jobs.wait` remains an interim change signal used by the macOS client. The client sends a decimal-string `cursor`; the engine waits up to five seconds and returns `{ "cursor": "...", "changed": true|false }`. A cursor of `"0"` returns the current cursor immediately. Change detection is in memory and includes live received-byte and worker updates; it does not replace persisted job revisions. The client must reset its cursor after reconnecting to a new engine instance, then fetch authoritative pages with `jobs.list`. Wait checks are coalesced to 200 ms. The 30-second IPC socket timeout bounds a stalled client separately.
 
 ## 5. Example: idempotent download creation
 
@@ -177,22 +177,22 @@ The server persists the job and deduplication key before returning success. Repl
 **Subscription request:**
 
 ```json
-{"jsonrpc":"2.0","id":"sub-1","method":"jobs.subscribe","params":{"filters":{"states":["downloading","verifying"]},"max_updates_per_second":5}}
+{"jsonrpc":"2.0","id":"sub-1","method":"jobs.subscribe","params":{"max_updates_per_second":5}}
 ```
 
 **Server response:**
 
 ```json
-{"jsonrpc":"2.0","id":"sub-1","result":{"subscription_id":"sub-41","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","cursor":"1","snapshot":{"jobs":[{"job_id":"83b16cf2-6dba-4c3f-8511-3c365b89a4d0","state":"downloading","bytes_done":"4194304","total_bytes":"10485760","revision":"9"}]}}}
+{"jsonrpc":"2.0","id":"sub-1","result":{"subscription_id":"sub-41","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","cursor":"1","interval_ms":200,"snapshot":{"jobs":[],"total":"0","next_offset":null}}}
 ```
 
 **Event notification:**
 
 ```json
-{"jsonrpc":"2.0","method":"events.changed","params":{"subscription_id":"sub-41","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","seq":"2","changes":[{"job_id":"83b16cf2-6dba-4c3f-8511-3c365b89a4d0","revision":"10","bytes_done":"5242880","bytes_per_second":734003.2}]}}
+{"jsonrpc":"2.0","method":"events.changed","params":{"subscription_id":"sub-41","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","seq":"1","cursor":"2","resync_required":true}}
 ```
 
-The server must atomically establish the subscription cursor and snapshot. On that connection, serialize the initial response **before** subscription event notifications, then produce contiguous sequence numbers for *emitted* events (sequence count increments after event coalescing, not for every internal progress sample). If a gap, daemon ID change, protocol mismatch, or buffer-overflow resync condition occurs, the client replaces its cache using a new `jobs.subscribe` snapshot. UI rendering should normally be 5–10 Hz or slower for busy lists. Disconnecting a slow subscriber may be preferable to unbounded buffering; never block transfer workers.
+The engine atomically captures the first 20 job summaries and cursor. Clients fetch additional pages with `jobs.list` on a separate connection. The subscription connection sends invalidation notices at no more than the requested rate; each notice has a contiguous emitted-event sequence, the latest cursor, and `resync_required: true`. Fetch authoritative pages after each notice. Send `jobs.unsubscribe` on the same connection or close it to unsubscribe. The transport has a bounded write timeout and disconnects a slow subscriber; transfer workers never write to clients. Per-job deltas and filters are still pending.
 
 ## 7. Errors
 

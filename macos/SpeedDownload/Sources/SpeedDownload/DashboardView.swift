@@ -138,7 +138,7 @@ struct DashboardView: View {
             .navigationSubtitle("Manage and monitor your transfers")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await engine.maintainConnection() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    Button { Task { await engine.refreshJobs() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button { incomingDownloadURL = ""; showingAddDownload = true } label: {

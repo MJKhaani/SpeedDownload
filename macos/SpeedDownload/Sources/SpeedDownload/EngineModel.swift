@@ -24,6 +24,9 @@ final class EngineModel: ObservableObject {
     private var isConnecting = false
     private var hasLoadedSnapshot = false
     private var jobCursor = "0"
+    private var jobSubscription: JobSubscription?
+    private var supportsJobStream = false
+    private var isMaintainingConnection = false
 
     private var isConnected: Bool {
         if case .connected = state { true } else { false }
@@ -46,6 +49,8 @@ final class EngineModel: ObservableObject {
             guard currentAttempt == attempt else { return }
             applyJobs(snapshot.1)
             jobCursor = "0"
+            jobSubscription = nil
+            supportsJobStream = snapshot.0.supportedFeatures.contains("jobs.change-stream-v1")
             state = .connected(engineVersion: snapshot.0.engineVersion, instanceID: snapshot.0.engineInstanceID, sessionID: snapshot.0.sessionID)
             Task { _ = try? await self.loadSettings() }
         } catch {
@@ -309,9 +314,26 @@ final class EngineModel: ObservableObject {
     }
 
     func maintainConnection() async {
+        guard !isMaintainingConnection else { return }
+        isMaintainingConnection = true
+        defer { isMaintainingConnection = false }
         if isConnected {
             let connectionAttempt = attempt
             do {
+                if supportsJobStream {
+                    if jobSubscription == nil {
+                        jobSubscription = try await Task.detached(priority: .utility) {
+                            try UnixEngineClient().subscribeToJobs()
+                        }.value
+                    }
+                    guard let subscription = jobSubscription else { return }
+                    let event = try await Task.detached(priority: .utility) {
+                        try subscription.nextEvent()
+                    }.value
+                    guard isConnected, connectionAttempt == attempt else { return }
+                    if event != nil { await refreshJobs() }
+                    return
+                }
                 let cursor = jobCursor
                 let change = try await Task.detached(priority: .utility) {
                     try UnixEngineClient().waitForJobChange(after: cursor)
@@ -320,7 +342,10 @@ final class EngineModel: ObservableObject {
                 jobCursor = change.cursor
                 if change.changed { await refreshJobs() }
             } catch {
-                if connectionAttempt == attempt { state = .disconnected(error.localizedDescription) }
+                if connectionAttempt == attempt {
+                    jobSubscription = nil
+                    state = .disconnected(error.localizedDescription)
+                }
             }
         } else {
             await connect()

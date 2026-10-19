@@ -64,6 +64,9 @@ const Control = struct {
     fn init(self: *Control, io: Io, stream: Io.net.Stream) void {
         self.io = io;
         self.stream = stream;
+        self.secure = null;
+        self.read_position = 0;
+        self.read_end = 0;
         self.writer = stream.writer(io, &self.write_buffer);
     }
 
@@ -156,6 +159,10 @@ fn isFtps(uri: std.Uri) bool {
     return std.ascii.eqlIgnoreCase(uri.scheme, "ftps");
 }
 
+fn isImplicitFtps(uri: std.Uri) bool {
+    return isFtps(uri) and uri.port == 990;
+}
+
 fn tlsHost(uri: std.Uri, host: FtpHost) []const u8 {
     return switch (host) {
         .name => |name| name.bytes,
@@ -203,8 +210,9 @@ pub fn download(
     var control: Control = undefined;
     control.init(io, control_stream);
     defer control.close(allocator);
+    if (isImplicitFtps(uri)) if (trust) |*value| try control.enableTls(allocator, tlsHost(uri, host), value);
     try welcomeReply(&control);
-    if (trust) |*value| try secureControl(&control, allocator, uri, host, value);
+    if (!isImplicitFtps(uri)) if (trust) |*value| try secureControl(&control, allocator, uri, host, value);
     try login(&control);
     if (trust != null) try protectData(&control);
 
@@ -385,8 +393,9 @@ pub fn inspect(allocator: Allocator, io: Io, url: []const u8) !ProbeResult {
     var control: Control = undefined;
     control.init(io, stream);
     defer control.close(allocator);
+    if (isImplicitFtps(uri)) if (trust) |*value| try control.enableTls(allocator, tlsHost(uri, host), value);
     try welcomeReply(&control);
-    if (trust) |*value| try secureControl(&control, allocator, uri, host, value);
+    if (!isImplicitFtps(uri)) if (trust) |*value| try secureControl(&control, allocator, uri, host, value);
     try login(&control);
     if (trust != null) try protectData(&control);
     const metadata = try inspectMetadata(&control, path);

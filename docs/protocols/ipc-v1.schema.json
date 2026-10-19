@@ -9,6 +9,8 @@
     { "$ref": "#/$defs/jobsList" },
     { "$ref": "#/$defs/jobsGet" },
     { "$ref": "#/$defs/jobsWait" },
+    { "$ref": "#/$defs/jobsSubscribe" },
+    { "$ref": "#/$defs/jobsUnsubscribe" },
     { "$ref": "#/$defs/jobsAdd" },
     { "$ref": "#/$defs/jobsControl" },
     { "$ref": "#/$defs/jobsSetBandwidth" },
@@ -110,6 +112,28 @@
           "method": { "const": "jobs.wait" },
           "params": { "type": "object", "required": ["cursor"], "properties": {
             "cursor": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20 }
+          }, "additionalProperties": false }
+        } }
+      ]
+    },
+    "jobsSubscribe": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.subscribe" },
+          "params": { "type": "object", "properties": {
+            "max_updates_per_second": { "type": "integer", "minimum": 1, "maximum": 10 }
+          }, "additionalProperties": false }
+        } }
+      ]
+    },
+    "jobsUnsubscribe": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.unsubscribe" },
+          "params": { "type": "object", "required": ["subscription_id"], "properties": {
+            "subscription_id": { "type": "string", "minLength": 1, "maxLength": 64 }
           }, "additionalProperties": false }
         } }
       ]

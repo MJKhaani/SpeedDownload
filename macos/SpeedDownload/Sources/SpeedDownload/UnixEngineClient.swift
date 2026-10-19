@@ -82,6 +82,69 @@ struct JobChangeResult: Decodable, Sendable {
     let changed: Bool
 }
 
+struct JobSubscriptionEvent: Decodable, Sendable {
+    let subscriptionID: String
+    let engineInstanceID: String
+    let seq: String
+    let cursor: String
+    let resyncRequired: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case subscriptionID = "subscription_id"
+        case engineInstanceID = "engine_instance_id"
+        case seq, cursor
+        case resyncRequired = "resync_required"
+    }
+}
+
+/// Owns one authenticated connection. EngineModel gives it a single reader.
+final class JobSubscription: @unchecked Sendable {
+    private let fd: Int32
+    let id: String
+    let engineInstanceID: String
+    private var lastSequence: UInt64 = 0
+
+    init(fd: Int32, id: String, engineInstanceID: String) {
+        self.fd = fd
+        self.id = id
+        self.engineInstanceID = engineInstanceID
+    }
+
+    deinit { Darwin.close(fd) }
+
+    func nextEvent() throws -> JobSubscriptionEvent? {
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let ready = Darwin.poll(&descriptor, 1, 5_000)
+        guard ready >= 0 else { throw ClientError.posix(String(cString: strerror(errno))) }
+        if ready == 0 { return nil }
+        let data = try UnixEngineClient.readFrame(fd: fd)
+        let notice = try JSONDecoder().decode(SubscriptionNotification.self, from: data)
+        guard notice.method == "events.changed",
+              notice.params.subscriptionID == id,
+              notice.params.engineInstanceID == engineInstanceID,
+              let sequence = UInt64(notice.params.seq), sequence == lastSequence + 1 else {
+            throw ClientError.invalidResponse
+        }
+        lastSequence = sequence
+        return notice.params
+    }
+}
+
+private struct SubscriptionNotification: Decodable {
+    let method: String
+    let params: JobSubscriptionEvent
+}
+
+private struct JobSubscriptionResult: Decodable, Sendable {
+    let subscriptionID: String
+    let engineInstanceID: String
+
+    enum CodingKeys: String, CodingKey {
+        case subscriptionID = "subscription_id"
+        case engineInstanceID = "engine_instance_id"
+    }
+}
+
 struct DownloadProbe: Decodable, Sendable {
     struct TorrentFile: Decodable, Sendable {
         let path: String
@@ -230,6 +293,27 @@ struct UnixEngineClient: Sendable {
         return result
     }
 
+    func subscribeToJobs() throws -> JobSubscription {
+        let fd = try openConnection()
+        do {
+            let hello = try negotiate(fd: fd)
+            guard hello.supportedFeatures.contains("jobs.change-stream-v1") else { throw ClientError.engineOutdated }
+            let envelope: RPCEnvelope<JobSubscriptionResult> = try request(
+                fd: fd,
+                id: "jobs-subscribe-\(UUID().uuidString)",
+                method: "jobs.subscribe",
+                params: ["max_updates_per_second": 5]
+            )
+            guard let result = envelope.result, result.engineInstanceID == hello.engineInstanceID else {
+                throw ClientError.invalidResponse
+            }
+            return JobSubscription(fd: fd, id: result.subscriptionID, engineInstanceID: result.engineInstanceID)
+        } catch {
+            Darwin.close(fd)
+            throw error
+        }
+    }
+
     func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
@@ -371,7 +455,7 @@ struct UnixEngineClient: Sendable {
             params: [
                 "protocol": ["major": 1, "minor": 0],
                 "client": ["kind": "macos-gui", "version": "0.1.0"],
-                "features": ["jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules", "torrents.file-selection-v1"],
+                "features": ["jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.change-stream-v1", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules", "torrents.file-selection-v1"],
             ]
         )
         guard let result = envelope.result else { throw ClientError.invalidResponse }
@@ -460,6 +544,14 @@ struct UnixEngineClient: Sendable {
             }
         }
         return data
+    }
+
+    fileprivate static func readFrame(fd: Int32) throws -> Data {
+        let client = UnixEngineClient()
+        let header = try client.readExactly(fd: fd, count: 4)
+        let length = header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).littleEndian }
+        guard length > 0, Int(length) <= client.maxFrameSize else { throw ClientError.invalidFrame }
+        return try client.readExactly(fd: fd, count: Int(length))
     }
 
     private func posixError() -> ClientError {

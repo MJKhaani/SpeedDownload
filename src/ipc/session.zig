@@ -18,6 +18,7 @@ pub const DispatchFn = *const fn (
 
 pub const Session = struct {
     negotiated: bool = false,
+    subscription_id: ?[]const u8 = null,
     dispatch: ?DispatchFn = null,
     context: ?*anyopaque = null,
 
@@ -77,6 +78,24 @@ pub const Session = struct {
         }
 
         if (std.mem.eql(u8, method.string, "engine.hello")) return invalidRequest(allocator, id);
+        if (std.mem.eql(u8, method.string, "jobs.subscribe") and self.subscription_id != null) {
+            if (!has_id) return null;
+            return try errorResponse(allocator, id.?, -32031, "Already subscribed on this connection");
+        }
+        if (std.mem.eql(u8, method.string, "jobs.unsubscribe")) {
+            if (!has_id) return null;
+            const value = request.get("params") orelse return try errorResponse(allocator, id.?, -32602, "Invalid params");
+            if (value != .object or value.object.count() != 1) return try errorResponse(allocator, id.?, -32602, "Invalid params");
+            const requested = value.object.get("subscription_id") orelse return try errorResponse(allocator, id.?, -32602, "Invalid params");
+            if (requested != .string or self.subscription_id == null or !std.mem.eql(u8, requested.string, self.subscription_id.?))
+                return try errorResponse(allocator, id.?, -32030, "Subscription not found on this connection");
+            self.subscription_id = null;
+            return try std.json.Stringify.valueAlloc(allocator, .{
+                .jsonrpc = "2.0",
+                .id = id.?,
+                .result = .{ .subscription_id = requested.string, .unsubscribed = true },
+            }, .{});
+        }
         if (self.dispatch) |dispatch| {
             const response = try dispatch(allocator, id, method.string, request.get("params"), self.context);
             if (!has_id) {

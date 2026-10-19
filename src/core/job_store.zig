@@ -474,6 +474,32 @@ pub const Store = struct {
         return error.JobNotFound;
     }
 
+    pub fn subscribeJson(self: *Store, request_id: std.json.Value, subscription_id: []const u8, engine_instance_id: []const u8, interval_ms: u16) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var summaries: std.ArrayList(Summary) = .empty;
+        defer summaries.deinit(self.allocator);
+        defer for (summaries.items) |summary| freeSummary(self.allocator, summary);
+        const page_end = @min(self.jobs.items.len, 20);
+        for (self.jobs.items[0..page_end]) |*job| try summaries.append(self.allocator, try makeSummary(self.allocator, job));
+        const cursor = try std.fmt.allocPrint(self.allocator, "{d}", .{self.change_sequence.load(.acquire)});
+        defer self.allocator.free(cursor);
+        const total = try std.fmt.allocPrint(self.allocator, "{d}", .{self.jobs.items.len});
+        defer self.allocator.free(total);
+        const next_offset: ?[]const u8 = if (page_end < self.jobs.items.len) "20" else null;
+        return std.json.Stringify.valueAlloc(self.allocator, .{
+            .jsonrpc = "2.0",
+            .id = request_id,
+            .result = .{
+                .subscription_id = subscription_id,
+                .engine_instance_id = engine_instance_id,
+                .cursor = cursor,
+                .interval_ms = interval_ms,
+                .snapshot = .{ .jobs = summaries.items, .total = total, .next_offset = next_offset },
+            },
+        }, .{});
+    }
+
     pub fn statusJson(self: *Store, request_id: std.json.Value, engine_instance_id: []const u8, uptime_seconds: u64) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const frame = @import("frame.zig");
 const protocol = @import("root.zig");
+const subscription = @import("subscription.zig");
 const job_store = @import("../core/job_store.zig");
 const posix_stat = @import("../core/posix_stat.zig");
 const http_probe = @import("../protocols/http/probe.zig");
@@ -65,6 +66,7 @@ pub const EngineContext = struct {
     started_ns: i96,
     active_workers: std.atomic.Value(u32) = .init(0),
     active_clients: std.atomic.Value(u32) = .init(0),
+    next_subscription_id: std.atomic.Value(u64) = .init(1),
     bandwidth_mutex: std.Io.Mutex = .init,
     bandwidth_next_ns: i96 = 0,
     bandwidth_current_limit: u64 = 0,
@@ -186,6 +188,9 @@ fn handleClient(allocator: std.mem.Allocator, client: c.fd_t, server: ServerIden
 
 fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdentity, engine: *EngineContext) !void {
     var session = protocol.Session{ .dispatch = dispatchMethod, .context = @ptrCast(engine) };
+    var active_subscription: ?subscription.Started = null;
+    defer if (active_subscription) |item| item.deinit(allocator);
+    var event_sequence: u64 = 0;
     var header: [4]u8 = undefined;
     const request_frame = try allocator.alloc(u8, frame.header_bytes + frame.max_payload_bytes);
     defer allocator.free(request_frame);
@@ -198,6 +203,21 @@ fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdent
         .supported_features = server.supported_features,
     };
     while (true) {
+        if (active_subscription) |*item| {
+            var descriptor = [_]c.pollfd{.{ .fd = fd, .events = @intCast(c.POLL.IN), .revents = 0 }};
+            const ready = c.poll(&descriptor, 1, item.interval_ms);
+            if (ready < 0) return Error.SystemCallFailed;
+            if (ready == 0) {
+                const cursor = engine.jobs.changeCursor();
+                if (cursor == item.cursor) continue;
+                event_sequence += 1;
+                const notice = try subscription.eventFrame(allocator, item.id, server.engine_instance_id, event_sequence, cursor);
+                defer allocator.free(notice);
+                try writeAll(fd, notice);
+                item.cursor = cursor;
+                continue;
+            }
+        }
         readExact(fd, &header) catch return;
         const length = std.mem.readInt(u32, &header, .little);
         if (length == 0 or length > frame.max_payload_bytes) return;
@@ -210,12 +230,26 @@ fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdent
             request_frame[0 .. frame.header_bytes + length],
             server_info,
         ) catch return;
+        const started = subscription.started(allocator, request_frame[frame.header_bytes .. frame.header_bytes + length], result.response_frame) catch |err| {
+            if (result.response_frame) |response_frame| allocator.free(response_frame);
+            return err;
+        };
         if (result.response_frame) |response_frame| {
             writeAll(fd, response_frame) catch {
                 allocator.free(response_frame);
+                if (started) |item| item.deinit(allocator);
                 return;
             };
             allocator.free(response_frame);
+        }
+        if (active_subscription != null and session.subscription_id == null) {
+            active_subscription.?.deinit(allocator);
+            active_subscription = null;
+        }
+        if (started) |item| {
+            active_subscription = item;
+            session.subscription_id = item.id;
+            event_sequence = 0;
         }
     }
 }
@@ -251,6 +285,20 @@ pub fn dispatchMethod(
             if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
             return err;
         };
+    }
+    if (std.mem.eql(u8, method, "jobs.subscribe")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object or value.object.count() > 1) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        var max_rate: u16 = 5;
+        if (value.object.get("max_updates_per_second")) |rate| {
+            if (rate != .integer or rate.integer < 1 or rate.integer > 10) return dispatchError(allocator, request_id, -32602, "Invalid update rate");
+            max_rate = @intCast(rate.integer);
+        } else if (value.object.count() != 0) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const number = engine.next_subscription_id.fetchAdd(1, .monotonic);
+        const subscription_id = try std.fmt.allocPrint(allocator, "sub-{d}", .{number});
+        defer allocator.free(subscription_id);
+        return @as(?[]u8, try jobs.subscribeJson(id, subscription_id, engine.engine_instance_id, @divTrunc(1000 + max_rate - 1, max_rate)));
     }
     if (std.mem.eql(u8, method, "jobs.wait")) {
         const id = request_id orelse return null;
@@ -446,7 +494,7 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";
