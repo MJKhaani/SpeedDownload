@@ -10,7 +10,7 @@ const max_queries = 8;
 const max_peers = 64;
 const packet_limit = 2048;
 
-const Node = struct { id: [20]u8, address: Io.net.IpAddress };
+const Node = struct { id: ?[20]u8, address: Io.net.IpAddress };
 const Response = struct { nodes: []const u8 = "", nodes6: []const u8 = "", values: [64][]const u8 = undefined, values_len: usize = 0 };
 
 pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?control_contract.CheckpointCallback, context: ?*anyopaque) ![][]u8 {
@@ -23,7 +23,7 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
         name.lookup(io, &results, .{ .port = 6881 }) catch continue;
         while (results.getOne(io)) |entry| {
             if (entry != .address) continue;
-            addNode(&nodes, &node_count, .{ .id = @splat(0), .address = entry.address });
+            addNode(&nodes, &node_count, .{ .id = null, .address = entry.address });
             break;
         } else |_| {}
     }
@@ -36,10 +36,13 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
         for (peers.items) |peer| allocator.free(peer);
         peers.deinit(allocator);
     }
-    var queried: usize = 0;
-    while (queried < node_count and queried < max_queries and peers.items.len < max_peers) : (queried += 1) {
+    var queried: [max_nodes]bool = @splat(false);
+    var query_count: usize = 0;
+    while (query_count < max_queries and peers.items.len < max_peers) : (query_count += 1) {
         try control_contract.checkpoint(control, context);
-        const node = nodes[queried];
+        const next = closestUnqueried(&nodes, node_count, &queried, info_hash) orelse break;
+        queried[next] = true;
+        const node = nodes[next];
         const response = query(allocator, io, node.address, own_id, info_hash) catch continue;
         defer allocator.free(response);
         const decoded = parseResponse(response) catch continue;
@@ -48,7 +51,10 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
             const address = compactAddress(compact) orelse continue;
             const peer = try addressText(allocator, address);
             var duplicate = false;
-            for (peers.items) |existing| if (std.mem.eql(u8, existing, peer)) { duplicate = true; break; };
+            for (peers.items) |existing| if (std.mem.eql(u8, existing, peer)) {
+                duplicate = true;
+                break;
+            };
             if (duplicate) allocator.free(peer) else peers.append(allocator, peer) catch |err| {
                 allocator.free(peer);
                 return err;
@@ -59,6 +65,33 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
     }
     try control_contract.checkpoint(control, context);
     return peers.toOwnedSlice(allocator);
+}
+
+/// Query bootstrap contacts first, then the unqueried contact with the
+/// smallest BEP 5 XOR distance to the target hash. The set is bounded, so a
+/// linear scan avoids maintaining a second heap or unbounded routing table.
+fn closestUnqueried(nodes: *const [max_nodes]Node, count: usize, queried: *const [max_nodes]bool, target: [20]u8) ?usize {
+    var best: ?usize = null;
+    for (nodes[0..count], 0..) |node, index| {
+        if (queried[index]) continue;
+        if (best == null) {
+            best = index;
+            continue;
+        }
+        const previous = nodes[best.?];
+        if (node.id == null) {
+            if (previous.id != null) best = index;
+            continue;
+        }
+        if (previous.id == null) continue;
+        for (0..20) |byte_index| {
+            const candidate = node.id.?[byte_index] ^ target[byte_index];
+            const selected = previous.id.?[byte_index] ^ target[byte_index];
+            if (candidate < selected) best = index;
+            if (candidate != selected) break;
+        }
+    }
+    return best;
 }
 
 fn addNode(nodes: *[max_nodes]Node, count: *usize, node: Node) void {
@@ -112,7 +145,10 @@ fn publicIp6(ip: [16]u8) bool {
     if (ip[0] == 0xff or (ip[0] & 0xfe) == 0xfc or
         (ip[0] == 0xfe and (ip[1] & 0xc0) == 0x80)) return false;
     var all_zero = true;
-    for (ip[0..15]) |byte| if (byte != 0) { all_zero = false; break; };
+    for (ip[0..15]) |byte| if (byte != 0) {
+        all_zero = false;
+        break;
+    };
     if (all_zero) return false; // unspecified and loopback
     return true;
 }
@@ -121,8 +157,9 @@ fn addressText(allocator: Allocator, address: Io.net.IpAddress) ![]u8 {
     return switch (address) {
         .ip4 => |ip| std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}:{d}", .{ ip.bytes[0], ip.bytes[1], ip.bytes[2], ip.bytes[3], ip.port }),
         .ip6 => |ip| std.fmt.allocPrint(allocator, "[{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}]:{d}", .{
-            ip.bytes[0], ip.bytes[1], ip.bytes[2], ip.bytes[3], ip.bytes[4], ip.bytes[5], ip.bytes[6], ip.bytes[7],
-            ip.bytes[8], ip.bytes[9], ip.bytes[10], ip.bytes[11], ip.bytes[12], ip.bytes[13], ip.bytes[14], ip.bytes[15], ip.port,
+            ip.bytes[0], ip.bytes[1], ip.bytes[2],  ip.bytes[3],  ip.bytes[4],  ip.bytes[5],  ip.bytes[6],  ip.bytes[7],
+            ip.bytes[8], ip.bytes[9], ip.bytes[10], ip.bytes[11], ip.bytes[12], ip.bytes[13], ip.bytes[14], ip.bytes[15],
+            ip.port,
         }),
     };
 }
