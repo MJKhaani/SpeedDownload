@@ -61,8 +61,8 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
                 return err;
             };
         }
-        appendNodes(&nodes, &node_count, decoded.nodes, false);
-        appendNodes(&nodes, &node_count, decoded.nodes6, true);
+        appendNodes(&nodes, &node_count, &queried, info_hash, decoded.nodes, false);
+        appendNodes(&nodes, &node_count, &queried, info_hash, decoded.nodes6, true);
     }
     try control_contract.checkpoint(control, context);
     return peers.toOwnedSlice(allocator);
@@ -87,18 +87,12 @@ fn closestUnqueried(nodes: *const [max_nodes]Node, count: usize, queried: *const
             best = index;
             continue;
         }
-        for (0..20) |byte_index| {
-            const candidate = node.id.?[byte_index] ^ target[byte_index];
-            const selected = previous.id.?[byte_index] ^ target[byte_index];
-            if (candidate < selected) best = index;
-            if (candidate != selected) break;
-        }
+        if (closer(node.id.?, previous.id.?, target)) best = index;
     }
     return best;
 }
 
 fn addNode(nodes: *[max_nodes]Node, count: *usize, node: Node) void {
-    if (count.* == max_nodes) return;
     switch (node.address) {
         .ip4 => |ip| if (!publicIp4(ip.bytes)) return,
         .ip6 => |ip| if (!publicIp6(ip.bytes)) return,
@@ -107,17 +101,50 @@ fn addNode(nodes: *[max_nodes]Node, count: *usize, node: Node) void {
         if (existing.id == null) existing.id = node.id;
         return;
     };
+    if (count.* == max_nodes) return;
     nodes[count.*] = node;
     count.* += 1;
 }
 
-fn appendNodes(nodes: *[max_nodes]Node, count: *usize, compact: []const u8, ipv6: bool) void {
+fn closer(candidate: [20]u8, previous: [20]u8, target: [20]u8) bool {
+    for (0..20) |index| {
+        const candidate_distance = candidate[index] ^ target[index];
+        const previous_distance = previous[index] ^ target[index];
+        if (candidate_distance != previous_distance) return candidate_distance < previous_distance;
+    }
+    return false;
+}
+
+/// Retain the closest unqueried contacts when a response exceeds the fixed
+/// contact capacity. Queried contacts and bootstrap contacts with unknown IDs
+/// stay in place; replacing them would lose query history or fallback paths.
+fn addDiscoveredNode(nodes: *[max_nodes]Node, count: *usize, queried: *[max_nodes]bool, target: [20]u8, node: Node) void {
+    for (nodes[0..count.*]) |*existing| if (std.meta.eql(existing.address, node.address)) {
+        if (existing.id == null) existing.id = node.id;
+        return;
+    };
+    if (count.* < max_nodes) {
+        addNode(nodes, count, node);
+        return;
+    }
+    const candidate_id = node.id orelse return;
+    var farthest: ?usize = null;
+    for (nodes[0..count.*], 0..) |existing, index| {
+        if (queried[index] or existing.id == null) continue;
+        if (farthest == null or closer(nodes[farthest.?].id.?, existing.id.?, target)) farthest = index;
+    }
+    if (farthest) |index| {
+        if (closer(candidate_id, nodes[index].id.?, target)) nodes[index] = node;
+    }
+}
+
+fn appendNodes(nodes: *[max_nodes]Node, count: *usize, queried: *[max_nodes]bool, target: [20]u8, compact: []const u8, ipv6: bool) void {
     const stride: usize = if (ipv6) 38 else 26;
     if (compact.len % stride != 0) return;
     for (0..compact.len / stride) |index| {
         const entry = compact[index * stride ..][0..stride];
         const address = compactAddress(entry[20..]) orelse continue;
-        addNode(nodes, count, .{ .id = entry[0..20].*, .address = address });
+        addDiscoveredNode(nodes, count, queried, target, .{ .id = entry[0..20].*, .address = address });
     }
 }
 
