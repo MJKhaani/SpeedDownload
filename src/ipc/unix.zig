@@ -596,6 +596,8 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             "SHA-256 checksum does not match the downloaded file"
         else if (err == error.ProxyAuthenticationUnavailable)
             "Authenticated proxy transfers are not available in this engine version"
+        else if (err == error.FtpJournalUpgradeRequired)
+            "This FTP partial uses an older journal format and cannot be resumed safely. Remove the partial and add the download again."
         else
             std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
         engine.jobs.logAction("transfer", @errorName(err));

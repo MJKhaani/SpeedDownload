@@ -15,7 +15,9 @@ engine and are available through the CLI, IPC queue, and macOS Add Download
 dialog. FTPS certificate validation and encrypted data transport compile but
 have not been exercised against a live server. FTP/FTPS server interoperability
 and resume after a process restart are not yet
-validated. See [FTP source status](protocols/ftp.md) for its limits.
+validated. New FTP journals carry a SHA-256 integrity checksum; older
+unchecked partial journals remain in place but cannot be resumed automatically.
+See [FTP source status](protocols/ftp.md) for its limits.
 
 The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
 inspection. It also has source for BEP 9 metadata retrieval from explicit

@@ -44,3 +44,19 @@ transfer. A temporary `421`, `425`, or
 `450`–`452` reply at connection or transfer setup enters the engine's
 bounded retry path. Server compatibility and recovery
 after an abrupt process termination still need validation.
+
+## FTP resume journal integrity
+
+New FTP partials use the `SDFTP002` journal. It stores the source URL hash,
+server size and modification timestamp, durable completed byte count, and a
+SHA-256 checksum over those fields. A journal is atomically replaced only
+after the corresponding bytes have been synced. A damaged journal is rejected
+instead of trusting its cursor. The checksum detects accidental corruption; it
+does not authenticate files against another process running as the same user.
+
+Older `SDFTP001` journals did not include an integrity check. The engine leaves
+their partial data in place and reports an upgrade error rather than trusting
+the cursor. To restart that job, remove its `.part` and `.part.ftpj` files and
+add the URL again. A matching `SIZE` and `MDTM` still cannot prove that a
+remote server has kept identical content; FTP resume remains more conservative
+than strong-ETag HTTP resume.

@@ -8,8 +8,10 @@ const tls = @import("tls.zig");
 
 pub const ProgressCallback = *const fn (*anyopaque, u64, ?u64, bool) anyerror!void;
 pub const ProbeResult = @import("../http/probe.zig").Result;
-const magic = "SDFTP001";
-const journal_len = magic.len + 32 + 8 + 8 + 14;
+const magic = "SDFTP002";
+const legacy_magic = "SDFTP001";
+const journal_payload_len = magic.len + 32 + 8 + 8 + 14;
+const journal_len = journal_payload_len + 32;
 const checkpoint_interval: u64 = 1024 * 1024;
 const read_timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(30_000), .clock = .awake } };
 
@@ -22,7 +24,9 @@ const FtpHost = union(enum) {
 
     fn fromUri(uri: std.Uri, buffer: *[Io.net.HostName.max_len]u8) !FtpHost {
         const component = uri.host orelse return error.InvalidFtpUrl;
-        const raw = switch (component) { .raw, .percent_encoded => |value| value };
+        const raw = switch (component) {
+            .raw, .percent_encoded => |value| value,
+        };
         if (raw.len >= 2 and raw[0] == '[' and raw[raw.len - 1] == ']')
             return .{ .address = Io.net.IpAddress.parseIp6(raw[1 .. raw.len - 1], uri.port orelse 21) catch return error.InvalidFtpUrl };
         return .{ .name = Io.net.HostName.fromUri(uri, buffer) catch return error.InvalidFtpUrl };
@@ -44,7 +48,10 @@ const FtpHost = union(enum) {
     }
 
     fn requiresEpsv(self: FtpHost) bool {
-        return switch (self) { .name => false, .address => true };
+        return switch (self) {
+            .name => false,
+            .address => true,
+        };
     }
 };
 
@@ -168,7 +175,9 @@ fn tlsHost(uri: std.Uri, host: FtpHost) []const u8 {
         .name => |name| name.bytes,
         .address => blk: {
             const component = uri.host.?;
-            const raw = switch (component) { .raw, .percent_encoded => |value| value };
+            const raw = switch (component) {
+                .raw, .percent_encoded => |value| value,
+            };
             break :blk raw[1 .. raw.len - 1];
         },
     };
@@ -452,7 +461,10 @@ fn inspectMetadata(control: *Control, path: []const u8) !Metadata {
         var value: [14]u8 = undefined;
         @memcpy(&value, mdtm.text[0..14]);
         var valid = true;
-        for (value) |byte| if (!std.ascii.isDigit(byte)) { valid = false; break; };
+        for (value) |byte| if (!std.ascii.isDigit(byte)) {
+            valid = false;
+            break;
+        };
         if (valid) result.modified = value;
     }
     return result;
@@ -493,7 +505,9 @@ fn passivePort(control: *Control, require_epsv: bool) !u16 {
 }
 
 fn ftpPath(allocator: Allocator, uri: std.Uri) ![]u8 {
-    const raw = switch (uri.path) { .raw, .percent_encoded => |value| value };
+    const raw = switch (uri.path) {
+        .raw, .percent_encoded => |value| value,
+    };
     if (raw.len < 2 or raw[0] != '/' or raw.len > 2048) return error.InvalidFtpPath;
     const buffer = try allocator.alloc(u8, raw.len);
     defer allocator.free(buffer);
@@ -522,10 +536,19 @@ fn readJournal(io: Io, path: []const u8) !?Journal {
         else => return err,
     };
     defer file.close(io);
-    if (try file.length(io) != journal_len) return error.InvalidFtpJournal;
+    const length = try file.length(io);
+    if (length == legacy_magic.len + 32 + 8 + 8 + 14) {
+        var old_magic: [legacy_magic.len]u8 = undefined;
+        if (try file.readPositionalAll(io, &old_magic, 0) != old_magic.len) return error.InvalidFtpJournal;
+        if (std.mem.eql(u8, &old_magic, legacy_magic)) return error.FtpJournalUpgradeRequired;
+    }
+    if (length != journal_len) return error.InvalidFtpJournal;
     var buffer: [journal_len]u8 = undefined;
     if (try file.readPositionalAll(io, &buffer, 0) != buffer.len) return error.InvalidFtpJournal;
     if (!std.mem.eql(u8, buffer[0..magic.len], magic)) return error.InvalidFtpJournal;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(buffer[0..journal_payload_len], &digest, .{});
+    if (!std.mem.eql(u8, &digest, buffer[journal_payload_len..])) return error.InvalidFtpJournal;
     var result: Journal = undefined;
     var cursor: usize = magic.len;
     @memcpy(&result.source_hash, buffer[cursor..][0..32]);
@@ -551,6 +574,10 @@ fn saveJournal(io: Io, path: []const u8, value: Journal) !void {
     std.mem.writeInt(u64, buffer[cursor..][0..8], value.completed, .big);
     cursor += 8;
     @memcpy(buffer[cursor..][0..14], &value.modified);
+    cursor += 14;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(buffer[0..cursor], &digest, .{});
+    @memcpy(buffer[cursor..][0..32], &digest);
     var atomic = try Io.Dir.createFileAtomic(.cwd(), io, path, .{ .make_path = true, .replace = true });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, &buffer);
