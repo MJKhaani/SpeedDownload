@@ -9,6 +9,12 @@ is not used when parallel downloading is Off; Automatic uses the
 configured connection ceiling and can lower it after a server rate limit,
 while Fixed keeps the configured count for each attempt. Single-stream
 downloads can still resume when the response has a known length and strong ETag.
+The single-stream `ODMHJ003` journal includes a SHA-256 checksum over its
+metadata. The engine rejects damaged journals before trusting their durable
+offset. Earlier `ODMHJ002` partials remain on disk but cannot be resumed
+safely; remove the partial and re-add the job to download it again. The
+checksum detects accidental metadata damage, while the strong ETag and
+range response checks protect the remote representation identity.
 For multipart transfers, the segment journal is atomically replaced after each
 4 MiB of a worker's synced data, at
 segment completion, and when a worker stops. A crash may redownload only the

@@ -27,6 +27,7 @@ pub const DownloadError = error{
     UnsupportedContentEncoding,
     UntrustedPartial,
     InvalidResumeJournal,
+    HttpJournalUpgradeRequired,
     RepresentationChanged,
     InvalidContentRange,
     ResumeUnsafeForUrl,
@@ -79,7 +80,9 @@ const Journal = struct {
     etag: []const u8,
 };
 
-const journal_magic = "ODMHJ002";
+const journal_magic = "ODMHJ003";
+const legacy_journal_magic = "ODMHJ002";
+const journal_checksum_len = 32;
 const max_etag_len = 1024;
 const checkpoint_interval = 1024 * 1024;
 const progress_interval = 256 * 1024;
@@ -477,9 +480,15 @@ fn loadJournal(allocator: Allocator, io: Io, path: []const u8) !?Journal {
     };
     defer allocator.free(data);
     const fixed_len = journal_magic.len + 32 + 32 + 8 + 8 + 2;
-    if (data.len < fixed_len or !std.mem.eql(u8, data[0..journal_magic.len], journal_magic)) {
+    if (data.len >= legacy_journal_magic.len and std.mem.eql(u8, data[0..legacy_journal_magic.len], legacy_journal_magic)) {
+        return DownloadError.HttpJournalUpgradeRequired;
+    }
+    if (data.len < fixed_len + journal_checksum_len or !std.mem.eql(u8, data[0..journal_magic.len], journal_magic)) {
         return DownloadError.InvalidResumeJournal;
     }
+    var actual_checksum: [journal_checksum_len]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data[0 .. data.len - journal_checksum_len], &actual_checksum, .{});
+    if (!std.mem.eql(u8, &actual_checksum, data[data.len - journal_checksum_len ..])) return DownloadError.InvalidResumeJournal;
     var cursor = journal_magic.len;
     var source_hash: [32]u8 = undefined;
     @memcpy(&source_hash, data[cursor..][0..source_hash.len]);
@@ -493,10 +502,10 @@ fn loadJournal(allocator: Allocator, io: Io, path: []const u8) !?Journal {
     cursor += 8;
     const etag_len = std.mem.readInt(u16, data[cursor..][0..2], .big);
     cursor += 2;
-    if (etag_len == 0 or etag_len > max_etag_len or data.len != cursor + etag_len) {
+    if (etag_len == 0 or etag_len > max_etag_len or data.len != cursor + etag_len + journal_checksum_len) {
         return DownloadError.InvalidResumeJournal;
     }
-    const etag = try allocator.dupe(u8, data[cursor..]);
+    const etag = try allocator.dupe(u8, data[cursor .. cursor + etag_len]);
     if (!isStrongETag(etag) or completed > total) {
         allocator.free(etag);
         return DownloadError.InvalidResumeJournal;
@@ -505,7 +514,7 @@ fn loadJournal(allocator: Allocator, io: Io, path: []const u8) !?Journal {
 }
 
 fn cwdReadFileAlloc(io: Io, path: []const u8, allocator: Allocator) ![]u8 {
-    return Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(journal_magic.len + 32 + 32 + 8 + 8 + 2 + max_etag_len));
+    return Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(journal_magic.len + 32 + 32 + 8 + 8 + 2 + max_etag_len + journal_checksum_len));
 }
 
 fn saveJournal(allocator: Allocator, io: Io, path: []const u8, journal: Journal) !void {
@@ -513,7 +522,7 @@ fn saveJournal(allocator: Allocator, io: Io, path: []const u8, journal: Journal)
         return DownloadError.InvalidResumeJournal;
     }
     const fixed_len = journal_magic.len + 32 + 32 + 8 + 8 + 2;
-    const encoded = try allocator.alloc(u8, fixed_len + journal.etag.len);
+    const encoded = try allocator.alloc(u8, fixed_len + journal.etag.len + journal_checksum_len);
     defer allocator.free(encoded);
     var cursor: usize = 0;
     @memcpy(encoded[cursor..][0..journal_magic.len], journal_magic);
@@ -528,7 +537,11 @@ fn saveJournal(allocator: Allocator, io: Io, path: []const u8, journal: Journal)
     cursor += 8;
     std.mem.writeInt(u16, encoded[cursor..][0..2], @intCast(journal.etag.len), .big);
     cursor += 2;
-    @memcpy(encoded[cursor..], journal.etag);
+    @memcpy(encoded[cursor..][0..journal.etag.len], journal.etag);
+    cursor += journal.etag.len;
+    var checksum: [journal_checksum_len]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(encoded[0..cursor], &checksum, .{});
+    @memcpy(encoded[cursor..][0..journal_checksum_len], &checksum);
 
     const temp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
     defer allocator.free(temp_path);
