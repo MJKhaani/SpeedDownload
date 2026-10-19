@@ -88,6 +88,7 @@ fn runTorrentInfo(init: std.process.Init, path: []const u8) !void {
         .files = file_map.files,
         .piece_length = info.piece_length,
         .piece_count = info.piece_count,
+        .is_private = info.is_private,
         .info_hash = &hash_hex,
     }, .{});
     defer init.gpa.free(json);

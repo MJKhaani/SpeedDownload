@@ -4,11 +4,10 @@ The engine can inspect a local BitTorrent v1 `.torrent` file with
 `speed-download torrent-info <file.torrent>`. The command prints its name,
 tracker, total bytes, validated relative file paths with lengths and byte
 offsets, file and piece counts, piece length, and SHA-1 info
-hash as JSON. It does not add a transfer, contact a tracker or peer, or write
+hash plus the private flag as JSON. It does not add a transfer, contact a tracker or peer, or write
 downloaded files.
 
-For a v1 torrent with HTTP(S) or UDP trackers in `announce`
-or `announce-list`, the CLI can transfer its payload with
+For a v1 torrent, the CLI can transfer its payload with
 `speed-download torrent-download <file.torrent> <destination>`. A multi-file
 destination is a directory named by the caller. It uses
 the same SHA-1 piece verification, out-of-order placement, restart rehashing,
@@ -93,8 +92,9 @@ Queued magnet and local `.torrent` workers check pause, cancel, and queue
 schedule state between tracker and peer attempts, during metadata retrieval,
 and while waiting for payload peer messages. A blocked socket read can still
 take up to its 15-second timeout before the worker observes a new request.
-DHT is not supported. It does not
-download payload pieces or seed.
+DHT does not resolve magnet metadata. After metainfo is hash-verified, a public torrent may query up to eight DHT nodes for payload peers; private torrents never enter this path. This bounded lookup has no listener, routing table, or announce, and it does not seed.
+The `private=1` flag is read from the hashed `info` dictionary. Private local `.torrent` transfers use peers from one successful tracker at a time and never use DHT. A private magnet is rejected after metadata inspection because this client cannot guarantee that its metadata peer came from the private tracker; use the local `.torrent` source for that case. This follows the tracker-only peer rule in [BEP 27](https://www.bittorrent.org/beps/bep_0027.html).
+The lookup follows the compact contact and `get_peers` formats in [BEP 5](https://www.bittorrent.org/beps/bep_0005.html) and accepts IPv6 contacts from [BEP 32](https://www.bittorrent.org/beps/bep_0032.html). It rejects private, loopback, link-local, and multicast addresses learned from DHT responses. This source has only compile validation so far; interoperability and UDP behavior need a native swarm check.
 
 The transfer path accepts a v1 magnet URI through the
 macOS Add Download dialog or `jobs.add` IPC. The CLI can also use
@@ -147,8 +147,7 @@ still report bytes remaining against the full torrent size, so a file subset
 is not advertised as a complete torrent. The Add dialog also
 pins the probed info hash, and the engine rejects a changed source before
 saving its private metainfo snapshot. When the preview is
-incomplete, the macOS dialog currently includes every file. The engine does not upload or seed. DHT,
-peer encryption, uTP, and BitTorrent v2 are unsupported.
+incomplete, the macOS dialog currently includes every file. The engine does not upload or seed. DHT discovery is read-only and limited to payload peers after metainfo verification; peer encryption, uTP, and BitTorrent v2 are unsupported.
 Many ordinary magnets depend on one of those discovery methods and will not
 start. The peer transfer path compiles but has not been exercised against a
 live swarm; it is not release-ready.
@@ -171,5 +170,5 @@ The read-only inspector does not access the destination filesystem and cannot
 report its case or Unicode normalization behavior. The transfer publisher
 checks for those collisions while constructing its private staging tree.
 
-Broader tracker/DHT discovery, selection in larger torrents and magnets,
+Persistent DHT participation, DHT metadata discovery, broader tracker discovery, selection in larger torrents and magnets,
 seeding, upload accounting, and swarm interoperability remain incomplete.

@@ -4,6 +4,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const magnet = @import("magnet.zig");
 const metainfo = @import("metainfo.zig");
+const control_contract = @import("control.zig");
 
 const block_size = 16 * 1024;
 const max_in_flight_blocks = 8;
@@ -13,12 +14,12 @@ const timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), 
 
 /// Control outcomes that must leave metadata discovery immediately instead of
 /// falling through to another peer or tracker.
-pub const CheckpointError = error{ TransferPauseRequested, TransferCancelRequested, TransferSchedulePaused };
+pub const CheckpointError = control_contract.CheckpointError;
 /// Called on the worker thread; the context remains owned by the caller.
-pub const CheckpointCallback = *const fn (*anyopaque) CheckpointError!void;
+pub const CheckpointCallback = control_contract.CheckpointCallback;
 
 fn checkpoint(callback: ?CheckpointCallback, context: ?*anyopaque) CheckpointError!void {
-    if (callback) |check| if (context) |ctx| try check(ctx);
+    try control_contract.checkpoint(callback, context);
 }
 
 fn isCheckpointError(err: anyerror) bool {
@@ -30,6 +31,7 @@ pub const Session = struct {
     key: [4]u8,
     announced_trackers: [32][]const u8 = undefined,
     announced_count: usize = 0,
+    dht_attempted: bool = false,
 
     pub fn init(io: Io) !Session {
         var result: Session = .{ .peer_id = undefined, .key = undefined };
@@ -217,6 +219,7 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
     if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), .{});
     var last_tracker_error: ?anyerror = null;
     var tracker_responded = false;
+    var latest_counts: TrackerCounts = .{};
     const order = trackerOrder(link, session);
     for (order[0..link.trackers.len]) |index| {
         const tracker = link.trackers[index];
@@ -231,6 +234,7 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
             continue;
         };
         tracker_responded = true;
+        latest_counts = counts;
         defer allocator.free(discovered);
         peers.ensureUnusedCapacity(allocator, @min(discovered.len, max_peers - peers.items.len)) catch |err| {
             for (discovered) |peer| allocator.free(peer);
@@ -244,6 +248,29 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
             }
         }
         if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
+        // BEP 27 keeps a private transfer with one successful tracker.
+        if (link.is_private) break;
+    }
+    if (link.allow_dht and !session.dht_attempted and peers.items.len == 0) {
+        try checkpoint(control, control_context);
+        session.dht_attempted = true;
+        const discovered = @import("dht.zig").discover(allocator, io, link.info_hash, control, control_context) catch |err| blk: {
+            if (isCheckpointError(err)) return err;
+            if (err == error.OutOfMemory) return err;
+            break :blk null;
+        };
+        if (discovered) |found| {
+            defer allocator.free(found);
+            peers.ensureUnusedCapacity(allocator, @min(found.len, max_peers - peers.items.len)) catch |err| {
+                for (found) |peer| allocator.free(peer);
+                return err;
+            };
+            for (found) |peer| {
+                if (peers.items.len == max_peers or containsPeer(peers.items, peer)) allocator.free(peer) else peers.appendAssumeCapacity(peer);
+            }
+            if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), latest_counts);
+        }
+        try checkpoint(control, control_context);
     }
     if (peers.items.len == 0 and !tracker_responded) return last_tracker_error orelse error.NoTorrentPeers;
     return peers.toOwnedSlice(allocator);

@@ -7,6 +7,9 @@ pub const Result = struct {
     display_name: ?[]u8,
     trackers: [][]u8,
     peers: [][]u8,
+    /// Set only after authenticated metainfo says this is not a private torrent.
+    allow_dht: bool = false,
+    is_private: bool = false,
     /// Exclusive URL indices for BEP 12 tiers. Zero means one flat tier.
     tracker_tier_ends: [32]u8 = @splat(0),
     tracker_tier_count: u8 = 0,

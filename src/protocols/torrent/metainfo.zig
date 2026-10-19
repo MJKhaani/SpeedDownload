@@ -20,6 +20,7 @@ pub const Result = struct {
     piece_count: u64,
     piece_hashes: []const u8,
     info_hash: [20]u8,
+    is_private: bool,
 };
 
 pub const FileEntry = struct {
@@ -191,7 +192,7 @@ fn parseFiles(allocator: Allocator, cursor: *Cursor) !Files {
     return result;
 }
 
-fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, files: Files, single_file: bool, piece_length: u64, pieces: []const u8 } {
+fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, files: Files, single_file: bool, piece_length: u64, pieces: []const u8, is_private: bool } {
     try cursor.count();
     try cursor.take('d');
     var previous: ?[]const u8 = null;
@@ -200,6 +201,7 @@ fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, 
     var files: ?Files = null;
     var piece_length: ?u64 = null;
     var pieces: ?[]const u8 = null;
+    var is_private = false;
     while (cursor.position < cursor.bytes.len and cursor.bytes[cursor.position] != 'e') {
         const key = try cursor.string();
         try ordered(previous, key);
@@ -220,6 +222,10 @@ fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, 
             piece_length = @intCast(value);
         } else if (std.mem.eql(u8, key, "pieces")) {
             pieces = try cursor.string();
+        } else if (std.mem.eql(u8, key, "private")) {
+            const value = try cursor.integer();
+            if (value != 0 and value != 1) return error.InvalidTorrentPrivateFlag;
+            is_private = value == 1;
         } else if (std.mem.eql(u8, key, "meta version")) {
             return error.UnsupportedTorrentV2;
         } else try cursor.skip(1);
@@ -233,6 +239,7 @@ fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, 
         .single_file = file_length != null,
         .piece_length = piece_length.?,
         .pieces = pieces.?,
+        .is_private = is_private,
     };
 }
 
@@ -251,6 +258,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
     var piece_count: u64 = 0;
     var piece_hashes: []const u8 = "";
     var info_hash: [20]u8 = undefined;
+    var is_private = false;
     while (cursor.position < bytes.len and bytes[cursor.position] != 'e') {
         const key = try cursor.string();
         try ordered(previous, key);
@@ -274,6 +282,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
             if (info.pieces.len % 20 != 0) return error.InvalidTorrentPieces;
             piece_count = @intCast(info.pieces.len / 20);
             piece_hashes = info.pieces;
+            is_private = info.is_private;
         } else try cursor.skip(1);
     }
     try cursor.take('e');
@@ -291,6 +300,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
         .piece_count = piece_count,
         .piece_hashes = piece_hashes,
         .info_hash = info_hash,
+        .is_private = is_private,
     };
 }
 

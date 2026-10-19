@@ -72,6 +72,10 @@ pub fn downloadWithStats(
     const map = try metainfo.inspectFileMap(allocator, wrapped);
     defer map.deinit(allocator);
     if (!std.mem.eql(u8, &info.info_hash, &link.info_hash)) return error.MetadataHashMismatch;
+    // The metadata stage may have used an explicit x.pe address. Until the
+    // client can prove tracker provenance, it must not fetch private payloads.
+    if (info.is_private) return error.PrivateMagnetRequiresTorrentFile;
+    link.allow_dht = !info.is_private;
     try transferValidated(allocator, io, info, map, &link, fetched.peer, destination, expected_sha256, null, callback, context, &session, control, control_context, stats, stats_context);
 }
 
@@ -146,7 +150,7 @@ pub fn downloadTorrentFileSelectedWithStats(
         allocator.free(trackers);
         return err;
     };
-    var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers, .tracker_tier_ends = tracker_list.tier_ends, .tracker_tier_count = tracker_list.tier_count };
+    var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers, .tracker_tier_ends = tracker_list.tier_ends, .tracker_tier_count = tracker_list.tier_count, .allow_dht = !info.is_private, .is_private = info.is_private };
     defer link.deinit(allocator);
     var session = try metadata.Session.init(io);
     try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context, stats, stats_context);

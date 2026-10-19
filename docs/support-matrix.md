@@ -26,7 +26,7 @@ The macOS Add Download dialog can also select a v1 `.torrent`
 for that queue. Pieces are verified and rehashed independently on resume,
 but neither source path has been exercised against a live swarm. Multi-file
 payloads compile, and the Add dialog permits a file subset when its bounded
-preview includes the full map. DHT and seeding remain unimplemented.
+preview includes the full map. A bounded read-only DHT lookup for public torrent payload peers now compiles; it does not resolve magnet metadata or seed. Native swarm behavior remains unverified.
 See [BitTorrent status](protocols/torrent.md).
 
 The macOS bundle includes an experimental Firefox native-messaging host and

@@ -106,7 +106,7 @@ from explicit peers, HTTP(S) tracker compact IPv4/IPv6 or dictionary peer lists,
 one file with per-piece SHA-1 verification. `completed_bytes` counts synced,
 verified pieces; `received_bytes` may include the current unverified piece.
 The daemon rehashes all `.part` pieces before resume. Multi-file torrents,
-DHT, and seeding are outside this feature. Custom proxy mode rejects
+DHT metadata discovery and seeding are outside this feature. After verified metainfo arrives, public torrents may use a bounded read-only DHT lookup for payload peers. Custom proxy mode rejects
 magnet transfers rather than bypassing the configured proxy.
 
 The Unix engine also advertises `torrents.local-file-v1-single-file`.
