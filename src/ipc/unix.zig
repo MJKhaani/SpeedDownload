@@ -211,7 +211,7 @@ fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdent
                 const cursor = engine.jobs.changeCursor();
                 if (cursor == item.cursor) continue;
                 event_sequence += 1;
-                const notice = try subscription.eventFrame(allocator, engine.jobs, item.id, server.engine_instance_id, event_sequence, item.cursor);
+                const notice = try subscription.eventFrame(allocator, engine.jobs, item, server.engine_instance_id, event_sequence);
                 defer allocator.free(notice);
                 try writeAll(fd, notice);
                 item.cursor = cursor;
@@ -289,16 +289,32 @@ pub fn dispatchMethod(
     if (std.mem.eql(u8, method, "jobs.subscribe")) {
         const id = request_id orelse return null;
         const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
-        if (value != .object or value.object.count() > 1) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object or value.object.count() > 3) return dispatchError(allocator, request_id, -32602, "Invalid params");
         var max_rate: u16 = 5;
         if (value.object.get("max_updates_per_second")) |rate| {
             if (rate != .integer or rate.integer < 1 or rate.integer > 10) return dispatchError(allocator, request_id, -32602, "Invalid update rate");
             max_rate = @intCast(rate.integer);
-        } else if (value.object.count() != 0) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        }
+        var filter = job_store.Store.ListFilter{};
+        if (value.object.get("state")) |state_value| {
+            if (state_value != .string) return dispatchError(allocator, request_id, -32602, "Invalid state");
+            filter.state = std.meta.stringToEnum(job_store.State, state_value.string) orelse return dispatchError(allocator, request_id, -32602, "Invalid state");
+        }
+        if (value.object.get("search")) |search_value| {
+            if (search_value != .string or search_value.string.len == 0 or search_value.string.len > 128 or
+                !std.unicode.utf8ValidateSlice(search_value.string)) return dispatchError(allocator, request_id, -32602, "Invalid search");
+            filter.search = search_value.string;
+        }
+        var fields = value.object.iterator();
+        while (fields.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (!std.mem.eql(u8, key, "max_updates_per_second") and !std.mem.eql(u8, key, "state") and
+                !std.mem.eql(u8, key, "search")) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        }
         const number = engine.next_subscription_id.fetchAdd(1, .monotonic);
         const subscription_id = try std.fmt.allocPrint(allocator, "sub-{d}", .{number});
         defer allocator.free(subscription_id);
-        return @as(?[]u8, try jobs.subscribeJson(id, subscription_id, engine.engine_instance_id, @divTrunc(1000 + max_rate - 1, max_rate)));
+        return @as(?[]u8, try jobs.subscribeJson(id, subscription_id, engine.engine_instance_id, @divTrunc(1000 + max_rate - 1, max_rate), filter));
     }
     if (std.mem.eql(u8, method, "jobs.wait")) {
         const id = request_id orelse return null;

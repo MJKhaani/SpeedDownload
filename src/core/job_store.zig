@@ -137,7 +137,7 @@ pub const Store = struct {
 
     /// Serialize a bounded notification while holding the same lock as job updates.
     /// Durable mutations use a full refresh because they may change list order or membership.
-    pub fn changeEventJson(self: *Store, subscription_id: []const u8, engine_instance_id: []const u8, sequence: u64, after_cursor: u64) ![]u8 {
+    pub fn changeEventJson(self: *Store, subscription_id: []const u8, engine_instance_id: []const u8, sequence: u64, after_cursor: u64, filter: ListFilter) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const current = self.change_sequence.load(.acquire);
@@ -148,12 +148,21 @@ pub const Store = struct {
             var cursor = after_cursor + 1;
             while (cursor <= current) : (cursor += 1) {
                 const record = self.change_records[@intCast((cursor - 2) % self.change_records.len)];
-                if (record.cursor != cursor or record.job_id == null) { resync = true; break; }
+                if (record.cursor != cursor or record.job_id == null) {
+                    resync = true;
+                    break;
+                }
                 const id = record.job_id.?;
                 var seen = false;
-                for (ids[0..count]) |existing| if (std.mem.eql(u8, &existing, &id)) { seen = true; break; };
+                for (ids[0..count]) |existing| if (std.mem.eql(u8, &existing, &id)) {
+                    seen = true;
+                    break;
+                };
                 if (!seen) {
-                    if (count == ids.len) { resync = true; break; }
+                    if (count == ids.len) {
+                        resync = true;
+                        break;
+                    }
                     ids[count] = id;
                     count += 1;
                 }
@@ -167,11 +176,14 @@ pub const Store = struct {
                 var found = false;
                 for (self.jobs.items) |*job| {
                     if (!std.mem.eql(u8, job.id, &id)) continue;
-                    try summaries.append(self.allocator, try makeSummary(self.allocator, job));
+                    if (matchesFilter(job, filter)) try summaries.append(self.allocator, try makeSummary(self.allocator, job));
                     found = true;
                     break;
                 }
-                if (!found) { resync = true; break; }
+                if (!found) {
+                    resync = true;
+                    break;
+                }
             }
         }
         const cursor_text = try std.fmt.allocPrint(self.allocator, "{d}", .{current});
@@ -479,6 +491,16 @@ pub const Store = struct {
 
     pub const ListFilter = struct { state: ?State = null, search: ?[]const u8 = null };
 
+    fn matchesFilter(job: *const Job, filter: ListFilter) bool {
+        if (filter.state) |state| if (job.state != state) return false;
+        if (filter.search) |search| {
+            const name = job.name orelse "";
+            if (std.ascii.findIgnoreCase(name, search) == null and
+                std.ascii.findIgnoreCase(redactUrl(job.url), search) == null) return false;
+        }
+        return true;
+    }
+
     pub fn listJson(self: *Store, request_id: std.json.Value, offset: usize, limit: usize) ![]u8 {
         return self.listFilteredJson(request_id, offset, limit, .{});
     }
@@ -492,12 +514,7 @@ pub const Store = struct {
         defer for (summaries.items) |summary| freeSummary(allocator, summary);
         var matching: usize = 0;
         for (self.jobs.items) |*job| {
-            if (filter.state) |state| if (job.state != state) continue;
-            if (filter.search) |search| {
-                const name = job.name orelse "";
-                if (std.ascii.findIgnoreCase(name, search) == null and
-                    std.ascii.findIgnoreCase(redactUrl(job.url), search) == null) continue;
-            }
+            if (!matchesFilter(job, filter)) continue;
             if (matching >= offset and summaries.items.len < limit)
                 try summaries.append(allocator, try makeSummary(allocator, job));
             matching += 1;
@@ -536,19 +553,23 @@ pub const Store = struct {
         return error.JobNotFound;
     }
 
-    pub fn subscribeJson(self: *Store, request_id: std.json.Value, subscription_id: []const u8, engine_instance_id: []const u8, interval_ms: u16) ![]u8 {
+    pub fn subscribeJson(self: *Store, request_id: std.json.Value, subscription_id: []const u8, engine_instance_id: []const u8, interval_ms: u16, filter: ListFilter) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         var summaries: std.ArrayList(Summary) = .empty;
         defer summaries.deinit(self.allocator);
         defer for (summaries.items) |summary| freeSummary(self.allocator, summary);
-        const page_end = @min(self.jobs.items.len, 20);
-        for (self.jobs.items[0..page_end]) |*job| try summaries.append(self.allocator, try makeSummary(self.allocator, job));
+        var matching: usize = 0;
+        for (self.jobs.items) |*job| {
+            if (!matchesFilter(job, filter)) continue;
+            if (summaries.items.len < 20) try summaries.append(self.allocator, try makeSummary(self.allocator, job));
+            matching += 1;
+        }
         const cursor = try std.fmt.allocPrint(self.allocator, "{d}", .{self.change_sequence.load(.acquire)});
         defer self.allocator.free(cursor);
-        const total = try std.fmt.allocPrint(self.allocator, "{d}", .{self.jobs.items.len});
+        const total = try std.fmt.allocPrint(self.allocator, "{d}", .{matching});
         defer self.allocator.free(total);
-        const next_offset: ?[]const u8 = if (page_end < self.jobs.items.len) "20" else null;
+        const next_offset: ?[]const u8 = if (summaries.items.len < matching) "20" else null;
         return std.json.Stringify.valueAlloc(self.allocator, .{
             .jsonrpc = "2.0",
             .id = request_id,

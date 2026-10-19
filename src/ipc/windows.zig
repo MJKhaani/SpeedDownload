@@ -264,7 +264,7 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
                 const cursor = engine.jobs.changeCursor();
                 if (cursor == item.cursor) continue;
                 event_sequence += 1;
-                const notice = try subscription.eventFrame(allocator, engine.jobs, item.id, server.engine_instance_id, event_sequence, item.cursor);
+                const notice = try subscription.eventFrame(allocator, engine.jobs, item, server.engine_instance_id, event_sequence);
                 defer allocator.free(notice);
                 try writeAll(pipe, notice);
                 item.cursor = cursor;
