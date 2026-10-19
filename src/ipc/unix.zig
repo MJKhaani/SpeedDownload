@@ -410,13 +410,15 @@ pub fn dispatchMethod(
         } else if (isFtpUrl(url)) blk: {
             if (proxy_policy.mode == .custom) break :blk error.UnsupportedFtpProxy;
             break :blk @import("../protocols/ftp/download.zig").inspect(arena.allocator(), engine.io, url);
-        } else http_probe.inspectWithPolicy(arena.allocator(), engine.io, url, .{ .mode = proxy_policy.mode, .url = proxy_policy.url });
+        } else http_probe.inspectWithPolicy(arena.allocator(), engine.io, url, .{ .mode = proxy_policy.mode, .url = proxy_policy.url, .authentication_required = proxy_policy.authentication_required });
         const result = probe catch |err| {
             jobs.logAction("jobs.probe", @errorName(err));
             const message: []const u8 = if (err == error.InvalidUrl or err == error.UnsupportedScheme)
                 "Enter a valid HTTP, HTTPS, FTP, FTPS, or magnet link."
             else if (err == error.ServerBusy)
                 "The server is temporarily busy or rate limiting requests. Wait before inspecting this link again."
+            else if (err == error.ProxyAuthenticationUnavailable)
+                "Authenticated proxy transfers are not available in this engine version. Turn off proxy authentication or use an unauthenticated proxy."
             else
                 try std.fmt.allocPrint(arena.allocator(), "URL probe failed in the engine: {s}", .{@errorName(err)});
             return dispatchError(allocator, request_id, -32021, message);
@@ -571,7 +573,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     } else if (isFtpUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedFtpProxy;
         break :blk @import("../protocols/ftp/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
-    } else @import("../protocols/http/download.zig").downloadWithPolicy(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url }, &retry_hint);
+    } else @import("../protocols/http/download.zig").downloadWithPolicy(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &retry_hint);
     transfer catch |err| {
         if (engine.jobs.requestedControl(task.id)) |control| {
             engine.jobs.logAction("transfer", if (control == .pause) "paused" else "canceled");
@@ -592,6 +594,8 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
         }
         const error_message = if (err == error.ExpectedChecksumMismatch)
             "SHA-256 checksum does not match the downloaded file"
+        else if (err == error.ProxyAuthenticationUnavailable)
+            "Authenticated proxy transfers are not available in this engine version"
         else
             std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
         engine.jobs.logAction("transfer", @errorName(err));

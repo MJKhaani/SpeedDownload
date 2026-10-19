@@ -9,6 +9,7 @@ const http = std.http;
 pub const Policy = struct {
     mode: @import("../../core/job_store.zig").ProxyMode = .system,
     url: ?[]const u8 = null,
+    authentication_required: bool = false,
 };
 
 pub const State = struct {
@@ -45,6 +46,10 @@ pub const State = struct {
             return;
         }
         if (policy.mode != .custom) return;
+        // A saved Keychain credential is not yet available to this headless
+        // transport. Never silently make an unauthenticated request when the
+        // user configured the proxy as requiring authentication.
+        if (policy.authentication_required) return error.ProxyAuthenticationUnavailable;
         const url = policy.url orelse return error.InvalidProxy;
         const uri = std.Uri.parse(url) catch return error.InvalidProxy;
         const path_ok = uri.path.isEmpty() or switch (uri.path) {

@@ -129,7 +129,10 @@ struct PreferencesView: View {
         .onChange(of: proxyType) { _, _ in updateProxyEndpoint() }
         .onChange(of: proxyHost) { _, _ in updateProxyEndpoint() }
         .onChange(of: proxyPort) { _, _ in updateProxyEndpoint() }
-        .onChange(of: proxyUsesAuthentication) { _, _ in saveProxyCredentials() }
+        .onChange(of: proxyUsesAuthentication) { _, enabled in
+            settings.proxyAuthenticationRequired = enabled
+            saveProxyCredentials()
+        }
         .onChange(of: proxyUsername) { _, _ in saveProxyCredentials() }
         .onChange(of: proxyPassword) { _, _ in saveProxyCredentials() }
         .onDisappear {
@@ -273,7 +276,7 @@ struct PreferencesView: View {
                         if proxyUsesAuthentication {
                             TextField("Username", text: $proxyUsername)
                             SecureField("Password", text: $proxyPassword)
-                            Text("Credentials are saved in your macOS Keychain. Authenticated proxy requests are not yet available in the engine.")
+                            Text("Credentials are saved in your macOS Keychain. The engine will refuse requests through this proxy until authenticated proxy transfers are supported.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -345,7 +348,10 @@ struct PreferencesView: View {
     }
 
     private func load() async {
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            if lastPersistedSettings != nil { scheduleSave(settings) }
+        }
         do {
             let loaded = try await engine.loadSettings()
             lastPersistedSettings = loaded
@@ -428,8 +434,11 @@ struct PreferencesView: View {
         }
         if let saved = ProxyCredentialStore.load() {
             proxyUsesAuthentication = true
+            settings.proxyAuthenticationRequired = true
             proxyUsername = saved.username
             proxyPassword = saved.password
+        } else {
+            proxyUsesAuthentication = settings.proxyAuthenticationRequired
         }
     }
 

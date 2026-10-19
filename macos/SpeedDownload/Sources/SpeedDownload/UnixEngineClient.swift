@@ -219,6 +219,7 @@ struct EngineSettings: Codable, Sendable, Equatable {
     var defaultDownloadFolder = ""
     var proxyMode = "system"
     var proxyURL: String?
+    var proxyAuthenticationRequired = false
     var bandwidthLimitBytesPerSecond: UInt64 = 0
     var queueScheduleEnabled = false
     var queueScheduleSlots: [Bool] = Array(repeating: true, count: 168)
@@ -226,6 +227,27 @@ struct EngineSettings: Codable, Sendable, Equatable {
     var scheduledBandwidthLimitBytesPerSecond: UInt64 = 0
     var bandwidthScheduleSlots: [BandwidthScheduleMode] = Array(repeating: .globalLimit, count: 168)
     var debugLogEnabled = false
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try fields.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 2
+        maxConcurrentTasks = try fields.decodeIfPresent(Int.self, forKey: .maxConcurrentTasks) ?? 4
+        defaultConnectionsPerTask = try fields.decodeIfPresent(Int.self, forKey: .defaultConnectionsPerTask) ?? 4
+        multipartMode = try fields.decodeIfPresent(String.self, forKey: .multipartMode)
+        defaultDownloadFolder = try fields.decodeIfPresent(String.self, forKey: .defaultDownloadFolder) ?? ""
+        proxyMode = try fields.decodeIfPresent(String.self, forKey: .proxyMode) ?? "system"
+        proxyURL = try fields.decodeIfPresent(String.self, forKey: .proxyURL)
+        proxyAuthenticationRequired = try fields.decodeIfPresent(Bool.self, forKey: .proxyAuthenticationRequired) ?? false
+        bandwidthLimitBytesPerSecond = try fields.decodeIfPresent(UInt64.self, forKey: .bandwidthLimitBytesPerSecond) ?? 0
+        queueScheduleEnabled = try fields.decodeIfPresent(Bool.self, forKey: .queueScheduleEnabled) ?? false
+        queueScheduleSlots = try fields.decodeIfPresent([Bool].self, forKey: .queueScheduleSlots) ?? Array(repeating: true, count: 168)
+        bandwidthScheduleEnabled = try fields.decodeIfPresent(Bool.self, forKey: .bandwidthScheduleEnabled) ?? false
+        scheduledBandwidthLimitBytesPerSecond = try fields.decodeIfPresent(UInt64.self, forKey: .scheduledBandwidthLimitBytesPerSecond) ?? 0
+        bandwidthScheduleSlots = try fields.decodeIfPresent([BandwidthScheduleMode].self, forKey: .bandwidthScheduleSlots) ?? Array(repeating: .globalLimit, count: 168)
+        debugLogEnabled = try fields.decodeIfPresent(Bool.self, forKey: .debugLogEnabled) ?? false
+    }
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -235,6 +257,7 @@ struct EngineSettings: Codable, Sendable, Equatable {
         case defaultDownloadFolder = "default_download_folder"
         case proxyMode = "proxy_mode"
         case proxyURL = "proxy_url"
+        case proxyAuthenticationRequired = "proxy_authentication_required"
         case bandwidthLimitBytesPerSecond = "bandwidth_limit_bytes_per_second"
         case queueScheduleEnabled = "queue_schedule_enabled"
         case queueScheduleSlots = "queue_schedule_slots"

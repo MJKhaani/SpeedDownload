@@ -9,5 +9,6 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "SpeedDownload"),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

@@ -28,6 +28,7 @@ pub const Settings = struct {
     default_download_folder: []const u8 = "",
     proxy_mode: ProxyMode = .system,
     proxy_url: ?[]const u8 = null,
+    proxy_authentication_required: bool = false,
     bandwidth_limit_bytes_per_second: u64 = 0,
     queue_schedule_enabled: bool = false,
     queue_schedule_slots: [hours_per_week]bool = @splat(true),
@@ -309,6 +310,7 @@ pub const Store = struct {
     pub const OwnedProxyPolicy = struct {
         mode: ProxyMode,
         url: ?[]u8,
+        authentication_required: bool,
 
         pub fn deinit(self: OwnedProxyPolicy, allocator: std.mem.Allocator) void {
             if (self.url) |url| allocator.free(url);
@@ -323,6 +325,7 @@ pub const Store = struct {
         return .{
             .mode = self.settings.proxy_mode,
             .url = if (self.settings.proxy_url) |url| try self.allocator.dupe(u8, url) else null,
+            .authentication_required = self.settings.proxy_authentication_required,
         };
     }
 
@@ -377,6 +380,7 @@ pub const Store = struct {
             .default_download_folder = try self.allocator.dupe(u8, value.default_download_folder),
             .proxy_mode = value.proxy_mode,
             .proxy_url = if (value.proxy_url) |url| try self.allocator.dupe(u8, url) else null,
+            .proxy_authentication_required = value.proxy_authentication_required,
             .bandwidth_limit_bytes_per_second = value.bandwidth_limit_bytes_per_second,
             .queue_schedule_enabled = value.queue_schedule_enabled,
             .queue_schedule_slots = value.queue_schedule_slots,
@@ -847,6 +851,7 @@ pub const Store = struct {
         connections: u8,
         proxy_mode: ProxyMode,
         proxy_url: ?[]u8,
+        proxy_authentication_required: bool,
         expected_sha256: ?[32]u8,
         selected_torrent_files: ?[]const []const u8,
 
@@ -877,7 +882,7 @@ pub const Store = struct {
             const proxy_url = if (self.settings.proxy_url) |value| try self.allocator.dupe(u8, value) else null;
             errdefer if (proxy_url) |value| self.allocator.free(value);
             const selected = try duplicateSelectedFiles(self.allocator, job.selected_torrent_files);
-            return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256), .selected_torrent_files = selected };
+            return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .proxy_authentication_required = self.settings.proxy_authentication_required, .expected_sha256 = decodeSha256(job.expected_sha256), .selected_torrent_files = selected };
         }
         return error.JobNotFound;
     }
@@ -985,7 +990,7 @@ pub const Store = struct {
         const proxy_url = if (self.settings.proxy_url) |value| try self.allocator.dupe(u8, value) else null;
         errdefer if (proxy_url) |value| self.allocator.free(value);
         const selected = try duplicateSelectedFiles(self.allocator, job.selected_torrent_files);
-        return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .expected_sha256 = decodeSha256(job.expected_sha256), .selected_torrent_files = selected };
+        return .{ .id = id, .url = url, .name = name, .destination = destination, .connections = self.connectionsForJob(job), .proxy_mode = self.settings.proxy_mode, .proxy_url = proxy_url, .proxy_authentication_required = self.settings.proxy_authentication_required, .expected_sha256 = decodeSha256(job.expected_sha256), .selected_torrent_files = selected };
     }
 
     fn connectionsForJob(self: *const Store, job: Job) u8 {
