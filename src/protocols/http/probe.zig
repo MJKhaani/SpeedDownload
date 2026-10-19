@@ -37,13 +37,12 @@ pub fn inspectWithPolicy(allocator: std.mem.Allocator, io: std.Io, url: []const 
     var proxy_state = @import("proxy.zig").State.init(allocator);
     defer proxy_state.deinit();
     defer client.deinit();
-    try proxy_state.apply(&client, proxy_policy, original_uri);
-
     const range_header = [_]http.Header{.{ .name = "range", .value = "bytes=0-0" }};
-    var get_request = try client.request(.GET, original_uri, .{
+    var opened = try @import("proxy.zig").openGet(&client, &proxy_state, proxy_policy, original_uri, .{
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = &range_header,
     });
+    const get_request = opened.request;
     var abandon_body = false;
     defer {
         if (abandon_body) {
@@ -52,11 +51,9 @@ pub fn inspectWithPolicy(allocator: std.mem.Allocator, io: std.Io, url: []const 
             get_request.connection.?.closing = true;
             get_request.reader.state = .ready;
         }
-        get_request.deinit();
+        opened.deinit();
     }
-    try get_request.sendBodiless();
-    var redirect_buffer: [8 * 1024]u8 = undefined;
-    var response = try get_request.receiveHead(&redirect_buffer);
+    var response = opened.response;
     abandon_body = true;
     if (response.head.status == .too_many_requests or response.head.status == .service_unavailable)
         return error.ServerBusy;

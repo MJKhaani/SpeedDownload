@@ -243,7 +243,6 @@ fn downloadSingleStreamWithProgress(
     var proxy_state = @import("proxy.zig").State.init(allocator);
     defer proxy_state.deinit();
     defer client.deinit();
-    try proxy_state.apply(&client, proxy_policy, uri);
 
     var extra_headers: [2]http.Header = undefined;
     var extra_header_count: usize = 0;
@@ -262,10 +261,11 @@ fn downloadSingleStreamWithProgress(
         extra_header_count += 1;
     }
 
-    var request = try client.request(.GET, uri, .{
+    var opened = try @import("proxy.zig").openGet(&client, &proxy_state, proxy_policy, uri, .{
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = extra_headers[0..extra_header_count],
     });
+    const request = opened.request;
     var response_started = false;
     var body_consumed = false;
     defer {
@@ -275,12 +275,9 @@ fn downloadSingleStreamWithProgress(
             request.connection.?.closing = true;
             request.reader.state = .ready;
         }
-        request.deinit();
+        opened.deinit();
     }
-    try request.sendBodiless();
-
-    var redirect_buffer: [8 * 1024]u8 = undefined;
-    var response = try request.receiveHead(&redirect_buffer);
+    var response = opened.response;
     response_started = true;
     if (response.head.status == .too_many_requests or response.head.status == .service_unavailable) {
         const retry_after = @import("retry_after.zig");

@@ -27,9 +27,18 @@ pub const State = struct {
         if (self.https_host) |host| self.allocator.free(host);
     }
 
-    /// Call before the first request and keep this state alive until the
-    /// client has been deinitialized. Unsupported custom proxy types fail
-    /// closed, so a download cannot bypass a configured proxy silently.
+    fn reset(self: *State, client: *http.Client) void {
+        if (self.host) |host| self.allocator.free(host);
+        if (self.https_host) |host| self.allocator.free(host);
+        self.host = null;
+        self.https_host = null;
+        client.http_proxy = null;
+        client.https_proxy = null;
+    }
+
+    /// Call before a request and keep this state alive until the client has
+    /// been deinitialized. `openGet` reapplies it for each redirect hop.
+    /// Unsupported custom proxy types fail closed.
     pub fn apply(self: *State, client: *http.Client, policy: Policy, target: std.Uri) !void {
         if (policy.mode == .system) {
             if (comptime builtin.os.tag == .macos) try self.applyMacOSSystem(client, target);
@@ -90,6 +99,86 @@ pub const State = struct {
         }
     }
 };
+
+/// A request and response with stable storage for redirected URI components.
+/// The caller may mark `request.connection.?.closing` before deinit when it
+/// intentionally abandons a response body.
+pub const Opened = struct {
+    allocator: std.mem.Allocator,
+    request: *http.Client.Request,
+    response: http.Client.Response,
+    redirect_buffer: []u8,
+    uri_storage: ?[]u8 = null,
+
+    pub fn deinit(self: *Opened) void {
+        self.request.deinit();
+        self.allocator.destroy(self.request);
+        self.allocator.free(self.redirect_buffer);
+        if (self.uri_storage) |value| self.allocator.free(value);
+    }
+};
+
+/// Follow at most three redirects. On macOS system-proxy mode, each hop gets
+/// a fresh proxy selection for its actual destination. Other modes retain
+/// Zig's automatic redirect handling. Request headers must outlive `Opened`.
+pub fn openGet(client: *http.Client, state: *State, policy: Policy, initial_uri: std.Uri, options: http.Client.RequestOptions) !Opened {
+    const allocator = state.allocator;
+    const manual = builtin.os.tag == .macos and policy.mode == .system;
+    var owned_uri: ?[]u8 = null;
+    errdefer if (owned_uri) |value| allocator.free(value);
+    var uri = initial_uri;
+    for (0..4) |hop| {
+        state.reset(client);
+        try state.apply(client, policy, uri);
+        var request_options = options;
+        if (manual) request_options.redirect_behavior = .unhandled;
+        var opened = try openOnce(client, uri, request_options);
+        if (!manual or opened.response.head.status.class() != .redirect or opened.response.head.status == .not_modified) {
+            opened.uri_storage = owned_uri;
+            return opened;
+        }
+        const next = blk: {
+            defer opened.deinit();
+            // A redirect body is irrelevant and may be arbitrarily large.
+            opened.request.connection.?.closing = true;
+            opened.request.reader.state = .ready;
+            if (hop == 3) return error.TooManyHttpRedirects;
+            const location = opened.response.head.location orelse return error.HttpRedirectLocationMissing;
+            if (location.len > 8 * 1024) return error.HttpRedirectLocationOversize;
+            var resolve_buffer: [16 * 1024]u8 = undefined;
+            @memcpy(resolve_buffer[0..location.len], location);
+            var available: []u8 = resolve_buffer[0..];
+            const redirected = opened.request.uri.resolveInPlace(location.len, &available) catch return error.HttpRedirectLocationInvalid;
+            if (http.Client.Protocol.fromUri(redirected) == null) return error.UnsupportedUriScheme;
+            const resolved = try uriString(allocator, redirected);
+            break :blk resolved;
+        };
+        if (owned_uri) |value| allocator.free(value);
+        owned_uri = next;
+        uri = std.Uri.parse(next) catch return error.HttpRedirectLocationInvalid;
+    }
+    unreachable;
+}
+
+fn openOnce(client: *http.Client, uri: std.Uri, options: http.Client.RequestOptions) !Opened {
+    const allocator = client.allocator;
+    const request = try allocator.create(http.Client.Request);
+    errdefer allocator.destroy(request);
+    request.* = try client.request(.GET, uri, options);
+    errdefer request.deinit();
+    const redirect_buffer = try allocator.alloc(u8, 8 * 1024);
+    errdefer allocator.free(redirect_buffer);
+    try request.sendBodiless();
+    const response = try request.receiveHead(redirect_buffer);
+    return .{ .allocator = allocator, .request = request, .response = response, .redirect_buffer = redirect_buffer };
+}
+
+fn uriString(allocator: std.mem.Allocator, uri: std.Uri) ![]u8 {
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    try uri.format(&output.writer);
+    return allocator.dupe(u8, output.written());
+}
 
 const SystemProxyConfig = struct {
     http_enabled: bool = false,

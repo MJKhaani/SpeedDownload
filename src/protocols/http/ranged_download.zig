@@ -327,17 +327,17 @@ const WorkerContext = struct {
 fn runWorker(context: *WorkerContext) void {
     while (true) {
         switch (context.shared.claimSegment()) {
-        .segment => |segment| {
-            runSegment(context.shared, context, segment) catch |err| {
-                context.shared.results[context.slot] = err;
-                context.shared.failed.store(true, .release);
+            .segment => |segment| {
+                runSegment(context.shared, context, segment) catch |err| {
+                    context.shared.results[context.slot] = err;
+                    context.shared.failed.store(true, .release);
+                    context.shared.finishSegment();
+                    return;
+                };
                 context.shared.finishSegment();
-                return;
-            };
-            context.shared.finishSegment();
-        },
-        .wait => std.Io.sleep(context.shared.io, std.Io.Duration.fromMilliseconds(50), .awake) catch return,
-        .done => return,
+            },
+            .wait => std.Io.sleep(context.shared.io, std.Io.Duration.fromMilliseconds(50), .awake) catch return,
+            .done => return,
         }
     }
 }
@@ -351,15 +351,15 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
     defer client.deinit();
     var uri = try std.Uri.parse(self.url);
     uri.scheme = if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) "https" else "http";
-    try proxy_state.apply(&client, self.proxy_policy, uri);
     const headers = [_]http.Header{
         .{ .name = "range", .value = header_value },
         .{ .name = "if-range", .value = self.etag },
     };
-    var request = try client.request(.GET, uri, .{
+    var opened = try proxy.openGet(&client, &proxy_state, self.proxy_policy, uri, .{
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = &headers,
     });
+    const request = opened.request;
     var response_truncated = false;
     defer {
         if (response_truncated) {
@@ -368,11 +368,9 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
             request.connection.?.closing = true;
             request.reader.state = .ready;
         }
-        request.deinit();
+        opened.deinit();
     }
-    try request.sendBodiless();
-    var redirect_buffer: [8 * 1024]u8 = undefined;
-    var response = try request.receiveHead(&redirect_buffer);
+    var response = opened.response;
     // Until the exact requested body has been consumed, deinit must close
     // rather than drain a response that may be a full 200 or an endless body.
     response_truncated = true;
@@ -450,23 +448,21 @@ fn probeRanges(allocator: Allocator, io: Io, uri: std.Uri, proxy_policy: proxy.P
     var proxy_state = proxy.State.init(allocator);
     defer proxy_state.deinit();
     defer client.deinit();
-    try proxy_state.apply(&client, proxy_policy, uri);
     const headers = [_]http.Header{.{ .name = "range", .value = "bytes=0-0" }};
-    var request = try client.request(.GET, uri, .{
+    var opened = try proxy.openGet(&client, &proxy_state, proxy_policy, uri, .{
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
         .extra_headers = &headers,
     });
+    const request = opened.request;
     var abandon_body = false;
     defer {
         if (abandon_body) {
             request.connection.?.closing = true;
             request.reader.state = .ready;
         }
-        request.deinit();
+        opened.deinit();
     }
-    try request.sendBodiless();
-    var redirect_buffer: [8 * 1024]u8 = undefined;
-    var response = try request.receiveHead(&redirect_buffer);
+    var response = opened.response;
     abandon_body = true;
     if (response.head.status == .too_many_requests or response.head.status == .service_unavailable) {
         const retry_after = @import("retry_after.zig");
