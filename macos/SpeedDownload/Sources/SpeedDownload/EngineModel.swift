@@ -331,7 +331,19 @@ final class EngineModel: ObservableObject {
                         try subscription.nextEvent()
                     }.value
                     guard isConnected, connectionAttempt == attempt else { return }
-                    if event != nil { await refreshJobs() }
+                    if let event {
+                        if event.resyncRequired || event.jobs == nil {
+                            await refreshJobs()
+                        } else if let updates = event.jobs {
+                            let known = Set(jobs.map(\.jobID))
+                            if updates.contains(where: { !known.contains($0.jobID) }) {
+                                await refreshJobs()
+                            } else {
+                                let byID = Dictionary(uniqueKeysWithValues: updates.map { ($0.jobID, $0) })
+                                applyJobs(jobs.map { byID[$0.jobID] ?? $0 })
+                            }
+                        }
+                    }
                     return
                 }
                 let cursor = jobCursor

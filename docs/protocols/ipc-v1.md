@@ -71,7 +71,7 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `jobs.delete` | `job_id`, `expected_revision`, optional `delete_partial` | Deleted job identifier | Reject active jobs and stale revisions; preserve completed destination files; partial file cleanup is opt-in |
 | `jobs.start` / `jobs.pause` / `jobs.resume` / `jobs.retry` | `job_id`, key, optional `expected_revision` | Updated job state/revision | Valid state transitions, idempotent operations |
 | `jobs.cancel` | `job_id`, explicit partial-file policy | Final state | Never conflate pause with deleting partial data |
-| `jobs.subscribe` | Optional `max_updates_per_second` (1–10) | `subscription_id`, first 20 job summaries, total, next offset, and cursor | Dedicated connection; atomic first page and cursor; bounded invalidation notices |
+| `jobs.subscribe` | Optional `max_updates_per_second` (1–10) | `subscription_id`, first 20 job summaries, total, next offset, and cursor | Dedicated connection; atomic first page and cursor; bounded change notices |
 | `jobs.unsubscribe` | `subscription_id` | Confirmation | Must be sent on the same connection; closing it also unsubscribes |
 | `settings.get` | Scopes | Redacted public settings | No credentials in snapshots |
 | `settings.update` | Changed fields, key and expected revision | New revision | Validate settings and authorize sensitive changes |
@@ -189,10 +189,10 @@ The server persists the job and deduplication key before returning success. Repl
 **Event notification:**
 
 ```json
-{"jsonrpc":"2.0","method":"events.changed","params":{"subscription_id":"sub-41","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","seq":"1","cursor":"2","resync_required":true}}
+{"jsonrpc":"2.0","method":"events.changed","params":{"subscription_id":"sub-41","engine_instance_id":"5ee6f1e7-5ab9-472f-a0a3-55662422c91e","seq":"1","cursor":"2","resync_required":true,"jobs":[]}}
 ```
 
-The engine atomically captures the first 20 job summaries and cursor. Clients fetch additional pages with `jobs.list` on a separate connection. The subscription connection sends invalidation notices at no more than the requested rate; each notice has a contiguous emitted-event sequence, the latest cursor, and `resync_required: true`. Fetch authoritative pages after each notice. Send `jobs.unsubscribe` on the same connection or close it to unsubscribe. The transport has a bounded write timeout and disconnects a slow subscriber; transfer workers never write to clients. Per-job deltas and filters are still pending.
+The engine atomically captures the first 20 job summaries and cursor. Clients fetch additional pages with `jobs.list` on a separate connection. The subscription connection sends notices at no more than the requested rate. Each notice has a contiguous emitted-event sequence and latest cursor. For bounded live progress changes, `resync_required` is `false` and `jobs` contains the current summaries of changed jobs; clients may apply these by `job_id`. Durable changes, a missed history window, or more than 20 changed jobs set `resync_required` to `true` and send an empty `jobs` array; clients must fetch authoritative pages then. Clients should also fetch pages after reconnecting. Send `jobs.unsubscribe` on the same connection or close it to unsubscribe. The transport has a bounded write timeout and disconnects a slow subscriber; transfer workers never write to clients. Subscription filters are still pending.
 
 ## 7. Errors
 

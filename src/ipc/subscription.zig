@@ -1,6 +1,7 @@
 //! Bounded invalidation notices for a dedicated job subscription connection.
 const std = @import("std");
 const frame = @import("frame.zig");
+const job_store = @import("../core/job_store.zig");
 
 pub const Started = struct {
     id: []u8,
@@ -37,22 +38,8 @@ pub fn started(allocator: std.mem.Allocator, request_payload: []const u8, respon
     };
 }
 
-pub fn eventFrame(allocator: std.mem.Allocator, id: []const u8, engine_instance_id: []const u8, sequence: u64, cursor: u64) ![]u8 {
-    const sequence_text = try std.fmt.allocPrint(allocator, "{d}", .{sequence});
-    defer allocator.free(sequence_text);
-    const cursor_text = try std.fmt.allocPrint(allocator, "{d}", .{cursor});
-    defer allocator.free(cursor_text);
-    const payload = try std.json.Stringify.valueAlloc(allocator, .{
-        .jsonrpc = "2.0",
-        .method = "events.changed",
-        .params = .{
-            .subscription_id = id,
-            .engine_instance_id = engine_instance_id,
-            .seq = sequence_text,
-            .cursor = cursor_text,
-            .resync_required = true,
-        },
-    }, .{});
+pub fn eventFrame(allocator: std.mem.Allocator, jobs: *job_store.Store, id: []const u8, engine_instance_id: []const u8, sequence: u64, after_cursor: u64) ![]u8 {
+    const payload = try jobs.changeEventJson(id, engine_instance_id, sequence, after_cursor);
     defer allocator.free(payload);
     return frame.encode(allocator, payload);
 }

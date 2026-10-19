@@ -211,7 +211,7 @@ fn serveConnection(allocator: std.mem.Allocator, fd: c.fd_t, server: ServerIdent
                 const cursor = engine.jobs.changeCursor();
                 if (cursor == item.cursor) continue;
                 event_sequence += 1;
-                const notice = try subscription.eventFrame(allocator, item.id, server.engine_instance_id, event_sequence, cursor);
+                const notice = try subscription.eventFrame(allocator, engine.jobs, item.id, server.engine_instance_id, event_sequence, item.cursor);
                 defer allocator.free(notice);
                 try writeAll(fd, notice);
                 item.cursor = cursor;

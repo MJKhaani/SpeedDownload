@@ -88,12 +88,14 @@ struct JobSubscriptionEvent: Decodable, Sendable {
     let seq: String
     let cursor: String
     let resyncRequired: Bool
+    let jobs: [DownloadJob]?
 
     enum CodingKeys: String, CodingKey {
         case subscriptionID = "subscription_id"
         case engineInstanceID = "engine_instance_id"
         case seq, cursor
         case resyncRequired = "resync_required"
+        case jobs
     }
 }
 

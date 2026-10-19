@@ -122,6 +122,68 @@ pub const Store = struct {
     mutex: std.Io.Mutex = .init,
     log_mutex: std.Io.Mutex = .init,
     change_sequence: std.atomic.Value(u64) = .init(1),
+    change_records: [256]ChangeRecord = undefined,
+    change_record_count: usize = 0,
+
+    const ChangeRecord = struct { cursor: u64, job_id: ?[36]u8 };
+
+    // Called with the store lock held. A null ID invalidates the whole list.
+    fn recordChange(self: *Store, job_id: ?[]const u8) void {
+        const cursor = self.change_sequence.fetchAdd(1, .release) + 1;
+        const id: ?[36]u8 = if (job_id) |value| if (value.len == 36) value[0..36].* else null else null;
+        self.change_records[@intCast((cursor - 2) % self.change_records.len)] = .{ .cursor = cursor, .job_id = id };
+        self.change_record_count = @min(self.change_record_count + 1, self.change_records.len);
+    }
+
+    /// Serialize a bounded notification while holding the same lock as job updates.
+    /// Durable mutations use a full refresh because they may change list order or membership.
+    pub fn changeEventJson(self: *Store, subscription_id: []const u8, engine_instance_id: []const u8, sequence: u64, after_cursor: u64) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const current = self.change_sequence.load(.acquire);
+        var resync = after_cursor > current or current -| after_cursor > self.change_record_count;
+        var ids: [20][36]u8 = undefined;
+        var count: usize = 0;
+        if (!resync) {
+            var cursor = after_cursor + 1;
+            while (cursor <= current) : (cursor += 1) {
+                const record = self.change_records[@intCast((cursor - 2) % self.change_records.len)];
+                if (record.cursor != cursor or record.job_id == null) { resync = true; break; }
+                const id = record.job_id.?;
+                var seen = false;
+                for (ids[0..count]) |existing| if (std.mem.eql(u8, &existing, &id)) { seen = true; break; };
+                if (!seen) {
+                    if (count == ids.len) { resync = true; break; }
+                    ids[count] = id;
+                    count += 1;
+                }
+            }
+        }
+        var summaries: std.ArrayList(Summary) = .empty;
+        defer summaries.deinit(self.allocator);
+        defer for (summaries.items) |summary| freeSummary(self.allocator, summary);
+        if (!resync) {
+            for (ids[0..count]) |id| {
+                var found = false;
+                for (self.jobs.items) |*job| {
+                    if (!std.mem.eql(u8, job.id, &id)) continue;
+                    try summaries.append(self.allocator, try makeSummary(self.allocator, job));
+                    found = true;
+                    break;
+                }
+                if (!found) { resync = true; break; }
+            }
+        }
+        const cursor_text = try std.fmt.allocPrint(self.allocator, "{d}", .{current});
+        defer self.allocator.free(cursor_text);
+        const sequence_text = try std.fmt.allocPrint(self.allocator, "{d}", .{sequence});
+        defer self.allocator.free(sequence_text);
+        return std.json.Stringify.valueAlloc(self.allocator, .{
+            .jsonrpc = "2.0",
+            .method = "events.changed",
+            .params = .{ .subscription_id = subscription_id, .engine_instance_id = engine_instance_id, .seq = sequence_text, .cursor = cursor_text, .resync_required = resync, .jobs = if (resync) summaries.items[0..0] else summaries.items },
+        }, .{});
+    }
 
     /// In-memory cursor for bounded change waits. Clients must discard it
     /// after an engine restart; it is not a durable job revision.
@@ -1149,7 +1211,7 @@ pub const Store = struct {
             job.live_received_bytes = completed_bytes;
             job.live_total_bytes = total_bytes;
             if (!durable) {
-                _ = self.change_sequence.fetchAdd(1, .release);
+                self.recordChange(job.id);
                 return;
             }
             const previous_completed = job.completed_bytes;
@@ -1184,7 +1246,7 @@ pub const Store = struct {
                 break :blk next;
             };
             job.workers[index] = .{ .worker_id = worker_id, .start = start, .end = end, .downloaded = downloaded };
-            _ = self.change_sequence.fetchAdd(1, .release);
+            self.recordChange(job.id);
             return;
         }
     }
@@ -1197,7 +1259,7 @@ pub const Store = struct {
             job.torrent_peer_count = null;
             job.torrent_seeder_count = null;
             job.torrent_leecher_count = null;
-            _ = self.change_sequence.fetchAdd(1, .release);
+            self.recordChange(job.id);
             return;
         }
     }
@@ -1210,7 +1272,7 @@ pub const Store = struct {
             job.torrent_peer_count = peers;
             if (seeders) |count| job.torrent_seeder_count = count;
             if (leechers) |count| job.torrent_leecher_count = count;
-            _ = self.change_sequence.fetchAdd(1, .release);
+            self.recordChange(job.id);
             return;
         }
     }
@@ -1449,7 +1511,7 @@ pub const Store = struct {
         defer atomic.deinit(self.io);
         try atomic.file.writeStreamingAll(self.io, data);
         try atomic.replace(self.io);
-        _ = self.change_sequence.fetchAdd(1, .release);
+        self.recordChange(null);
     }
 
     fn loadSettings(self: *Store) !void {
