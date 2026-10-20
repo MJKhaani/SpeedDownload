@@ -119,6 +119,7 @@ pub const Store = struct {
     file_path: []const u8,
     settings_path: []const u8,
     settings: Settings = .{},
+    settings_owned: bool = false,
     jobs: std.ArrayList(Job) = .empty,
     mutex: std.Io.Mutex = .init,
     log_mutex: std.Io.Mutex = .init,
@@ -282,7 +283,7 @@ pub const Store = struct {
         self.jobs.deinit(self.allocator);
         self.allocator.free(self.directory_path);
         self.allocator.free(self.file_path);
-        self.freeSettings(self.settings);
+        if (self.settings_owned) self.freeSettings(self.settings);
         self.allocator.free(self.settings_path);
         self.* = undefined;
     }
@@ -1559,12 +1560,14 @@ pub const Store = struct {
         var file = std.Io.Dir.openFileAbsolute(self.io, self.settings_path, .{ .follow_symlinks = false }) catch |err| switch (err) {
             error.FileNotFound => {
                 self.settings = try self.duplicateSettings(.{});
+                self.settings_owned = true;
                 try self.persistSettings();
                 return;
             },
             else => return err,
         };
-        defer file.close(self.io);
+        var file_open = true;
+        defer if (file_open) file.close(self.io);
         const stat = try file.stat(self.io);
         if (stat.size > 1024 * 1024) return error.SettingsTooLarge;
         var buffer: [4096]u8 = undefined;
@@ -1574,9 +1577,20 @@ pub const Store = struct {
         const parsed = try std.json.parseFromSlice(Settings, self.allocator, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         var migrated = parsed.value;
+        const needs_migration = switch (migrated.schema_version) {
+            1 => true,
+            2 => false,
+            else => return error.UnsupportedSettingsVersion,
+        };
         migrated.schema_version = 2;
         try validateSettings(migrated);
         self.settings = try self.duplicateSettings(migrated);
+        self.settings_owned = true;
+        if (needs_migration) {
+            file.close(self.io);
+            file_open = false;
+            try self.persistSettings();
+        }
     }
 
     fn persistSettings(self: *Store) !void {
