@@ -123,12 +123,11 @@ pub const Opened = struct {
     }
 };
 
-/// Follow at most three redirects. On macOS system-proxy mode, each hop gets
-/// a fresh proxy selection for its actual destination. Other modes retain
-/// Zig's automatic redirect handling. Request headers must outlive `Opened`.
+/// Follow at most three redirects, applying proxy policy to each destination.
+/// Never downgrade an HTTPS source to HTTP or accept redirect credentials.
+/// Request headers must outlive `Opened`.
 pub fn openGet(client: *http.Client, state: *State, policy: Policy, initial_uri: std.Uri, options: http.Client.RequestOptions) !Opened {
     const allocator = state.allocator;
-    const manual = builtin.os.tag == .macos and policy.mode == .system;
     var owned_uri: ?[]u8 = null;
     errdefer if (owned_uri) |value| allocator.free(value);
     var uri = initial_uri;
@@ -136,9 +135,9 @@ pub fn openGet(client: *http.Client, state: *State, policy: Policy, initial_uri:
         state.reset(client);
         try state.apply(client, policy, uri);
         var request_options = options;
-        if (manual) request_options.redirect_behavior = .unhandled;
+        request_options.redirect_behavior = .unhandled;
         var opened = try openOnce(client, uri, request_options);
-        if (!manual or opened.response.head.status.class() != .redirect or opened.response.head.status == .not_modified) {
+        if (opened.response.head.status.class() != .redirect or opened.response.head.status == .not_modified) {
             opened.uri_storage = owned_uri;
             return opened;
         }
@@ -153,8 +152,18 @@ pub fn openGet(client: *http.Client, state: *State, policy: Policy, initial_uri:
             var resolve_buffer: [16 * 1024]u8 = undefined;
             @memcpy(resolve_buffer[0..location.len], location);
             var available: []u8 = resolve_buffer[0..];
-            const redirected = opened.request.uri.resolveInPlace(location.len, &available) catch return error.HttpRedirectLocationInvalid;
-            if (http.Client.Protocol.fromUri(redirected) == null) return error.UnsupportedUriScheme;
+            var redirected = opened.request.uri.resolveInPlace(location.len, &available) catch return error.HttpRedirectLocationInvalid;
+            redirected.scheme = if (std.ascii.eqlIgnoreCase(redirected.scheme, "https"))
+                "https"
+            else if (std.ascii.eqlIgnoreCase(redirected.scheme, "http"))
+                "http"
+            else
+                return error.UnsupportedUriScheme;
+            if (std.ascii.eqlIgnoreCase(opened.request.uri.scheme, "https") and std.ascii.eqlIgnoreCase(redirected.scheme, "http"))
+                return error.InsecureHttpRedirect;
+            if (redirected.user != null or redirected.password != null)
+                return error.HttpRedirectCredentials;
+            redirected.fragment = null;
             const resolved = try uriString(allocator, redirected);
             break :blk resolved;
         };

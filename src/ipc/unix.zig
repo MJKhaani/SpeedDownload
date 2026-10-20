@@ -419,6 +419,10 @@ pub fn dispatchMethod(
                 "The server is temporarily busy or rate limiting requests. Wait before inspecting this link again."
             else if (err == error.ProxyAuthenticationUnavailable)
                 "Authenticated proxy transfers are not available in this engine version. Turn off proxy authentication or use an unauthenticated proxy."
+            else if (err == error.InsecureHttpRedirect)
+                "This link redirects from HTTPS to HTTP. Use a secure final URL or contact the source site."
+            else if (err == error.HttpRedirectCredentials)
+                "The redirect contains URL credentials and was rejected."
             else
                 try std.fmt.allocPrint(arena.allocator(), "URL probe failed in the engine: {s}", .{@errorName(err)});
             return dispatchError(allocator, request_id, -32021, message);
@@ -604,10 +608,14 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             "This multipart HTTP partial uses an older journal format and cannot be resumed safely. Remove the partial and add the download again."
         else if (err == error.PartialFileLengthMismatch)
             "The multipart partial file size no longer matches the saved download. The partial was preserved; remove it and add the download again."
+        else if (err == error.InsecureHttpRedirect)
+            "The source redirected from HTTPS to HTTP. The download was stopped before contacting the insecure destination."
+        else if (err == error.HttpRedirectCredentials)
+            "The source redirected to a URL with credentials. The download was stopped."
         else
             std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
         engine.jobs.logAction("transfer", @errorName(err));
-        defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and err != error.PartialFileLengthMismatch and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
+        defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and err != error.PartialFileLengthMismatch and err != error.InsecureHttpRedirect and err != error.HttpRedirectCredentials and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
         engine.jobs.finishDownload(task.id, false, error_message) catch {};
         return;
     };

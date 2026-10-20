@@ -25,6 +25,11 @@ derives the suggested name, final redirected URL, size, and range capability
 from that response. If the server ignores the range and sends a full response,
 the preflight closes its connection after the headers instead of reading the
 file body.
+HTTP probes and transfers follow at most three redirects with proxy policy
+reapplied for each destination. Redirects to non-HTTP schemes, URLs containing
+credentials, and HTTPS-to-HTTP downgrades are rejected before contacting the
+redirected address. URL fragments are discarded. This also applies to
+multipart workers.
 
 ## Interval invariants
 

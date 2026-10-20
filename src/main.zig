@@ -191,8 +191,7 @@ fn runRpc(init: std.process.Init, args: []const []const u8) !void {
         params = if (state) |state_text| if (search) |search_text|
             try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .state = state_text, .search = search_text }, .{})
         else
-            try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .state = state_text }, .{})
-        else if (search) |search_text|
+            try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .state = state_text }, .{}) else if (search) |search_text|
             try std.json.Stringify.valueAlloc(allocator, .{ .offset = 0, .limit = 50, .search = search_text }, .{})
         else
             try allocator.dupe(u8, "{\"offset\":0,\"limit\":50}");
@@ -378,6 +377,10 @@ fn errorMessage(err: anyerror) []const u8 {
         "resume metadata is invalid; move or remove the .part and .part.odm files to restart"
     else if (err == error.InvalidFullResponse)
         "the server returned partial content without a valid resume request"
+    else if (err == error.InsecureHttpRedirect)
+        "the source redirected from HTTPS to HTTP; download stopped before contacting the insecure URL"
+    else if (err == error.HttpRedirectCredentials)
+        "the source redirected to a URL containing credentials"
     else
         @errorName(err);
 }
