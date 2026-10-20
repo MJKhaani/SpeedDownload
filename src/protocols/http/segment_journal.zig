@@ -10,6 +10,7 @@ const Io = std.Io;
 
 pub const Error = error{
     InvalidJournal,
+    JournalUpgradeRequired,
     InvalidRepresentation,
     InvalidExtentMap,
     SizeOverflow,
@@ -22,17 +23,20 @@ pub const Snapshot = struct {
     map: ranges.ExtentMap,
 };
 
-const magic = "SDRANGE1";
+const magic = "SDRANGE2";
+const legacy_magic = "SDRANGE1";
+const checksum_size = 32;
 const fixed_size = magic.len + 32 + 32 + 8 + 2 + 2 + 4;
 const segment_size = 4 + 8 + 8 + 8 + 1;
 const max_etag_length = 1024;
-const max_encoded_size = fixed_size + max_etag_length + ranges.max_segments * segment_size;
+const max_encoded_size = fixed_size + max_etag_length + ranges.max_segments * segment_size + checksum_size;
 
 /// Encodes a representation-bound snapshot in a deterministic format.
 pub fn encode(allocator: std.mem.Allocator, snapshot: Snapshot) ![]u8 {
     try validate(snapshot);
     const entries_size = std.math.mul(usize, snapshot.map.len, segment_size) catch return Error.SizeOverflow;
-    const total_size = std.math.add(usize, fixed_size + snapshot.etag.len, entries_size) catch return Error.SizeOverflow;
+    const data_size = std.math.add(usize, fixed_size + snapshot.etag.len, entries_size) catch return Error.SizeOverflow;
+    const total_size = std.math.add(usize, data_size, checksum_size) catch return Error.SizeOverflow;
     const output = try allocator.alloc(u8, total_size);
     errdefer allocator.free(output);
 
@@ -65,13 +69,20 @@ pub fn encode(allocator: std.mem.Allocator, snapshot: Snapshot) ![]u8 {
         output[cursor] = if (segment.state == .complete) 1 else 0;
         cursor += 1;
     }
+    var checksum: [checksum_size]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(output[0..cursor], &checksum, .{});
+    @memcpy(output[cursor..][0..checksum_size], &checksum);
     return output;
 }
 
 /// Decodes and fully validates a snapshot. The returned ETag is owned by the
 /// caller and must be freed with the same allocator.
 pub fn decode(allocator: std.mem.Allocator, input: []const u8) !Snapshot {
-    if (input.len < fixed_size or !std.mem.eql(u8, input[0..magic.len], magic)) return Error.InvalidJournal;
+    if (input.len >= legacy_magic.len and std.mem.eql(u8, input[0..legacy_magic.len], legacy_magic)) return Error.JournalUpgradeRequired;
+    if (input.len < fixed_size + checksum_size or !std.mem.eql(u8, input[0..magic.len], magic)) return Error.InvalidJournal;
+    var actual_checksum: [checksum_size]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(input[0 .. input.len - checksum_size], &actual_checksum, .{});
+    if (!std.mem.eql(u8, &actual_checksum, input[input.len - checksum_size ..])) return Error.InvalidJournal;
     var cursor = magic.len;
     var source_hash: [32]u8 = undefined;
     @memcpy(&source_hash, input[cursor..][0..32]);
@@ -92,7 +103,8 @@ pub fn decode(allocator: std.mem.Allocator, input: []const u8) !Snapshot {
         return Error.InvalidJournal;
     }
     const entry_bytes = std.math.mul(usize, count, segment_size) catch return Error.InvalidJournal;
-    const expected_length = std.math.add(usize, fixed_size + etag_length, entry_bytes) catch return Error.InvalidJournal;
+    const data_length = std.math.add(usize, fixed_size + etag_length, entry_bytes) catch return Error.InvalidJournal;
+    const expected_length = std.math.add(usize, data_length, checksum_size) catch return Error.InvalidJournal;
     if (input.len != expected_length) return Error.InvalidJournal;
 
     const etag = try allocator.dupe(u8, input[cursor..][0..etag_length]);
