@@ -602,10 +602,12 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             "This HTTP partial uses an older journal format and cannot be resumed safely. Remove the partial and add the download again."
         else if (err == error.JournalUpgradeRequired)
             "This multipart HTTP partial uses an older journal format and cannot be resumed safely. Remove the partial and add the download again."
+        else if (err == error.PartialFileLengthMismatch)
+            "The multipart partial file size no longer matches the saved download. The partial was preserved; remove it and add the download again."
         else
             std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
         engine.jobs.logAction("transfer", @errorName(err));
-        defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
+        defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and err != error.PartialFileLengthMismatch and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
         engine.jobs.finishDownload(task.id, false, error_message) catch {};
         return;
     };

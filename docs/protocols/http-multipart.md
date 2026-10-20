@@ -59,7 +59,10 @@ Checkpoints occur during segments and at pause, schedule stop, or transfer
 error when the worker can sync its buffered data. If a server changes the
 representation or returns an invalid range after a partial exists, the engine
 preserves the partial and reports the error instead of silently restarting a
-single-stream download. The worker count follows the per-task setting (up to
+single-stream download. A partial file whose length no longer matches the
+journal is also preserved and rejected; the user can remove it and start a
+fresh download. The engine checks the file length before replacing the journal.
+The worker count follows the per-task setting (up to
 32). Before requests start, the engine partitions at most twice as many
 pending segments as concurrent workers, bounded by 64 segments and the 4 MiB
 minimum piece size. An idle worker claims the next pending segment without

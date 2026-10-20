@@ -115,15 +115,6 @@ pub fn downloadIfSupported(
         _ = map.splitLargest(minimum_segment_size) catch break;
         map_changed = true;
     }
-    if (map_changed) {
-        try segment_journal.saveAtomic(allocator, io, journal_path, .{
-            .source_hash = source_hash,
-            .target_hash = probe.target_hash,
-            .etag = probe.etag,
-            .map = map,
-        });
-    }
-
     const part_file = if (part_exists)
         try cwd.openFile(io, part_path, .{ .mode = .read_write, .allow_directory = false })
     else
@@ -132,10 +123,6 @@ pub fn downloadIfSupported(
     defer if (part_file_open) part_file.close(io);
     if (part_exists) {
         if (try part_file.length(io) != probe.total) {
-            part_file.close(io);
-            part_file_open = false;
-            cwd.deleteFile(io, part_path) catch {};
-            cwd.deleteFile(io, journal_path) catch {};
             return Error.PartialFileLengthMismatch;
         }
     } else {
@@ -156,6 +143,15 @@ pub fn downloadIfSupported(
     }
     part_file.close(io);
     part_file_open = false;
+
+    if (map_changed) {
+        try segment_journal.saveAtomic(allocator, io, journal_path, .{
+            .source_hash = source_hash,
+            .target_hash = probe.target_hash,
+            .etag = probe.etag,
+            .map = map,
+        });
+    }
 
     var shared = Shared{
         .allocator = allocator,
