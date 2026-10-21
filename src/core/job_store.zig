@@ -121,6 +121,7 @@ pub const Store = struct {
     settings: Settings = .{},
     settings_owned: bool = false,
     jobs: std.ArrayList(Job) = .empty,
+    priority_bypass_count: u8 = 0,
     mutex: std.Io.Mutex = .init,
     log_mutex: std.Io.Mutex = .init,
     change_sequence: std.atomic.Value(u64) = .init(1),
@@ -906,10 +907,12 @@ pub const Store = struct {
             .global_active = self.settings.max_concurrent_tasks,
             .per_host_active = max_parallel_downloads_per_host,
         };
-        var selected = queue_policy.next(refs.items, limits) orelse return null;
+        var choice = queue_policy.choose(refs.items, limits, self.priority_bypass_count >= 8) orelse return null;
+        var selected = choice.selected;
         while (try self.destinationOccupied(self.jobs.items[@intCast(refs.items[selected].id)], true)) {
             refs.items[selected].state = .paused;
-            selected = queue_policy.next(refs.items, limits) orelse return null;
+            choice = queue_policy.choose(refs.items, limits, self.priority_bypass_count >= 8) orelse return null;
+            selected = choice.selected;
         }
         const job = &self.jobs.items[@intCast(refs.items[selected].id)];
         const old_state = job.state;
@@ -948,6 +951,11 @@ pub const Store = struct {
             job.requested_control = old_requested_control;
             return err;
         };
+        if (selected == choice.oldest) {
+            self.priority_bypass_count = 0;
+        } else if (self.priority_bypass_count < 8) {
+            self.priority_bypass_count += 1;
+        }
         if (old_error) |message| self.allocator.free(message);
         return task;
     }

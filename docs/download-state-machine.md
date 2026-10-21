@@ -89,6 +89,9 @@ active limits, then ranks by priority, least-loaded eligible host, and FIFO
 sequence. Jobs accept a persisted integer priority from -100 to 100; the
 macOS add form offers low, normal, and high values. Creation order is the FIFO
 sequence when priorities and host load tie.
+After eight dispatches that bypass the oldest eligible queued job, the next
+dispatch gives that job a turn. The counter resets when the oldest job starts.
+Host and global concurrency limits still apply; the counter is runtime state.
 Starting a saved job retains its last durable byte count while the downloader
 validates the partial file. The first worker report replaces that provisional
 display count with the verified journal position.

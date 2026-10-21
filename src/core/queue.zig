@@ -20,9 +20,11 @@ pub const Limits = struct {
     per_host_active: usize,
 };
 
-/// Returns the index of the next queued job allowed by both concurrency caps.
-/// Priority descends, then host least-in-flight fairness, then FIFO sequence.
-pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
+pub const Choice = struct { selected: usize, oldest: usize };
+
+/// Selects an eligible job and also identifies the oldest eligible job.
+/// A caller can periodically force the oldest choice to bound priority starvation.
+pub fn choose(jobs: []const JobRef, limits: Limits, force_oldest: bool) ?Choice {
     if (limits.global_active == 0 or limits.per_host_active == 0) return null;
 
     // Settings allow at most 32 active tasks. Keep their hosts on the stack so
@@ -36,6 +38,7 @@ pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
     if (active_total >= limits.global_active) return null;
 
     var best: ?usize = null;
+    var oldest: ?usize = null;
     var best_host_active: usize = 0;
     for (jobs, 0..) |candidate, index| {
         if (candidate.state != .queued) continue;
@@ -44,6 +47,10 @@ pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
         else
             countActiveForHost(jobs, candidate.host);
         if (host_active >= limits.per_host_active) continue;
+
+        if (oldest) |oldest_index| {
+            if (candidate.sequence < jobs[oldest_index].sequence) oldest = index;
+        } else oldest = index;
 
         const current_index = best orelse {
             best = index;
@@ -59,7 +66,14 @@ pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
             best_host_active = host_active;
         }
     }
-    return best;
+    const preferred = best orelse return null;
+    const oldest_index = oldest.?;
+    return .{ .selected = if (force_oldest) oldest_index else preferred, .oldest = oldest_index };
+}
+
+/// Returns the next queued job by priority, host load, then FIFO sequence.
+pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
+    return if (choose(jobs, limits, false)) |choice| choice.selected else null;
 }
 
 fn countHost(active_hosts: []const []const u8, host: []const u8) usize {
