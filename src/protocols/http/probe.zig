@@ -30,11 +30,15 @@ pub fn inspect(allocator: std.mem.Allocator, io: std.Io, url: []const u8) !Resul
 }
 
 pub fn inspectWithPolicy(allocator: std.mem.Allocator, io: std.Io, url: []const u8, proxy_policy: @import("proxy.zig").Policy) !Result {
+    return inspectWithPolicyAndBudget(allocator, io, url, proxy_policy, null);
+}
+
+pub fn inspectWithPolicyAndBudget(allocator: std.mem.Allocator, io: std.Io, url: []const u8, proxy_policy: @import("proxy.zig").Policy, budget: ?*@import("connection_budget.zig").Budget) !Result {
     var original_uri = std.Uri.parse(url) catch return error.InvalidUrl;
     if (std.ascii.eqlIgnoreCase(original_uri.scheme, "http")) original_uri.scheme = "http" else if (std.ascii.eqlIgnoreCase(original_uri.scheme, "https")) original_uri.scheme = "https" else return error.UnsupportedScheme;
 
     var client: http.Client = .{ .allocator = allocator, .io = io };
-    var proxy_state = @import("proxy.zig").State.init(allocator);
+    var proxy_state = @import("proxy.zig").State.initWithBudget(allocator, budget, null, null);
     defer proxy_state.deinit();
     defer client.deinit();
     const range_header = [_]http.Header{.{ .name = "range", .value = "bytes=0-0" }};

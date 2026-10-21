@@ -411,7 +411,7 @@ pub fn dispatchMethod(
         } else if (isFtpUrl(url)) blk: {
             if (proxy_policy.mode == .custom) break :blk error.UnsupportedFtpProxy;
             break :blk @import("../protocols/ftp/download.zig").inspect(arena.allocator(), engine.io, url);
-        } else http_probe.inspectWithPolicy(arena.allocator(), engine.io, url, .{ .mode = proxy_policy.mode, .url = proxy_policy.url, .authentication_required = proxy_policy.authentication_required });
+        } else http_probe.inspectWithPolicyAndBudget(arena.allocator(), engine.io, url, .{ .mode = proxy_policy.mode, .url = proxy_policy.url, .authentication_required = proxy_policy.authentication_required }, &engine.http_connections);
         const result = probe catch |err| {
             jobs.logAction("jobs.probe", @errorName(err));
             const message: []const u8 = if (err == error.InvalidUrl or err == error.UnsupportedScheme)

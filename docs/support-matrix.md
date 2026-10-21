@@ -54,8 +54,8 @@ Current engine API work includes `jobs.get` and filtered `jobs.list` snapshots. 
 
 Engine work still required for the full specification includes Linux/Windows native subscription client adoption, authenticated proxy and site credentials via OS secret stores, fuller FTP authentication/proxy coverage, and BitTorrent seeding/upload controls and network capabilities beyond the current v1 transfer path. A custom proxy marked as requiring authentication now fails before a probe or transfer can connect; the macOS client persists this non-secret requirement with the engine settings, while its credentials remain in Keychain and are not yet consumed by the engine. Native protocol, recovery, and security acceptance checks remain outstanding.
 
-Queued HTTP transfers now acquire engine-wide request permits: 64 overall and
-32 per destination host, including redirects. The code builds on macOS; actual
+Queued HTTP transfers and IPC URL probes now acquire engine-wide request permits:
+64 overall and 32 per destination host, including redirects. The code builds on macOS; actual
 multi-job saturation and fairness under these limits have not been measured.
 Bandwidth waits check transfer controls and queue schedules at 100 ms intervals.
 An active transfer also recalculates its pending wait when the global or
