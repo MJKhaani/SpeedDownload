@@ -36,11 +36,11 @@ or FTP proxy transport. A configured custom proxy fails the FTP operation
 instead of bypassing it. System proxy configuration is currently applied
 to HTTP and HTTPS; FTP and FTPS connect directly. Plain FTP and FTPS control
 and data sockets use 30-second per-read timeouts, including TLS handshake
-reads. Queued plain FTP data reads use one-second timed reads with pause,
-cancel, and schedule checks between them. Queued FTPS data reads use
-cancellable concurrent I/O where supported; without it, the existing TLS
-read timeout remains the fallback. Control-channel commands and TLS handshake
-reads can still delay a stop request. A peer that continuously sends a
+reads. Queued plain FTP control and data reads use one-second timed reads
+with pause, cancel, and schedule checks between them. Queued FTPS control
+and data reads use cancellable concurrent I/O where supported; without it,
+the existing TLS read timeout remains the fallback. Connection setup and TLS
+handshake reads can still delay a stop request. A peer that continuously sends a
 trickle of bytes can prolong a transfer. Runtime stop behavior needs native
 validation.
 Some FTPS servers require TLS session reuse on the data connection; the Zig

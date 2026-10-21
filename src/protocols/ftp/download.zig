@@ -68,11 +68,15 @@ const Control = struct {
     read_end: usize = 0,
     line_buffer: [4096]u8 = undefined,
     write_buffer: [512]u8 = undefined,
+    control_check: ?ControlCallback = null,
+    control_context: ?*anyopaque = null,
 
     fn init(self: *Control, io: Io, stream: Io.net.Stream) void {
         self.io = io;
         self.stream = stream;
         self.secure = null;
+        self.control_check = null;
+        self.control_context = null;
         self.read_position = 0;
         self.read_end = 0;
         self.writer = stream.writer(io, &self.write_buffer);
@@ -94,11 +98,7 @@ const Control = struct {
         var length: usize = 0;
         while (length < self.line_buffer.len) {
             if (self.read_position == self.read_end) {
-                self.read_end = if (self.secure) |transport|
-                    transport.client.reader.readSliceShort(&self.read_buffer) catch
-                        return if (transport.readTimedOut()) error.FtpControlReadTimedOut else error.FtpTlsReadFailed
-                else
-                    try readWithTimeout(self.io, self.stream, &self.read_buffer);
+                self.read_end = try self.readChunk();
                 self.read_position = 0;
                 if (self.read_end == 0) return error.FtpControlClosed;
             }
@@ -111,11 +111,28 @@ const Control = struct {
         return error.FtpReplyTooLong;
     }
 
+    fn readChunk(self: *Control) !usize {
+        if (self.secure) |transport| {
+            if (self.control_check != null and self.control_context != null)
+                return @import("../http/proxy.zig").readControlled(self.io, &transport.client.reader, &self.read_buffer, self.control_check, self.control_context) catch |err| {
+                    if (isStopError(err)) return err;
+                    return if (transport.readTimedOut()) error.FtpControlReadTimedOut else error.FtpTlsReadFailed;
+                };
+            return transport.client.reader.readSliceShort(&self.read_buffer) catch
+                return if (transport.readTimedOut()) error.FtpControlReadTimedOut else error.FtpTlsReadFailed;
+        }
+        if (self.control_check) |check| if (self.control_context) |ctx|
+            return readPlainControlled(self.io, self.stream, &self.read_buffer, check, ctx);
+        return readWithTimeout(self.io, self.stream, &self.read_buffer);
+    }
+
     fn reply(self: *Control) !Reply {
         var expected: ?u16 = null;
         for (0..64) |_| {
             const text = self.line() catch |err| switch (err) {
+                error.TransferPauseRequested, error.TransferCancelRequested, error.TransferSchedulePaused => return err,
                 error.Timeout => return error.FtpControlReadTimedOut,
+                error.FtpControlReadTimedOut => return err,
                 error.FtpControlClosed, error.FtpReplyTooLong => return err,
                 else => return error.FtpControlReadFailed,
             };
@@ -234,6 +251,8 @@ pub fn downloadWithControl(
     const control_stream = try host.connect(io, uri.port orelse 21);
     var control: Control = undefined;
     control.init(io, control_stream);
+    control.control_check = control_check;
+    control.control_context = control_context;
     defer control.close(allocator);
     if (isImplicitFtps(uri)) if (trust) |*value| try control.enableTls(allocator, tlsHost(uri, host), value);
     try welcomeReply(&control);
@@ -397,6 +416,10 @@ pub fn downloadWithControl(
 
 fn readWithTimeout(io: Io, stream: Io.net.Stream, buffer: []u8) !usize {
     return readWithTimeoutDuration(io, stream, buffer, read_timeout);
+}
+
+fn isStopError(err: anyerror) bool {
+    return err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused;
 }
 
 fn readDataChunk(io: Io, stream: Io.net.Stream, transport: ?*tls.Transport, buffer: []u8, control_check: ?ControlCallback, control_context: ?*anyopaque) !usize {
