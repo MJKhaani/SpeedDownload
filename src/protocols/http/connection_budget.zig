@@ -31,9 +31,14 @@ pub const Budget = struct {
     };
 
     pub fn acquire(self: *Budget, io: Io, uri: std.Uri, control: ?ControlCallback, context: ?*anyopaque) !Permit {
+        return self.acquireUntil(io, uri, control, context, null);
+    }
+
+    pub fn acquireUntil(self: *Budget, io: Io, uri: std.Uri, control: ?ControlCallback, context: ?*anyopaque, deadline_ns: ?i96) !Permit {
         const host_hash = hashHost(uri);
         while (true) {
             if (control) |check| if (context) |ctx| try check(ctx);
+            if (deadline_ns) |deadline| if (Io.Clock.now(.awake, io).nanoseconds >= deadline) return error.ConnectionBudgetBusy;
             self.mutex.lockUncancelable(io);
             var same_host: usize = 0;
             for (self.hosts[0..self.count]) |existing| {

@@ -57,6 +57,8 @@ Engine work still required for the full specification includes Linux/Windows nat
 Queued HTTP transfers and IPC URL probes now acquire engine-wide request permits:
 64 overall and 32 per destination host, including redirects. The code builds on macOS; actual
 multi-job saturation and fairness under these limits have not been measured.
+IPC HTTP probes wait at most 15 seconds for a connection permit and return a
+busy message when the host remains saturated; queued downloads keep waiting.
 Bandwidth waits check transfer controls and queue schedules at 100 ms intervals.
 An active transfer also recalculates its pending wait when the global or
 per-job speed limit changes; runtime rate-change behavior remains unverified.

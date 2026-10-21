@@ -39,6 +39,7 @@ pub fn inspectWithPolicyAndBudget(allocator: std.mem.Allocator, io: std.Io, url:
 
     var client: http.Client = .{ .allocator = allocator, .io = io };
     var proxy_state = @import("proxy.zig").State.initWithBudget(allocator, budget, null, null);
+    if (budget != null) proxy_state.budget_deadline_ns = std.Io.Clock.now(.awake, io).nanoseconds + 15 * std.time.ns_per_s;
     defer proxy_state.deinit();
     defer client.deinit();
     const range_header = [_]http.Header{.{ .name = "range", .value = "bytes=0-0" }};

@@ -418,6 +418,8 @@ pub fn dispatchMethod(
                 "Enter a valid HTTP, HTTPS, FTP, FTPS, or magnet link."
             else if (err == error.ServerBusy)
                 "The server is temporarily busy or rate limiting requests. Wait before inspecting this link again."
+            else if (err == error.ConnectionBudgetBusy)
+                "Too many connections are open to this host. Try inspecting the link again shortly."
             else if (err == error.ProxyAuthenticationUnavailable)
                 "Authenticated proxy transfers are not available in this engine version. Turn off proxy authentication or use an unauthenticated proxy."
             else if (err == error.InsecureHttpRedirect)

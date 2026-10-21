@@ -22,6 +22,7 @@ pub const State = struct {
     budget: ?*connection_budget.Budget = null,
     control: ?connection_budget.ControlCallback = null,
     control_context: ?*anyopaque = null,
+    budget_deadline_ns: ?i96 = null,
 
     pub fn init(allocator: std.mem.Allocator) State {
         return .{ .allocator = allocator };
@@ -144,7 +145,7 @@ pub fn openGet(client: *http.Client, state: *State, policy: Policy, initial_uri:
     for (0..4) |hop| {
         state.reset(client);
         var permit: ?connection_budget.Budget.Permit = if (state.budget) |budget|
-            try budget.acquire(client.io, uri, state.control, state.control_context)
+            try budget.acquireUntil(client.io, uri, state.control, state.control_context, state.budget_deadline_ns)
         else
             null;
         errdefer if (permit) |*held| held.release();
