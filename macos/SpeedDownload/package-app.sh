@@ -7,8 +7,8 @@ APP_PATH="${1:-$ROOT/dist/Speed Download.app}"
 if [[ "$APP_PATH" != /* ]]; then APP_PATH="$ROOT/$APP_PATH"; fi
 
 mkdir -p "$ROOT/zig-out/bin"
-zig build-exe "$ROOT/src/main.zig" -lc -femit-bin="$ROOT/zig-out/bin/speed-download"
-zig build-exe "$ROOT/src/browser_host.zig" -lc -femit-bin="$ROOT/zig-out/bin/speed-download-browser-host"
+zig build-exe "$ROOT/src/main.zig" -O ReleaseSafe -lc -framework Security -femit-bin="$ROOT/zig-out/bin/speed-download"
+zig build-exe "$ROOT/src/browser_host.zig" -O ReleaseSafe -lc -femit-bin="$ROOT/zig-out/bin/speed-download-browser-host"
 (cd "$PACKAGE_DIR" && swift build --configuration release)
 SWIFT_BIN_DIR="$(cd "$PACKAGE_DIR" && swift build --configuration release --show-bin-path)"
 

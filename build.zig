@@ -34,6 +34,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    if (target.result.os.tag == .macos) http_tests.root_module.linkFramework("Security", .{});
     const run_http_tests = b.addRunArtifact(http_tests);
 
     const test_step = b.step("test", "Run core and HTTP unit tests");
@@ -50,6 +51,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = target.result.os.tag == .macos or target.result.os.tag == .linux,
         }),
     });
+    if (target.result.os.tag == .macos) speed_download.root_module.linkFramework("Security", .{});
     b.installArtifact(speed_download);
 
     const browser_host = b.addExecutable(.{

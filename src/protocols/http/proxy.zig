@@ -1,6 +1,6 @@
 //! Applies an engine-owned proxy policy to each HTTP client before requests.
-//! The proxy endpoint contains no credentials; secret-store integration is a
-//! separate platform capability. A custom endpoint never falls back to direct.
+//! The proxy endpoint contains no credentials. On macOS, authenticated custom
+//! proxies read the user's Keychain item. A custom endpoint never falls back to direct.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -19,6 +19,7 @@ pub const State = struct {
     https_proxy: http.Client.Proxy = undefined,
     host: ?[]u8 = null,
     https_host: ?[]u8 = null,
+    authorization: ?[]u8 = null,
     budget: ?*connection_budget.Budget = null,
     control: ?connection_budget.ControlCallback = null,
     control_context: ?*anyopaque = null,
@@ -35,6 +36,15 @@ pub const State = struct {
     pub fn deinit(self: *State) void {
         if (self.host) |host| self.allocator.free(host);
         if (self.https_host) |host| self.allocator.free(host);
+        self.clearAuthorization();
+    }
+
+    fn clearAuthorization(self: *State) void {
+        if (self.authorization) |value| {
+            @memset(value, 0);
+            self.allocator.free(value);
+            self.authorization = null;
+        }
     }
 
     fn reset(self: *State, client: *http.Client) void {
@@ -42,6 +52,7 @@ pub const State = struct {
         if (self.https_host) |host| self.allocator.free(host);
         self.host = null;
         self.https_host = null;
+        self.clearAuthorization();
         client.http_proxy = null;
         client.https_proxy = null;
     }
@@ -56,12 +67,17 @@ pub const State = struct {
             return;
         }
         if (policy.mode != .custom) return;
-        // A saved Keychain credential is not yet available to this headless
-        // transport. Never silently make an unauthenticated request when the
-        // user configured the proxy as requiring authentication.
-        if (policy.authentication_required) return error.ProxyAuthenticationUnavailable;
         const url = policy.url orelse return error.InvalidProxy;
         try self.applyEndpoint(client, url);
+        if (policy.authentication_required) {
+            if (comptime builtin.os.tag != .macos) return error.ProxyAuthenticationUnavailable;
+            // Zig 0.17 does not attach Proxy-Authorization to CONNECT. Ordinary
+            // HTTP forwarding does attach it; never attempt HTTPS unauthenticated.
+            if (std.ascii.eqlIgnoreCase(target.scheme, "https")) return error.AuthenticatedHttpsProxyUnsupported;
+            self.authorization = try keychainProxyAuthorization(self.allocator);
+            self.proxy.authorization = self.authorization.?;
+            self.proxy.supports_connect = false;
+        }
     }
 
     fn applyEndpoint(self: *State, client: *http.Client, url: []const u8) !void {
@@ -138,6 +154,38 @@ pub const State = struct {
         }
     }
 };
+
+fn keychainProxyAuthorization(allocator: std.mem.Allocator) ![]u8 {
+    if (comptime builtin.os.tag != .macos) return error.ProxyAuthenticationUnavailable;
+    const service = "com.mjkhaani.SpeedDownload.proxy";
+    const account = "manual-proxy";
+    var length: u32 = 0;
+    var data: ?*anyopaque = null;
+    const status = SecKeychainFindGenericPassword(null, service.len, service.ptr, account.len, account.ptr, &length, &data, null);
+    if (status != 0 or data == null) return error.ProxyCredentialsUnavailable;
+    defer _ = SecKeychainItemFreeContent(null, data);
+    if (length == 0 or length > 4096) return error.ProxyCredentialsUnavailable;
+    const bytes: [*]const u8 = @ptrCast(data.?);
+    const secret = bytes[0..length];
+    const separator = std.mem.indexOfScalar(u8, secret, '\n') orelse return error.ProxyCredentialsUnavailable;
+    if (std.mem.indexOfScalar(u8, secret[0..separator], ':') != null or
+        std.mem.indexOfScalar(u8, secret, '\r') != null or std.mem.indexOfScalar(u8, secret, 0) != null)
+        return error.ProxyCredentialsUnavailable;
+    const encoded_len = std.base64.standard.Encoder.calcSize(secret.len);
+    const authorization = try allocator.alloc(u8, "Basic ".len + encoded_len);
+    errdefer allocator.free(authorization);
+    @memcpy(authorization[0.."Basic ".len], "Basic ");
+    var credentials: [4096]u8 = undefined;
+    defer @memset(credentials[0..secret.len], 0);
+    @memcpy(credentials[0..separator], secret[0..separator]);
+    credentials[separator] = ':';
+    @memcpy(credentials[separator + 1 .. secret.len], secret[separator + 1 ..]);
+    _ = std.base64.standard.Encoder.encode(authorization["Basic ".len..], credentials[0..secret.len]);
+    return authorization;
+}
+
+extern fn SecKeychainFindGenericPassword(?*anyopaque, u32, [*]const u8, u32, [*]const u8, *u32, *?*anyopaque, ?*?*anyopaque) c_int;
+extern fn SecKeychainItemFreeContent(?*anyopaque, ?*anyopaque) c_int;
 
 fn linuxEnvFirst(comptime names: []const [:0]const u8) ?[]const u8 {
     if (comptime builtin.os.tag != .linux) return null;

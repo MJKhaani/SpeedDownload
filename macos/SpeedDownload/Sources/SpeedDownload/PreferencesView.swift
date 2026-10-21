@@ -276,7 +276,7 @@ struct PreferencesView: View {
                         if proxyUsesAuthentication {
                             TextField("Username", text: $proxyUsername)
                             SecureField("Password", text: $proxyPassword)
-                            Text("Credentials are saved in your macOS Keychain. The engine will refuse requests through this proxy until authenticated proxy transfers are supported.")
+                            Text("Credentials are saved in your macOS Keychain. Basic authentication works for HTTP links; HTTPS links requiring an authenticated CONNECT tunnel are not yet supported.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }

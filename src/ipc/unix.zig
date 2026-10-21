@@ -422,6 +422,10 @@ pub fn dispatchMethod(
                 "Too many connections are open to this host. Try inspecting the link again shortly."
             else if (err == error.ProxyAuthenticationUnavailable)
                 "Authenticated proxy transfers are not available in this engine version. Turn off proxy authentication or use an unauthenticated proxy."
+            else if (err == error.ProxyCredentialsUnavailable)
+                "Proxy credentials could not be read from your Keychain. Save the username and password again in Proxy settings."
+            else if (err == error.AuthenticatedHttpsProxyUnsupported)
+                "Authenticated proxies cannot yet inspect HTTPS links because the HTTP transport cannot authorize CONNECT requests."
             else if (err == error.InsecureHttpRedirect)
                 "This link redirects from HTTPS to HTTP. Use a secure final URL or contact the source site."
             else if (err == error.HttpRedirectCredentials)
@@ -603,6 +607,10 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             "SHA-256 checksum does not match the downloaded file"
         else if (err == error.ProxyAuthenticationUnavailable)
             "Authenticated proxy transfers are not available in this engine version"
+        else if (err == error.ProxyCredentialsUnavailable)
+            "Proxy credentials could not be read from Keychain. Save them again in Proxy settings."
+        else if (err == error.AuthenticatedHttpsProxyUnsupported)
+            "Authenticated proxies cannot yet download HTTPS links because the HTTP transport cannot authorize CONNECT requests."
         else if (err == error.FtpJournalUpgradeRequired)
             "This FTP partial uses an older journal format and cannot be resumed safely. Remove the partial and add the download again."
         else if (err == error.HttpJournalUpgradeRequired)
@@ -620,7 +628,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
         else
             std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
         engine.jobs.logAction("transfer", @errorName(err));
-        defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and err != error.PartialFileLengthMismatch and err != error.RepresentationChanged and err != error.InsecureHttpRedirect and err != error.HttpRedirectCredentials and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
+        defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.ProxyCredentialsUnavailable and err != error.AuthenticatedHttpsProxyUnsupported and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and err != error.PartialFileLengthMismatch and err != error.RepresentationChanged and err != error.InsecureHttpRedirect and err != error.HttpRedirectCredentials and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
         engine.jobs.finishDownload(task.id, false, error_message) catch {};
         return;
     };
