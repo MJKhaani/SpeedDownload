@@ -7,6 +7,7 @@ const http_download = @import("../http/download.zig");
 const tls = @import("tls.zig");
 
 pub const ProgressCallback = *const fn (*anyopaque, u64, ?u64, bool) anyerror!void;
+pub const ControlCallback = @import("../http/connection_budget.zig").ControlCallback;
 pub const ProbeResult = @import("../http/probe.zig").Result;
 const magic = "SDFTP002";
 const legacy_magic = "SDFTP001";
@@ -205,6 +206,21 @@ pub fn download(
     callback: ?ProgressCallback,
     context: ?*anyopaque,
 ) !void {
+    return downloadWithControl(allocator, io, url, destination, expected_sha256, callback, context, null, null);
+}
+
+pub fn downloadWithControl(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control_check: ?ControlCallback,
+    control_context: ?*anyopaque,
+) !void {
+    if (control_check) |check| if (control_context) |ctx| try check(ctx);
     const uri = std.Uri.parse(url) catch return error.InvalidFtpUrl;
     if (!std.ascii.eqlIgnoreCase(uri.scheme, "ftp") and !isFtps(uri)) return error.UnsupportedScheme;
     if (uri.user != null or uri.password != null or uri.query != null or uri.fragment != null)
@@ -224,6 +240,7 @@ pub fn download(
     if (!isImplicitFtps(uri)) if (trust) |*value| try secureControl(&control, allocator, uri, host, value);
     try login(&control);
     if (trust != null) try protectData(&control);
+    if (control_check) |check| if (control_context) |ctx| try check(ctx);
 
     const metadata = try inspectMetadata(&control, path);
     const cwd = Io.Dir.cwd();
@@ -295,6 +312,7 @@ pub fn download(
         if (rest.code != 350) return error.FtpRestUnsupported;
     }
 
+    if (control_check) |check| if (control_context) |ctx| try check(ctx);
     const data_port = try passivePort(&control, host.requiresEpsv());
     const data_stream = try host.connect(io, data_port);
     var data_open = true;
@@ -325,10 +343,8 @@ pub fn download(
     }
     while (true) {
         if (callback) |report| if (context) |ctx| try report(ctx, completed, metadata.size, false);
-        const count = (if (data_tls) |transport|
-            transport.client.reader.readSliceShort(&chunk)
-        else
-            readWithTimeout(io, data_stream, &chunk)) catch |err| switch (err) {
+        const count = readDataChunk(io, data_stream, data_tls, &chunk, control_check, control_context) catch |err| switch (err) {
+            error.TransferPauseRequested, error.TransferCancelRequested, error.TransferSchedulePaused => return err,
             error.Timeout => return error.FtpDataReadTimedOut,
             else => return if (data_tls) |transport|
                 if (transport.readTimedOut()) error.FtpDataReadTimedOut else error.FtpDataReadFailed
@@ -380,11 +396,36 @@ pub fn download(
 }
 
 fn readWithTimeout(io: Io, stream: Io.net.Stream, buffer: []u8) !usize {
+    return readWithTimeoutDuration(io, stream, buffer, read_timeout);
+}
+
+fn readDataChunk(io: Io, stream: Io.net.Stream, transport: ?*tls.Transport, buffer: []u8, control_check: ?ControlCallback, control_context: ?*anyopaque) !usize {
+    if (transport) |secure| {
+        if (control_check != null and control_context != null)
+            return @import("../http/proxy.zig").readControlled(io, &secure.client.reader, buffer, control_check, control_context);
+        return secure.client.reader.readSliceShort(buffer);
+    }
+    if (control_check) |check| if (control_context) |context|
+        return readPlainControlled(io, stream, buffer, check, context);
+    return readWithTimeout(io, stream, buffer);
+}
+
+fn readPlainControlled(io: Io, stream: Io.net.Stream, buffer: []u8, check: ControlCallback, context: *anyopaque) !usize {
+    while (true) {
+        try check(context);
+        return readWithTimeoutDuration(io, stream, buffer, .{ .duration = .{ .raw = .fromMilliseconds(1000), .clock = .awake } }) catch |err| switch (err) {
+            error.Timeout => continue,
+            else => return err,
+        };
+    }
+}
+
+fn readWithTimeoutDuration(io: Io, stream: Io.net.Stream, buffer: []u8, timeout: Io.Timeout) !usize {
     var data: [1][]u8 = .{buffer};
     const result = try io.operateTimeout(.{ .net_read = .{
         .socket_handle = stream.socket.handle,
         .data = &data,
-    } }, read_timeout);
+    } }, timeout);
     return (try result.net_read).data_len;
 }
 
