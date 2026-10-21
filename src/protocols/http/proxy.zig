@@ -84,9 +84,12 @@ pub const State = struct {
 
     fn applyMacOSSystem(self: *State, client: *http.Client, target: std.Uri) !void {
         const config = try systemProxyConfig(self.allocator, client.io);
-        if (config.auto_config or config.auto_discovery or config.socks_enabled)
-            return error.UnsupportedSystemProxyConfiguration;
         if (bypassesSystemProxy(config, target)) return;
+        if (config.auto_config or config.auto_discovery)
+            return error.UnsupportedSystemProxyConfiguration;
+        const target_is_https = std.ascii.eqlIgnoreCase(target.scheme, "https");
+        if (config.socks_enabled and !(if (target_is_https) config.https_enabled else config.http_enabled))
+            return error.UnsupportedSystemProxyConfiguration;
         if (config.http_enabled) {
             if (config.http_host_len == 0 or config.http_port == 0) return error.InvalidSystemProxy;
             self.host = try self.allocator.dupe(u8, config.http_host[0..config.http_host_len]);
