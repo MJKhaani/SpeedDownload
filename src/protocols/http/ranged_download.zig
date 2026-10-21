@@ -484,8 +484,11 @@ fn probeRanges(allocator: Allocator, io: Io, uri: std.Uri, proxy_policy: proxy.P
     const etag_copy = try allocator.dupe(u8, etag);
     errdefer allocator.free(etag_copy);
     var body_buffer: [1]u8 = undefined;
-    var body = response.reader(&body_buffer);
-    const count = body.readSliceShort(&body_buffer) catch return response.bodyErr().?;
+    const body = response.reader(&body_buffer);
+    const count = proxy.readControlled(io, body, &body_buffer, control, context) catch |err| {
+        if (err == error.ReadFailed) return response.bodyErr().?;
+        return err;
+    };
     if (count != 1) return Error.InvalidProbe;
     abandon_body = false;
     return .{ .total = content_range.total.?, .etag = etag_copy, .target_hash = try uriHash(allocator, request.uri) };

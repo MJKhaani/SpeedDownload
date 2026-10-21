@@ -314,15 +314,10 @@ fn downloadSingleStreamWithProgress(
     if (response.head.content_encoding != .identity) return DownloadError.UnsupportedContentEncoding;
 
     if (offset > 0 and response.head.status == .ok) {
-        // If-Range failed or the server ignored Range. This is a complete new
-        // representation, so discard old bytes before accepting its body.
-        try file.setLength(io, 0);
-        try file_writer.seekTo(0);
-        if (journal) |saved| allocator.free(saved.etag);
-        journal = null;
-        offset = 0;
-        preserve_partial = false;
-        cwd.deleteFile(io, journal_path) catch {};
+        // A 200 in response to If-Range may mean the representation changed
+        // or that the server ignored Range. Preserve the trusted partial and
+        // let the user explicitly discard it before starting a fresh copy.
+        return DownloadError.RepresentationChanged;
     } else if (offset > 0 and response.head.status == .partial_content) {
         if (!resumeSafe(request.uri)) return DownloadError.ResumeUnsafeForUrl;
         const range_text = responseHeader(response.head.bytes, "content-range") orelse return DownloadError.InvalidContentRange;

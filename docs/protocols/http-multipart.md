@@ -14,13 +14,18 @@ per destination host. A permit is held from request setup through response
 release, including body transfer, and redirects release the old host permit
 before acquiring the new one. Workers waiting for capacity recheck pause,
 cancel, and queue schedule state every 50 ms. These limits do not yet count
-standalone CLI transfers or GUI link inspection requests.
+standalone CLI transfers. GUI link inspections share these permits and return
+a busy error after waiting 15 seconds for capacity.
 The single-stream `ODMHJ003` journal includes a SHA-256 checksum over its
 metadata. The engine rejects damaged journals before trusting their durable
 offset. Earlier `ODMHJ002` partials remain on disk but cannot be resumed
 safely; remove the partial and re-add the job to download it again. The
 checksum detects accidental metadata damage, while the strong ETag and
 range response checks protect the remote representation identity.
+If a saved single-stream partial exists and a resume request receives a full
+`200 OK` instead of `206 Partial Content`, the engine preserves the partial
+and reports a representation or range mismatch. It does not silently truncate
+previously downloaded bytes.
 For multipart transfers, the segment journal is atomically replaced after each
 4 MiB of a worker's synced data, at
 segment completion, and when a worker stops. A crash may redownload only the
@@ -31,6 +36,9 @@ derives the suggested name, final redirected URL, size, and range capability
 from that response. If the server ignores the range and sends a full response,
 the preflight closes its connection after the headers instead of reading the
 file body.
+For queued multipart transfers, the engine can cancel a blocked read of the
+probe byte or a segment body when pause, cancel, or schedule state changes.
+This concurrency behavior still needs a native runtime check.
 HTTP probes and transfers follow at most three redirects with proxy policy
 reapplied for each destination. Redirects to non-HTTP schemes, URLs containing
 credentials, and HTTPS-to-HTTP downgrades are rejected before contacting the

@@ -362,7 +362,7 @@ fn errorMessage(err: anyerror) []const u8 {
     else if (err == error.ResumeUnsafeForUrl)
         "this URL may contain private data and cannot be safely resumed; remove its .part file to restart"
     else if (err == error.RepresentationChanged)
-        "the remote file changed since the saved partial; its bytes were not appended"
+        "the server changed the file or ignored the resume range; the saved partial was preserved"
     else if (err == error.InvalidResponseStatus)
         "the server returned an unsuccessful HTTP status"
     else if (err == error.InvalidContentRange)
