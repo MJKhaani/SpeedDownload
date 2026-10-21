@@ -11,6 +11,13 @@ pub const Budget = struct {
     mutex: Io.Mutex = .init,
     hosts: [global_limit][32]u8 = undefined,
     count: usize = 0,
+    waiting_head: ?*Waiter = null,
+    waiting_tail: ?*Waiter = null,
+
+    const Waiter = struct {
+        host_hash: [32]u8,
+        next: ?*Waiter = null,
+    };
 
     pub const Permit = struct {
         budget: *Budget,
@@ -36,23 +43,70 @@ pub const Budget = struct {
 
     pub fn acquireUntil(self: *Budget, io: Io, uri: std.Uri, control: ?ControlCallback, context: ?*anyopaque, deadline_ns: ?i96) !Permit {
         const host_hash = hashHost(uri);
+        var waiter = Waiter{ .host_hash = host_hash };
+        var queued = false;
+        errdefer if (queued) {
+            self.mutex.lockUncancelable(io);
+            self.removeWaiterLocked(&waiter);
+            self.mutex.unlock(io);
+        };
         while (true) {
             if (control) |check| if (context) |ctx| try check(ctx);
             if (deadline_ns) |deadline| if (Io.Clock.now(.awake, io).nanoseconds >= deadline) return error.ConnectionBudgetBusy;
             self.mutex.lockUncancelable(io);
-            var same_host: usize = 0;
-            for (self.hosts[0..self.count]) |existing| {
-                if (std.mem.eql(u8, &existing, &host_hash)) same_host += 1;
-            }
-            if (self.count < global_limit and same_host < per_host_limit) {
+            const first_eligible = self.firstEligibleWaiterLocked();
+            const turn = if (queued) first_eligible == &waiter else first_eligible == null;
+            if (turn and self.count < global_limit and self.countForHostLocked(host_hash) < per_host_limit) {
+                if (queued) {
+                    self.removeWaiterLocked(&waiter);
+                    queued = false;
+                }
                 self.hosts[self.count] = host_hash;
                 self.count += 1;
                 self.mutex.unlock(io);
                 return .{ .budget = self, .io = io, .host_hash = host_hash };
             }
+            if (!queued) {
+                if (self.waiting_tail) |tail| tail.next = &waiter else self.waiting_head = &waiter;
+                self.waiting_tail = &waiter;
+                queued = true;
+            }
             self.mutex.unlock(io);
             try Io.sleep(io, Io.Duration.fromMilliseconds(50), .awake);
         }
+    }
+
+    fn countForHostLocked(self: *Budget, host_hash: [32]u8) usize {
+        var count: usize = 0;
+        for (self.hosts[0..self.count]) |existing| {
+            if (std.mem.eql(u8, &existing, &host_hash)) count += 1;
+        }
+        return count;
+    }
+
+    fn firstEligibleWaiterLocked(self: *Budget) ?*Waiter {
+        if (self.count >= global_limit) return null;
+        var current = self.waiting_head;
+        while (current) |waiter| : (current = waiter.next) {
+            if (self.countForHostLocked(waiter.host_hash) < per_host_limit) return waiter;
+        }
+        return null;
+    }
+
+    fn removeWaiterLocked(self: *Budget, target: *Waiter) void {
+        var previous: ?*Waiter = null;
+        var current = self.waiting_head;
+        while (current) |waiter| : (current = waiter.next) {
+            if (waiter != target) {
+                previous = waiter;
+                continue;
+            }
+            if (previous) |prior| prior.next = waiter.next else self.waiting_head = waiter.next;
+            if (self.waiting_tail == waiter) self.waiting_tail = previous;
+            waiter.next = null;
+            return;
+        }
+        unreachable;
     }
 };
 

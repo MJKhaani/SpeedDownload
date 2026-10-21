@@ -16,6 +16,10 @@ before acquiring the new one. Workers waiting for capacity recheck pause,
 cancel, and queue schedule state every 50 ms. These limits do not yet count
 standalone CLI transfers. GUI link inspections share these permits and return
 a busy error after waiting 15 seconds for capacity.
+When requests wait for capacity, the first eligible waiter receives the next
+permit. A waiter whose host is already at its per-host cap does not block
+another host that can use a free global slot. A canceled or timed-out waiter
+is removed before its request returns.
 The single-stream `ODMHJ003` journal includes a SHA-256 checksum over its
 metadata. The engine rejects damaged journals before trusting their durable
 offset. Earlier `ODMHJ002` partials remain on disk but cannot be resumed
