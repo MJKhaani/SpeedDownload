@@ -5,6 +5,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const http = std.http;
+const connection_budget = @import("connection_budget.zig");
 
 pub const Policy = struct {
     mode: @import("../../core/job_store.zig").ProxyMode = .system,
@@ -18,9 +19,16 @@ pub const State = struct {
     https_proxy: http.Client.Proxy = undefined,
     host: ?[]u8 = null,
     https_host: ?[]u8 = null,
+    budget: ?*connection_budget.Budget = null,
+    control: ?connection_budget.ControlCallback = null,
+    control_context: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator) State {
         return .{ .allocator = allocator };
+    }
+
+    pub fn initWithBudget(allocator: std.mem.Allocator, budget: ?*connection_budget.Budget, control: ?connection_budget.ControlCallback, context: ?*anyopaque) State {
+        return .{ .allocator = allocator, .budget = budget, .control = control, .control_context = context };
     }
 
     pub fn deinit(self: *State) void {
@@ -114,9 +122,11 @@ pub const Opened = struct {
     response: http.Client.Response,
     redirect_buffer: []u8,
     uri_storage: ?[]u8 = null,
+    permit: ?connection_budget.Budget.Permit = null,
 
     pub fn deinit(self: *Opened) void {
         self.request.deinit();
+        if (self.permit) |*permit| permit.release();
         self.allocator.destroy(self.request);
         self.allocator.free(self.redirect_buffer);
         if (self.uri_storage) |value| self.allocator.free(value);
@@ -133,10 +143,17 @@ pub fn openGet(client: *http.Client, state: *State, policy: Policy, initial_uri:
     var uri = initial_uri;
     for (0..4) |hop| {
         state.reset(client);
+        var permit: ?connection_budget.Budget.Permit = if (state.budget) |budget|
+            try budget.acquire(client.io, uri, state.control, state.control_context)
+        else
+            null;
+        errdefer if (permit) |*held| held.release();
         try state.apply(client, policy, uri);
         var request_options = options;
         request_options.redirect_behavior = .unhandled;
         var opened = try openOnce(client, uri, request_options);
+        opened.permit = permit;
+        permit = null;
         if (opened.response.head.status.class() != .redirect or opened.response.head.status == .not_modified) {
             opened.uri_storage = owned_uri;
             return opened;

@@ -9,6 +9,7 @@ const http = std.http;
 const ranges = @import("ranges.zig");
 const segment_journal = @import("segment_journal.zig");
 const proxy = @import("proxy.zig");
+const connection_budget = @import("connection_budget.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -53,6 +54,8 @@ pub fn downloadIfSupported(
     requested_connections: u8,
     proxy_policy: proxy.Policy,
     retry_hint: ?*@import("retry_after.zig").Hint,
+    budget: ?*connection_budget.Budget,
+    control: ?connection_budget.ControlCallback,
 ) !bool {
     var uri = std.Uri.parse(url) catch return false;
     if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) uri.scheme = "http" else if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) uri.scheme = "https" else return false;
@@ -84,7 +87,7 @@ pub fn downloadIfSupported(
         if (!std.mem.eql(u8, &source_hash, &prior.?.source_hash)) return Error.InvalidSegmentJournal;
     }
 
-    var probe = probeRanges(allocator, io, uri, proxy_policy, retry_hint) catch |err| switch (err) {
+    var probe = probeRanges(allocator, io, uri, proxy_policy, retry_hint, budget, control, progress_context) catch |err| switch (err) {
         Error.InvalidProbe => {
             if (is_resume) return Error.RepresentationChanged;
             return false;
@@ -170,6 +173,8 @@ pub fn downloadIfSupported(
         .worker_context = worker_context,
         .proxy_policy = proxy_policy,
         .retry_hint = retry_hint,
+        .budget = budget,
+        .control = control,
         .connection_limit = connection_limit,
     };
 
@@ -232,6 +237,8 @@ const Shared = struct {
     worker_context: ?*anyopaque,
     proxy_policy: proxy.Policy,
     retry_hint: ?*@import("retry_after.zig").Hint,
+    budget: ?*connection_budget.Budget,
+    control: ?connection_budget.ControlCallback,
     connection_limit: usize,
     mutex: Io.Mutex = .init,
     next_segment_index: usize = 0,
@@ -342,7 +349,7 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
     const header_value = try ranges.formatHeader(self.allocator, .{ .start = worker.cursor, .end = worker.end }, self.total);
     defer self.allocator.free(header_value);
     var client: http.Client = .{ .allocator = self.allocator, .io = self.io };
-    var proxy_state = proxy.State.init(self.allocator);
+    var proxy_state = proxy.State.initWithBudget(self.allocator, self.budget, self.control, self.callback_context);
     defer proxy_state.deinit();
     defer client.deinit();
     var uri = try std.Uri.parse(self.url);
@@ -439,9 +446,9 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
     response_truncated = current_end < worker.end;
 }
 
-fn probeRanges(allocator: Allocator, io: Io, uri: std.Uri, proxy_policy: proxy.Policy, retry_hint: ?*@import("retry_after.zig").Hint) !Probe {
+fn probeRanges(allocator: Allocator, io: Io, uri: std.Uri, proxy_policy: proxy.Policy, retry_hint: ?*@import("retry_after.zig").Hint, budget: ?*connection_budget.Budget, control: ?connection_budget.ControlCallback, context: ?*anyopaque) !Probe {
     var client: http.Client = .{ .allocator = allocator, .io = io };
-    var proxy_state = proxy.State.init(allocator);
+    var proxy_state = proxy.State.initWithBudget(allocator, budget, control, context);
     defer proxy_state.deinit();
     defer client.deinit();
     const headers = [_]http.Header{.{ .name = "range", .value = "bytes=0-0" }};

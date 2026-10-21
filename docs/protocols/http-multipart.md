@@ -9,6 +9,12 @@ is not used when parallel downloading is Off; Automatic uses the
 configured connection ceiling and can lower it after a server rate limit,
 while Fixed keeps the configured count for each attempt. Single-stream
 downloads can still resume when the response has a known length and strong ETag.
+Queued HTTP transfers share a 64-request engine limit and a 32-request limit
+per destination host. A permit is held from request setup through response
+release, including body transfer, and redirects release the old host permit
+before acquiring the new one. Workers waiting for capacity recheck pause,
+cancel, and queue schedule state every 50 ms. These limits do not yet count
+standalone CLI transfers or GUI link inspection requests.
 The single-stream `ODMHJ003` journal includes a SHA-256 checksum over its
 metadata. The engine rejects damaged journals before trusting their durable
 offset. Earlier `ODMHJ002` partials remain on disk but cannot be resumed

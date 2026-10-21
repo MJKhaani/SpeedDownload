@@ -54,6 +54,10 @@ Current engine API work includes `jobs.get` and filtered `jobs.list` snapshots. 
 
 Engine work still required for the full specification includes Linux/Windows native subscription client adoption, authenticated proxy and site credentials via OS secret stores, fuller FTP authentication/proxy coverage, and BitTorrent seeding/upload controls and network capabilities beyond the current v1 transfer path. A custom proxy marked as requiring authentication now fails before a probe or transfer can connect; the macOS client persists this non-secret requirement with the engine settings, while its credentials remain in Keychain and are not yet consumed by the engine. Native protocol, recovery, and security acceptance checks remain outstanding.
 
+Queued HTTP transfers now acquire engine-wide request permits: 64 overall and
+32 per destination host, including redirects. The code builds on macOS; actual
+multi-job saturation and fairness under these limits have not been measured.
+
 On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, IPC service, or package is validated. The active native GUI/IPC decision and proof gate are recorded in [ADR 0001](adr/0001-native-guis-local-ipc.md).
 
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.

@@ -65,6 +65,7 @@ pub const EngineContext = struct {
     engine_instance_id: []const u8,
     started_ns: i96,
     active_workers: std.atomic.Value(u32) = .init(0),
+    http_connections: @import("../protocols/http/connection_budget.zig").Budget = .{},
     active_clients: std.atomic.Value(u32) = .init(0),
     next_subscription_id: std.atomic.Value(u64) = .init(1),
     bandwidth_mutex: std.Io.Mutex = .init,
@@ -577,7 +578,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     } else if (isFtpUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedFtpProxy;
         break :blk @import("../protocols/ftp/download.zig").download(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress));
-    } else @import("../protocols/http/download.zig").downloadWithPolicy(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &retry_hint);
+    } else @import("../protocols/http/download.zig").downloadWithPolicyAndBudget(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &retry_hint, &engine.http_connections, checkHttpControl);
     transfer catch |err| {
         if (engine.jobs.requestedControl(task.id)) |control| {
             engine.jobs.logAction("transfer", if (control == .pause) "paused" else "canceled");
@@ -640,6 +641,13 @@ fn downloadStoredTorrent(engine: *EngineContext, task: job_store.Store.DownloadT
 }
 
 fn checkTorrentControl(context: *anyopaque) @import("../protocols/torrent/metadata.zig").CheckpointError!void {
+    const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    if (progress.engine.jobs.requestedControl(progress.job_id)) |control|
+        return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
+    if (!queueWindowOpen(progress.engine)) return error.TransferSchedulePaused;
+}
+
+fn checkHttpControl(context: *anyopaque) anyerror!void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
     if (progress.engine.jobs.requestedControl(progress.job_id)) |control|
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;

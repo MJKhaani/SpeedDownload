@@ -18,6 +18,7 @@ pub const range_allocator = @import("ranges.zig");
 /// Versioned segment snapshot codec. The filesystem layer must sync segment
 /// data before atomically replacing a journal encoded by this module.
 pub const segment_journal = @import("segment_journal.zig");
+pub const connection_budget = @import("connection_budget.zig");
 
 pub const DownloadError = error{
     UnsupportedScheme,
@@ -142,6 +143,24 @@ pub fn downloadWithPolicy(
     proxy_policy: @import("proxy.zig").Policy,
     retry_hint: ?*@import("retry_after.zig").Hint,
 ) !void {
+    return downloadWithPolicyAndBudget(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, worker_callback, requested_connections, proxy_policy, retry_hint, null, null);
+}
+
+pub fn downloadWithPolicyAndBudget(
+    allocator: Allocator,
+    io: Io,
+    url: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    progress_callback: ?ProgressCallback,
+    progress_context: ?*anyopaque,
+    worker_callback: ?WorkerProgressCallback,
+    requested_connections: u8,
+    proxy_policy: @import("proxy.zig").Policy,
+    retry_hint: ?*@import("retry_after.zig").Hint,
+    budget: ?*connection_budget.Budget,
+    control: ?connection_budget.ControlCallback,
+) !void {
     const ranged = @import("ranged_download.zig");
     const range_completed = if (requested_connections == 0) false else try ranged.downloadIfSupported(
         allocator,
@@ -156,9 +175,11 @@ pub fn downloadWithPolicy(
         requested_connections,
         proxy_policy,
         retry_hint,
+        budget,
+        control,
     );
     if (range_completed) return;
-    return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, proxy_policy, retry_hint);
+    return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, proxy_policy, retry_hint, budget, control);
 }
 
 fn downloadSingleStreamWithProgress(
@@ -171,6 +192,8 @@ fn downloadSingleStreamWithProgress(
     progress_context: ?*anyopaque,
     proxy_policy: @import("proxy.zig").Policy,
     retry_hint: ?*@import("retry_after.zig").Hint,
+    budget: ?*connection_budget.Budget,
+    control: ?connection_budget.ControlCallback,
 ) !void {
     var uri = try std.Uri.parse(url);
     if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) uri.scheme = "http" else if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) uri.scheme = "https" else {
@@ -243,7 +266,7 @@ fn downloadSingleStreamWithProgress(
     try file_writer.seekTo(offset);
 
     var client: http.Client = .{ .allocator = allocator, .io = io };
-    var proxy_state = @import("proxy.zig").State.init(allocator);
+    var proxy_state = @import("proxy.zig").State.initWithBudget(allocator, budget, control, progress_context);
     defer proxy_state.deinit();
     defer client.deinit();
 
