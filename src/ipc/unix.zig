@@ -847,7 +847,15 @@ fn throttleBytes(progress: *DownloadProgressContext, bytes: u64) !void {
     const job_deadline = reserveBandwidth(&progress.bandwidth_next_ns, &progress.bandwidth_current_limit, job_limit, bytes, now_ns);
     progress.progress_mutex.unlock(engine.io);
     const deadline_ns = @max(global_deadline, job_deadline);
-    if (deadline_ns > now_ns) try (std.Io.Timestamp.fromNanoseconds(deadline_ns).withClock(.awake)).wait(engine.io);
+    // A low limit can put the deadline minutes ahead. Wake regularly so a
+    // paused, canceled, or scheduled-off transfer releases its worker promptly.
+    while (true) {
+        try checkHttpControl(@ptrCast(progress));
+        const current_ns = std.Io.Clock.now(.awake, engine.io).nanoseconds;
+        if (current_ns >= deadline_ns) break;
+        const next_ns = @min(deadline_ns, current_ns + 100 * std.time.ns_per_ms);
+        try (std.Io.Timestamp.fromNanoseconds(next_ns).withClock(.awake)).wait(engine.io);
+    }
 }
 
 fn reserveBandwidth(next_ns: *i96, current_limit: *u64, limit: u64, bytes: u64, now_ns: i96) i96 {
