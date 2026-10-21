@@ -25,8 +25,12 @@ pub const Limits = struct {
 pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
     if (limits.global_active == 0 or limits.per_host_active == 0) return null;
 
+    // Settings allow at most 32 active tasks. Keep their hosts on the stack so
+    // each queued candidate compares only with active work, not full history.
+    var active_hosts: [32][]const u8 = undefined;
     var active_total: usize = 0;
     for (jobs) |job| if (isActive(job.state)) {
+        if (active_total < active_hosts.len) active_hosts[active_total] = job.host;
         active_total += 1;
     };
     if (active_total >= limits.global_active) return null;
@@ -35,7 +39,10 @@ pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
     var best_host_active: usize = 0;
     for (jobs, 0..) |candidate, index| {
         if (candidate.state != .queued) continue;
-        const host_active = countActiveForHost(jobs, candidate.host);
+        const host_active = if (active_total <= active_hosts.len)
+            countHost(active_hosts[0..active_total], candidate.host)
+        else
+            countActiveForHost(jobs, candidate.host);
         if (host_active >= limits.per_host_active) continue;
 
         const current_index = best orelse {
@@ -53,6 +60,14 @@ pub fn next(jobs: []const JobRef, limits: Limits) ?usize {
         }
     }
     return best;
+}
+
+fn countHost(active_hosts: []const []const u8, host: []const u8) usize {
+    var count: usize = 0;
+    for (active_hosts) |active_host| {
+        if (std.ascii.eqlIgnoreCase(active_host, host)) count += 1;
+    }
+    return count;
 }
 
 fn isActive(state: State) bool {

@@ -59,6 +59,9 @@ Queued HTTP transfers and IPC URL probes now acquire engine-wide request permits
 multi-job saturation and fairness under these limits have not been measured.
 Waiting requests now use FIFO order among hosts eligible for a permit; a
 host at its cap does not block a different eligible host.
+Queue selection now scans the active job set once and compares queued jobs
+against at most 32 active hosts under the configured task limit, instead of
+rescanning full history for each candidate. Large-list latency is unmeasured.
 IPC HTTP probes wait at most 15 seconds for a connection permit and return a
 busy message when the host remains saturated; queued downloads keep waiting.
 Bandwidth waits check transfer controls and queue schedules at 100 ms intervals.
