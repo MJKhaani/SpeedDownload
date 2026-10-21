@@ -52,6 +52,7 @@ pub const State = struct {
     pub fn apply(self: *State, client: *http.Client, policy: Policy, target: std.Uri) !void {
         if (policy.mode == .system) {
             if (comptime builtin.os.tag == .macos) try self.applyMacOSSystem(client, target);
+            if (comptime builtin.os.tag == .linux) try self.applyLinuxSystem(client, target);
             return;
         }
         if (policy.mode != .custom) return;
@@ -60,6 +61,10 @@ pub const State = struct {
         // user configured the proxy as requiring authentication.
         if (policy.authentication_required) return error.ProxyAuthenticationUnavailable;
         const url = policy.url orelse return error.InvalidProxy;
+        try self.applyEndpoint(client, url);
+    }
+
+    fn applyEndpoint(self: *State, client: *http.Client, url: []const u8) !void {
         const uri = std.Uri.parse(url) catch return error.InvalidProxy;
         const path_ok = uri.path.isEmpty() or switch (uri.path) {
             .raw => |path| std.mem.eql(u8, path, "/"),
@@ -80,6 +85,23 @@ pub const State = struct {
         };
         client.http_proxy = &self.proxy;
         client.https_proxy = &self.proxy;
+    }
+
+    fn applyLinuxSystem(self: *State, client: *http.Client, target: std.Uri) !void {
+        if (linuxNoProxyMatches(target)) return;
+        const is_https = std.ascii.eqlIgnoreCase(target.scheme, "https");
+        const endpoint = if (is_https)
+            linuxEnvFirst(&.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" })
+        else
+            linuxEnvFirst(&.{ "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY" });
+        const value = endpoint orelse return;
+        if (std.mem.indexOf(u8, value, "://") != null) {
+            try self.applyEndpoint(client, value);
+        } else {
+            const url = try std.fmt.allocPrint(self.allocator, "http://{s}", .{value});
+            defer self.allocator.free(url);
+            try self.applyEndpoint(client, url);
+        }
     }
 
     fn applyMacOSSystem(self: *State, client: *http.Client, target: std.Uri) !void {
@@ -116,6 +138,49 @@ pub const State = struct {
         }
     }
 };
+
+fn linuxEnvFirst(comptime names: []const [:0]const u8) ?[]const u8 {
+    if (comptime builtin.os.tag != .linux) return null;
+    inline for (names) |name| {
+        if (std.c.getenv(name)) |value| {
+            const bytes = std.mem.span(value);
+            if (bytes.len != 0) return bytes;
+        }
+    }
+    return null;
+}
+
+fn linuxNoProxyMatches(target: std.Uri) bool {
+    if (comptime builtin.os.tag != .linux) return false;
+    const list = linuxEnvFirst(&.{ "no_proxy", "NO_PROXY" }) orelse return false;
+    const component = target.host orelse return false;
+    const host = switch (component) {
+        .raw => |value| value,
+        .percent_encoded => |value| value,
+    };
+    const port = target.port orelse if (std.ascii.eqlIgnoreCase(target.scheme, "https")) @as(u16, 443) else 80;
+    var entries = std.mem.splitScalar(u8, list, ',');
+    while (entries.next()) |raw_entry| {
+        const entry = std.mem.trim(u8, raw_entry, " \t");
+        if (std.mem.eql(u8, entry, "*")) return true;
+        if (entry.len == 0) continue;
+        var pattern = entry;
+        if (std.mem.lastIndexOfScalar(u8, entry, ':')) |colon| {
+            // A port qualifier is only recognized on DNS names and IPv4 hosts.
+            if (std.mem.indexOfScalar(u8, entry[0..colon], ':') == null) {
+                const required_port = std.fmt.parseInt(u16, entry[colon + 1 ..], 10) catch continue;
+                if (required_port != port) continue;
+                pattern = entry[0..colon];
+            }
+        }
+        const domain = std.mem.trimStart(u8, pattern, ".");
+        if (domain.len == 0) continue;
+        if (std.ascii.eqlIgnoreCase(host, domain)) return true;
+        if (host.len > domain.len and host[host.len - domain.len - 1] == '.' and
+            std.ascii.eqlIgnoreCase(host[host.len - domain.len ..], domain)) return true;
+    }
+    return false;
+}
 
 /// A request and response with stable storage for redirected URI components.
 /// The caller may mark `request.connection.?.closing` before deinit when it
