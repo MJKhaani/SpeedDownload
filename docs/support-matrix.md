@@ -62,6 +62,12 @@ busy message when the host remains saturated; queued downloads keep waiting.
 Bandwidth waits check transfer controls and queue schedules at 100 ms intervals.
 An active transfer also recalculates its pending wait when the global or
 per-job speed limit changes; runtime rate-change behavior remains unverified.
+Queued HTTP single-stream and multipart body reads now run as cancellable
+concurrent I/O when the backend supports it. The worker checks pause, cancel,
+and queue scheduling every 100 ms while a read is blocked, then joins the
+canceled read before closing its response. Backends without concurrent I/O
+fall back to the ordinary read. Stalled-read cancellation and throughput still
+need native runtime validation.
 
 On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, IPC service, or package is validated. The active native GUI/IPC decision and proof gate are recorded in [ADR 0001](adr/0001-native-guis-local-ipc.md).
 

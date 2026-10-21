@@ -134,6 +134,39 @@ pub const Opened = struct {
     }
 };
 
+/// Read a body chunk while queued transfers remain responsive to control
+/// changes. A canceled read is joined before the response can be destroyed.
+pub fn readControlled(io: std.Io, reader: *std.Io.Reader, buffer: []u8, control: ?connection_budget.ControlCallback, context: ?*anyopaque) anyerror!usize {
+    if (control == null or context == null) return reader.readSliceShort(buffer);
+    try control.?(context.?);
+    if (reader.seek < reader.end) {
+        const ready = @min(buffer.len, reader.end - reader.seek);
+        return reader.readSliceShort(buffer[0..ready]);
+    }
+    var completed: std.Io.Event = .unset;
+    var future = std.Io.concurrent(io, readControlledTask, .{ reader, buffer, &completed, io }) catch
+        return reader.readSliceShort(buffer);
+    while (true) {
+        completed.waitTimeout(io, .{ .duration = .{ .raw = .fromMilliseconds(100), .clock = .awake } }) catch |err| switch (err) {
+            error.Timeout => {},
+            else => {
+                _ = future.cancel(io) catch {};
+                return err;
+            },
+        };
+        control.?(context.?) catch |err| {
+            _ = future.cancel(io) catch {};
+            return err;
+        };
+        if (completed.isSet()) return future.await(io);
+    }
+}
+
+fn readControlledTask(reader: *std.Io.Reader, buffer: []u8, completed: *std.Io.Event, io: std.Io) std.Io.Reader.ShortError!usize {
+    defer completed.set(io);
+    return reader.readSliceShort(buffer);
+}
+
 /// Follow at most three redirects, applying proxy policy to each destination.
 /// Never downgrade an HTTPS source to HTTP or accept redirect credentials.
 /// Request headers must outlive `Opened`.

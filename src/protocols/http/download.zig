@@ -420,10 +420,15 @@ fn downloadSingleStreamWithProgress(
     };
     try sink.reportProgress(true, journal != null);
     sink.writer = .{ .vtable = &.{ .drain = CheckpointWriter.drain, .flush = CheckpointWriter.flush }, .buffer = &sink.buffer };
-    _ = body_reader.streamRemaining(&sink.writer) catch |err| switch (err) {
-        error.ReadFailed => return response.bodyErr().?,
-        error.WriteFailed => return sink.last_error orelse error.WriteFailed,
-    };
+    var chunk: [16 * 1024]u8 = undefined;
+    while (true) {
+        const count = @import("proxy.zig").readControlled(io, body_reader, &chunk, control, progress_context) catch |err| {
+            if (err == error.ReadFailed) return response.bodyErr().?;
+            return err;
+        };
+        if (count == 0) break;
+        sink.writer.writeAll(chunk[0..count]) catch return sink.last_error orelse error.WriteFailed;
+    }
     body_consumed = true;
 
     sink.writer.flush() catch return sink.last_error orelse error.WriteFailed;

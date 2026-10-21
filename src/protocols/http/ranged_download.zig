@@ -400,7 +400,7 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
     try file_writer.seekTo(worker.cursor);
     var reader_buffer: [16 * 1024]u8 = undefined;
     var chunk_buffer: [32 * 1024]u8 = undefined;
-    var body = response.reader(&reader_buffer);
+    const body = response.reader(&reader_buffer);
     var remaining = worker.end - worker.cursor;
     var current_end = worker.end;
     var downloaded: u64 = 0;
@@ -421,7 +421,10 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
         if (self.failed.load(.acquire)) return error.PeerWorkerFailed;
         if (self.callback != null) try self.report(false);
         const amount: usize = @intCast(@min(remaining, chunk_buffer.len));
-        const count = body.readSliceShort(chunk_buffer[0..amount]) catch return response.bodyErr().?;
+        const count = proxy.readControlled(self.io, body, chunk_buffer[0..amount], self.control, self.callback_context) catch |err| {
+            if (err == error.ReadFailed) return response.bodyErr().?;
+            return err;
+        };
         if (count == 0) return Error.SegmentLengthMismatch;
         try file_writer.interface.writeAll(chunk_buffer[0..count]);
         remaining -= count;
