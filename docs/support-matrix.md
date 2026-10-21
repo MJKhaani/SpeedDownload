@@ -57,6 +57,9 @@ Engine work still required for the full specification includes Linux/Windows nat
 Queued HTTP transfers now acquire engine-wide request permits: 64 overall and
 32 per destination host, including redirects. The code builds on macOS; actual
 multi-job saturation and fairness under these limits have not been measured.
+Bandwidth waits check transfer controls and queue schedules at 100 ms intervals.
+An active transfer also recalculates its pending wait when the global or
+per-job speed limit changes; runtime rate-change behavior remains unverified.
 
 On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, IPC service, or package is validated. The active native GUI/IPC decision and proof gate are recorded in [ADR 0001](adr/0001-native-guis-local-ipc.md).
 

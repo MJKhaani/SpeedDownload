@@ -837,21 +837,37 @@ fn throttleBytes(progress: *DownloadProgressContext, bytes: u64) !void {
     const engine = progress.engine;
     const policy = engine.jobs.runtimePolicy();
     const slot = localWeekSlot() orelse if (policy.bandwidth_schedule_enabled) return error.LocalTimeUnavailable else 0;
-    const global_limit = policy.downloadLimit(slot);
-    const job_limit = engine.jobs.jobBandwidthLimit(progress.job_id);
+    var global_limit = policy.downloadLimit(slot);
+    var job_limit = engine.jobs.jobBandwidthLimit(progress.job_id);
     const now_ns = std.Io.Clock.now(.awake, engine.io).nanoseconds;
     engine.bandwidth_mutex.lockUncancelable(engine.io);
-    const global_deadline = reserveBandwidth(&engine.bandwidth_next_ns, &engine.bandwidth_current_limit, global_limit, bytes, now_ns);
+    var global_deadline = reserveBandwidth(&engine.bandwidth_next_ns, &engine.bandwidth_current_limit, global_limit, bytes, now_ns);
     engine.bandwidth_mutex.unlock(engine.io);
     progress.progress_mutex.lockUncancelable(engine.io);
-    const job_deadline = reserveBandwidth(&progress.bandwidth_next_ns, &progress.bandwidth_current_limit, job_limit, bytes, now_ns);
+    var job_deadline = reserveBandwidth(&progress.bandwidth_next_ns, &progress.bandwidth_current_limit, job_limit, bytes, now_ns);
     progress.progress_mutex.unlock(engine.io);
-    const deadline_ns = @max(global_deadline, job_deadline);
     // A low limit can put the deadline minutes ahead. Wake regularly so a
-    // paused, canceled, or scheduled-off transfer releases its worker promptly.
+    // paused or canceled worker stops promptly and live limit changes apply.
     while (true) {
         try checkHttpControl(@ptrCast(progress));
         const current_ns = std.Io.Clock.now(.awake, engine.io).nanoseconds;
+        const current_policy = engine.jobs.runtimePolicy();
+        const current_slot = localWeekSlot() orelse if (current_policy.bandwidth_schedule_enabled) return error.LocalTimeUnavailable else 0;
+        const current_global_limit = current_policy.downloadLimit(current_slot);
+        if (current_global_limit != global_limit) {
+            engine.bandwidth_mutex.lockUncancelable(engine.io);
+            global_deadline = reserveBandwidth(&engine.bandwidth_next_ns, &engine.bandwidth_current_limit, current_global_limit, bytes, current_ns);
+            engine.bandwidth_mutex.unlock(engine.io);
+            global_limit = current_global_limit;
+        }
+        const current_job_limit = engine.jobs.jobBandwidthLimit(progress.job_id);
+        if (current_job_limit != job_limit) {
+            progress.progress_mutex.lockUncancelable(engine.io);
+            job_deadline = reserveBandwidth(&progress.bandwidth_next_ns, &progress.bandwidth_current_limit, current_job_limit, bytes, current_ns);
+            progress.progress_mutex.unlock(engine.io);
+            job_limit = current_job_limit;
+        }
+        const deadline_ns = @max(global_deadline, job_deadline);
         if (current_ns >= deadline_ns) break;
         const next_ns = @min(deadline_ns, current_ns + 100 * std.time.ns_per_ms);
         try (std.Io.Timestamp.fromNanoseconds(next_ns).withClock(.awake)).wait(engine.io);
