@@ -174,3 +174,9 @@ checks for those collisions while constructing its private staging tree.
 
 Persistent DHT participation, DHT metadata discovery, broader tracker discovery, selection in larger torrents and magnets,
 seeding, upload accounting, and swarm interoperability remain incomplete.
+
+The macOS torrent review loads paged file lists from the frozen metadata source.
+Every page must retain the same info hash, file count, and total size; offsets
+must exactly follow the files already received. Queueing stays disabled until
+all files arrive with unique paths and valid sizes. Tracker edits are checked
+against the reviewed info hash and file count before submitting the job.

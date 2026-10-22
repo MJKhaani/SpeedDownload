@@ -167,6 +167,9 @@ struct TorrentAddView: View {
     private func loadMetadata() async {
         isLoading = true
         error = nil
+        preview = nil
+        files = []
+        selected = []
         defer { isLoading = false }
         await engine.ensureConnected()
         if initialDestination == nil, let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
@@ -174,7 +177,11 @@ struct TorrentAddView: View {
         do {
             let result = try await engine.prepareTorrent(url: source, trackers: trackerEdits ? trackerURLs : nil)
             guard !Task.isCancelled else { return }
-            preview = result
+            guard let hash = result.torrentInfoHash, hash.count == 40,
+                  hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                  let count = result.torrentFileCount, (1...10_000).contains(count) else {
+                throw TorrentReviewError.inconsistentMetadata
+            }
             files = result.torrentFiles ?? []
             name = result.suggestedName
             originalTrackers = result.torrentTrackers ?? []
@@ -183,18 +190,32 @@ struct TorrentAddView: View {
             var next = result.torrentNextOffset
             var previous = 0
             while let raw = next {
-                guard let offset = Int(raw), offset > previous, offset <= 10_000 else { throw CocoaError(.fileReadCorruptFile) }
+                guard let offset = Int(raw), offset > previous, offset == files.count, offset < count else {
+                    throw TorrentReviewError.inconsistentMetadata
+                }
                 let page = try await engine.prepareTorrent(url: result.finalURL, offset: offset)
-                guard !Task.isCancelled, page.torrentInfoHash == result.torrentInfoHash else { return }
-                files.append(contentsOf: page.torrentFiles ?? [])
+                guard !Task.isCancelled else { return }
+                guard page.torrentInfoHash == hash, page.torrentFileCount == count,
+                      page.totalBytes == result.totalBytes,
+                      let entries = page.torrentFiles, !entries.isEmpty,
+                      entries.count <= count - files.count else {
+                    throw TorrentReviewError.inconsistentMetadata
+                }
+                files.append(contentsOf: entries)
                 previous = offset
                 next = page.torrentNextOffset
             }
-            guard files.count == result.torrentFileCount else { throw CocoaError(.fileReadCorruptFile) }
+            guard files.count == count, Set(files.map(\.path)).count == count,
+                  files.allSatisfy({ !$0.path.isEmpty && UInt64($0.length) != nil }) else {
+                throw TorrentReviewError.inconsistentMetadata
+            }
             selected = Set(files.map(\.path))
+            preview = result
         } catch {
             guard !Task.isCancelled else { return }
             preview = nil
+            files = []
+            selected = []
             self.error = error.localizedDescription
             tab = "trackers"
             if trackers.isEmpty, let components = URLComponents(string: source) {
@@ -216,7 +237,10 @@ struct TorrentAddView: View {
         defer { isSaving = false }
         do {
             let prepared = trackerURLs == originalTrackers ? preview : try await engine.prepareTorrent(url: preview.finalURL, trackers: trackerURLs)
+            guard prepared.torrentInfoHash == preview.torrentInfoHash,
+                  prepared.torrentFileCount == files.count else { throw TorrentReviewError.inconsistentMetadata }
             let chosen = files.map(\.path).filter { selected.contains($0) }
+            guard !chosen.isEmpty else { error = "Select at least one file."; return }
             let success = await engine.addJob(url: prepared.finalURL, name: name.trimmingCharacters(in: .whitespacesAndNewlines), destination: destination, priority: priority,
                 selectedTorrentFiles: chosen.count == files.count ? nil : chosen, torrentInfoHash: prepared.torrentInfoHash)
             if success { added() } else { error = engine.actionError ?? "Could not add the torrent." }
@@ -229,5 +253,13 @@ struct TorrentAddView: View {
         panel.allowsMultipleSelection = false; panel.prompt = "Choose Folder"
         panel.directoryURL = URL(fileURLWithPath: destination)
         if panel.runModal() == .OK, let url = panel.url { destination = url.path }
+    }
+}
+
+private enum TorrentReviewError: LocalizedError {
+    case inconsistentMetadata
+
+    var errorDescription: String? {
+        "The torrent file list is incomplete or changed during loading. Retry to retrieve a verified file list."
     }
 }
