@@ -78,7 +78,7 @@ struct DashboardView: View {
                 if filteredJobs.isEmpty {
                     ContentUnavailableView(isConnected ? "No transfers" : "Engine unavailable",
                         systemImage: isConnected ? "arrow.down.circle" : "bolt.horizontal.circle",
-                        description: Text(isConnected ? "Add a URL to place a download in your queue." : "The app starts the local engine when it is available."))
+                        description: Text(connectionError ?? (isConnected ? "Add a URL to place a download in your queue." : "The app starts the local engine when it is available.")))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(selection: $selectedJobID) {
@@ -91,8 +91,9 @@ struct DashboardView: View {
                     .listStyle(.plain)
                 }
                 HStack(spacing: 7) {
-                    Circle().fill(isConnected ? .green : .orange).frame(width: 7, height: 7)
-                    Text(isConnected ? "Engine connected" : "Connecting to local engine…").foregroundStyle(.secondary)
+                    Circle().fill(connectionError == nil ? (isConnected ? .green : .orange) : .red).frame(width: 7, height: 7)
+                    Text(connectionStatus).foregroundStyle(.secondary)
+                        .help(connectionError ?? connectionStatus)
                     Spacer()
                     Label(downloadRate(engine.totalDownloadBytesPerSecond), systemImage: "arrow.down")
                         .monospacedDigit()
@@ -640,8 +641,22 @@ struct DashboardView: View {
     }
 
     private var engineBadge: some View {
-        Label(isConnected ? "Engine connected" : "Starting engine…", systemImage: isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
+        Label(connectionStatus, systemImage: isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
             .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            .help(connectionError ?? connectionStatus)
+    }
+
+    private var connectionStatus: String {
+        switch engine.state {
+        case .connecting: "Connecting to local engine…"
+        case .connected: "Engine connected"
+        case .disconnected: "Engine disconnected"
+        }
+    }
+
+    private var connectionError: String? {
+        if case .disconnected(let message) = engine.state { return message }
+        return nil
     }
 }
 

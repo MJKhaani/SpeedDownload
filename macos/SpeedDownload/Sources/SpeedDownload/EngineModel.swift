@@ -97,15 +97,7 @@ final class EngineModel: ObservableObject {
         try await Task.detached(priority: .userInitiated) {
             let client = UnixEngineClient()
             let hello = try client.hello()
-            guard hello.supportedFeatures.contains("jobs.probe"),
-                  hello.supportedFeatures.contains("jobs.worker-progress"),
-                  hello.supportedFeatures.contains("jobs.probe-filename-decoding"),
-                  hello.supportedFeatures.contains("jobs.change-wait"),
-                  hello.supportedFeatures.contains("jobs.per-job-bandwidth"),
-                  hello.supportedFeatures.contains("settings.persisted-v2"),
-                  hello.supportedFeatures.contains("settings.weekly-schedules"),
-                  hello.supportedFeatures.contains("torrents.magnet-v1-single-file"),
-                  hello.supportedFeatures.contains("torrents.local-file-v1-single-file") else {
+            guard UnixEngineClient.requiredFeatures.allSatisfy(hello.supportedFeatures.contains) else {
                 throw EngineLaunchError.outdated
             }
             return (hello, try client.listJobs())

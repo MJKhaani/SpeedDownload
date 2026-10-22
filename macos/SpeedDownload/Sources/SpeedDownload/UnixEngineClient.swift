@@ -276,6 +276,18 @@ enum BandwidthScheduleMode: String, Codable, Sendable {
 struct UnixEngineClient: Sendable {
     private let maxFrameSize = 1_048_576
 
+    // Hello returns the intersection of requested and supported capabilities.
+    // Keep connection requirements and the handshake request in sync.
+    static let requiredFeatures = [
+        "jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding",
+        "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2",
+        "settings.weekly-schedules", "torrents.magnet-v1-single-file",
+        "torrents.local-file-v1-single-file",
+    ]
+    private static let requestedFeatures = requiredFeatures + [
+        "jobs.change-stream-v1", "torrents.file-selection-v1",
+    ]
+
     func hello() throws -> HelloResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
@@ -480,7 +492,7 @@ struct UnixEngineClient: Sendable {
             params: [
                 "protocol": ["major": 1, "minor": 0],
                 "client": ["kind": "macos-gui", "version": "0.1.0"],
-                "features": ["jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.change-stream-v1", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules", "torrents.file-selection-v1"],
+                "features": Self.requestedFeatures,
             ]
         )
         guard let result = envelope.result else { throw ClientError.invalidResponse }
