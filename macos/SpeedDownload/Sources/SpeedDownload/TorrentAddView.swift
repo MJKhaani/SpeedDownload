@@ -27,6 +27,7 @@ struct TorrentAddView: View {
     @EnvironmentObject private var engine: EngineModel
     @Environment(\.dismiss) private var dismiss
     let source: String
+    let initialDestination: String?
     let added: () -> Void
     @State private var preview: DownloadProbe?
     @State private var files: [DownloadProbe.TorrentFile] = []
@@ -42,6 +43,14 @@ struct TorrentAddView: View {
     @State private var error: String?
     @State private var metadataAttempt = 0
     @State private var tab = "files"
+
+    init(source: String, initialDestination: String? = nil, initialPriority: Int = 0, added: @escaping () -> Void) {
+        self.source = source
+        self.initialDestination = initialDestination
+        self.added = added
+        _destination = State(initialValue: initialDestination ?? "\(NSHomeDirectory())/Downloads")
+        _priority = State(initialValue: initialPriority)
+    }
 
     private var trackerURLs: [String] {
         var seen = Set<String>()
@@ -160,7 +169,7 @@ struct TorrentAddView: View {
         error = nil
         defer { isLoading = false }
         await engine.ensureConnected()
-        if let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
+        if initialDestination == nil, let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
            destination == "\(NSHomeDirectory())/Downloads" { destination = settings.defaultDownloadFolder }
         do {
             let result = try await engine.prepareTorrent(url: source, trackers: trackerEdits ? trackerURLs : nil)

@@ -28,7 +28,9 @@ The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-c
 
 Browser handoffs go exclusively to the native client. A single intercepted link
 opens its Add dialog; selected page links open a multiple-link review dialog
-with checkboxes, filtering, and All/None controls. The extension and native host
+with checkboxes, filtering, and All/None controls. Batch torrent reviews retain
+the chosen folder and queue priority. Stop finishes the current request and leaves
+remaining links selected for later. The extension and native host
 never talk to the engine or silently queue downloads. Both extension packages
 use the app logo for their toolbar and manifest icons. Reload the extension
 after installing an updated development build.

@@ -10,11 +10,15 @@ struct DashboardView: View {
     @State private var incomingDownloadURL = ""
     @State private var incomingIsTorrent = false
     @State private var incomingBatch: [String] = []
+    @State private var incomingDestination: String?
+    @State private var incomingPriority = 0
     @State private var handoffError: String?
     private struct PendingDownload: Equatable {
         let source: String
         let torrent: Bool
         var batch: [String] = []
+        var destination: String? = nil
+        var priority: Int = 0
     }
     @State private var pendingDownloadURLs: [PendingDownload] = []
     @State private var handledRequests: [String] = []
@@ -165,11 +169,11 @@ struct DashboardView: View {
         .onDrop(of: [UTType.url.identifier, UTType.fileURL.identifier, UTType.plainText.identifier], isTargeted: nil, perform: handleDownloadDrop)
         .sheet(isPresented: $showingAddDownload, onDismiss: showNextPendingDownload) {
             if incomingBatch.count > 1 {
-                BatchDownloadView(sources: incomingBatch) { source in
-                    pendingDownloadURLs.append(PendingDownload(source: source, torrent: true))
+                BatchDownloadView(sources: incomingBatch) { source, destination, priority in
+                    pendingDownloadURLs.append(PendingDownload(source: source, torrent: true, destination: destination, priority: priority))
                 }
             } else if incomingIsTorrent {
-                TorrentAddView(source: incomingDownloadURL) { showingAddDownload = false }
+                TorrentAddView(source: incomingDownloadURL, initialDestination: incomingDestination, initialPriority: incomingPriority) { showingAddDownload = false }
                     .id(incomingDownloadURL)
             } else {
                 AddDownloadView(
@@ -194,6 +198,8 @@ struct DashboardView: View {
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadNewTransfer)) { _ in
             incomingDownloadURL = ""
+            incomingDestination = nil
+            incomingPriority = 0
             incomingBatch = []
             incomingIsTorrent = false
             showingAddDownload = true
@@ -256,16 +262,18 @@ struct DashboardView: View {
         return false
     }
 
-    private func offerDownloadURL(_ raw: String, forceTorrent: Bool = false) {
+    private func offerDownloadURL(_ raw: String, forceTorrent: Bool = false, destination: String? = nil, priority: Int = 0) {
         guard let value = TorrentSource.normalized(raw) else { return }
         if showingAddDownload {
             if pendingDownloadURLs.count < 100 {
-                let stored = PendingDownload(source: value, torrent: forceTorrent)
+                let stored = PendingDownload(source: value, torrent: forceTorrent, destination: destination, priority: priority)
                 if !pendingDownloadURLs.contains(stored) { pendingDownloadURLs.append(stored) }
             }
             return
         }
         incomingDownloadURL = value
+        incomingDestination = destination
+        incomingPriority = priority
         incomingBatch = []
         incomingIsTorrent = forceTorrent || TorrentSource.isTorrent(value)
         showingAddDownload = true
@@ -277,7 +285,7 @@ struct DashboardView: View {
         let next = pendingDownloadURLs.removeFirst()
         DispatchQueue.main.async {
             if next.batch.count > 1 { offerBatch(next.batch) }
-            else { offerDownloadURL(next.source, forceTorrent: next.torrent) }
+            else { offerDownloadURL(next.source, forceTorrent: next.torrent, destination: next.destination, priority: next.priority) }
         }
     }
 

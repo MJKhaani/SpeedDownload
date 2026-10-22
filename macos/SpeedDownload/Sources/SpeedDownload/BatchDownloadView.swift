@@ -5,11 +5,12 @@ struct BatchDownloadView: View {
     @EnvironmentObject private var engine: EngineModel
     @Environment(\.dismiss) private var dismiss
     let sources: [String]
-    let reviewTorrent: (String) -> Void
+    let reviewTorrent: (String, String, Int) -> Void
     @State private var selected: Set<String> = []
     @State private var destination = "\(NSHomeDirectory())/Downloads"
     @State private var priority = 0
     @State private var isAdding = false
+    @State private var stopRequested = false
     @State private var settingsLoaded = false
     @State private var completed: Set<String> = []
     @State private var failures: [String: String] = [:]
@@ -34,6 +35,7 @@ struct BatchDownloadView: View {
                 Button("All") { selected.formUnion(visibleSources.filter { !completed.contains($0) }) }
                 Button("None") { selected.subtract(visibleSources) }
             }
+            .disabled(isAdding)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(visibleSources, id: \.self) { source in
@@ -58,6 +60,7 @@ struct BatchDownloadView: View {
                         }
                         .font(.system(size: 12)).padding(.vertical, 7).padding(.horizontal, 8)
                         .disabled(completed.contains(source))
+                        .disabled(isAdding)
                         .help(source)
                         Divider()
                     }
@@ -75,19 +78,22 @@ struct BatchDownloadView: View {
                     Text("Low").tag(-1); Text("Normal").tag(0); Text("High").tag(1)
                 }
             }
+            .disabled(isAdding)
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
             HStack {
                 Text("\(selected.count) of \(uniqueSources.count) selected").font(.caption).foregroundStyle(.secondary)
                 if isAdding { ProgressView().controlSize(.small) }
                 Spacer()
-                Button(completed.isEmpty ? "Cancel" : "Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(isAdding ? (stopRequested ? "Stopping…" : "Stop") : (completed.isEmpty ? "Cancel" : "Done")) {
+                    if isAdding { stopRequested = true } else { dismiss() }
+                }
+                .disabled(stopRequested && isAdding).keyboardShortcut(.cancelAction)
                 Button("Add Selected") { Task { await addSelected() } }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-                    .disabled(selected.isEmpty || !settingsLoaded)
+                    .disabled(isAdding || selected.isEmpty || !settingsLoaded)
             }
         }
         .padding(20).frame(width: 700)
-        .disabled(isAdding)
         .interactiveDismissDisabled(isAdding)
         .task {
             selected = Set(uniqueSources)
@@ -113,15 +119,18 @@ struct BatchDownloadView: View {
             error = "Choose an existing download folder."; return
         }
         isAdding = true
+        stopRequested = false
         error = nil
         defer { isAdding = false }
         for source in uniqueSources where selected.contains(source) {
+            if stopRequested { break }
             var torrent = TorrentSource.isTorrent(source)
             if !torrent, let probe = try? await engine.probe(url: source) {
                 torrent = probe.contentType?.lowercased().hasPrefix("application/x-bittorrent") == true
             }
+            if stopRequested { break }
             if torrent {
-                reviewTorrent(source)
+                reviewTorrent(source, destination, priority)
                 completed.insert(source)
                 selected.remove(source)
                 continue
@@ -136,6 +145,7 @@ struct BatchDownloadView: View {
             }
         }
         if selected.isEmpty { dismiss() }
+        else if stopRequested { error = "Stopped. Remaining links are still selected." }
         else { error = "Some links could not be added. You can retry the selected links." }
     }
 
