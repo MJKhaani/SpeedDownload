@@ -5,6 +5,8 @@ const builtin = @import("builtin");
 const client = @import("ipc/client.zig");
 
 const extension_id = "speed-download@mjkhaani.github";
+const chrome_extension_id = "fcjiipabggcamlocakedfideaamdgknn";
+const chrome_origin = "chrome-extension://" ++ chrome_extension_id ++ "/";
 const max_message_bytes = 16 * 1024;
 
 pub fn main(init: std.process.Init) !void {
@@ -26,7 +28,24 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
         return;
     }
-    if (args.len != 3 or !std.mem.eql(u8, args[2], extension_id)) {
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--print-chrome-manifest")) {
+        const executable = try std.process.executablePathAlloc(init.io, allocator);
+        defer allocator.free(executable);
+        const manifest = try std.json.Stringify.valueAlloc(allocator, .{
+            .name = "com.mjkhaani.speeddownload",
+            .description = "Speed Download Chrome handoff",
+            .path = executable,
+            .type = "stdio",
+            .allowed_origins = &.{chrome_origin},
+        }, .{});
+        defer allocator.free(manifest);
+        try std.Io.File.stdout().writeStreamingAll(init.io, manifest);
+        try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
+        return;
+    }
+    const firefox_caller = args.len == 3 and std.mem.eql(u8, args[2], extension_id);
+    const chrome_caller = args.len == 2 and std.mem.eql(u8, args[1], chrome_origin);
+    if (!firefox_caller and !chrome_caller) {
         try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Extension is not authorized" });
         return;
     }
@@ -138,6 +157,11 @@ fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
     if (url != .string or key != .string)
         return error.InvalidRequest;
     if (url.string.len == 0 or url.string.len > 8192 or !validUuid(key.string)) return error.InvalidRequest;
+    if (std.mem.startsWith(u8, url.string, "magnet:")) {
+        var magnet = @import("protocols/torrent/magnet.zig").inspect(allocator, url.string) catch return error.InvalidRequest;
+        defer magnet.deinit(allocator);
+        return .{ .parsed = parsed, .action = .add, .url = url.string, .key = key.string };
+    }
     const uri = std.Uri.parse(url.string) catch return error.InvalidRequest;
     if (!(std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or uri.fragment != null)

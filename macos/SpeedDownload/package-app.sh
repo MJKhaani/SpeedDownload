@@ -36,8 +36,15 @@ cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
   <key>LSUIElement</key><false/>
   <key>CFBundleURLTypes</key><array><dict>
     <key>CFBundleURLName</key><string>com.mjkhaani.SpeedDownload.add</string>
-    <key>CFBundleURLSchemes</key><array><string>speeddownload</string><string>magnet</string></array>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>CFBundleURLSchemes</key><array><string>speeddownload</string></array>
+  </dict><dict>
+    <key>CFBundleURLName</key><string>com.mjkhaani.SpeedDownload.magnet</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>CFBundleURLSchemes</key><array><string>magnet</string></array>
   </dict></array>
 </dict></plist>
 PLIST
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then "$LSREGISTER" -f "$APP_PATH"; fi
 echo "Created $APP_PATH"

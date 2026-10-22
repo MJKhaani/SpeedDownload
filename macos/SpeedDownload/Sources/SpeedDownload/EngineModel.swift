@@ -82,9 +82,12 @@ final class EngineModel: ObservableObject {
             }
             try startEngineIfAvailable()
             var lastError = error
-            for _ in 0..<20 {
+            for _ in 0..<80 {
                 try await Task.sleep(for: .milliseconds(250))
                 do { return try await loadSnapshot() } catch { lastError = error }
+                if let engineProcess, !engineProcess.isRunning {
+                    throw EngineLaunchError.exited(engineProcess.terminationStatus)
+                }
             }
             throw lastError
         }
@@ -118,7 +121,10 @@ final class EngineModel: ObservableObject {
         let process = Process()
         process.executableURL = executable
         process.arguments = ["engine"]
-        process.environment = ProcessInfo.processInfo.environment
+        var environment = ProcessInfo.processInfo.environment
+        if environment["TMPDIR"]?.isEmpty != false { environment["TMPDIR"] = NSTemporaryDirectory() }
+        if environment["HOME"]?.isEmpty != false { environment["HOME"] = NSHomeDirectory() }
+        process.environment = environment
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
@@ -470,10 +476,12 @@ final class EngineModel: ObservableObject {
 private enum EngineLaunchError: LocalizedError, Equatable {
     case notInstalled
     case outdated
+    case exited(Int32)
     var errorDescription: String? {
         switch self {
         case .notInstalled: "The Speed Download engine was not found in this app or at SPEED_DOWNLOAD_ENGINE_PATH."
         case .outdated: "The running Speed Download engine is outdated. Let active downloads finish, then restart the engine."
+        case .exited(let status): "The Speed Download engine exited during startup (status \(status))."
         }
     }
 }
