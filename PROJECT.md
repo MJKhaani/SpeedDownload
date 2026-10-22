@@ -17,7 +17,7 @@ Build a fast, resilient, privacy-respecting download manager that feels native o
 
 1. **Correctness before acceleration.** Never sacrifice data integrity to increase speed; do not claim that parallel requests always make downloads faster.
 2. **Native where it matters.** Respect each platform's human-interface guidance, accessibility model, notification service, secret storage, startup mechanism, and system tray/menu bar conventions.
-3. **One Zig engine, three independent native front ends.** SwiftUI, WinUI 3, GTK 4, the CLI, and browser bridges communicate with the single headless engine over the same versioned, local IPC protocol.
+3. **One Zig engine, three independent native front ends.** SwiftUI, WinUI 3, GTK 4, and the CLI communicate with the single headless engine over the same versioned, local IPC protocol. Browser bridges hand off only to the native client; the client owns all engine communication.
 4. **Transparent control.** All interception, auto-start, scheduling, bandwidth rules, and post-download actions are user-configurable and reversible.
 5. **Security and privacy by default.** Credentials remain in OS-protected storage; no telemetry or cloud account is required; secrets do not enter logs or persistent download records.
 6. **Community maintainability.** Document public APIs, invariants, decisions, platform exceptions, and tests. Keep builds reproducible and source code readable.
@@ -140,6 +140,7 @@ Adopt the **concept** of Internet Download Manager's [dynamic segmentation](http
 ### 4.4 BitTorrent
 
 - Accept `.torrent` and `magnet:` (metadata exchange), select files and priority, show peer/seed counts when available, verify pieces, safely resume, and offer seeding controls.
+- Register `.torrent` documents and `magnet:` with each platform. OS-opened files, magnets, and browser-intercepted torrents open a dedicated native Add Torrent dialog before queueing. Retrieve the complete file list through the engine, allow file selection and tracker editing, and preserve the verified info hash and confirmed metadata. The ordinary Add Download dialog has no torrent picker button.
 - Support necessary tracker/peer operations and magnet metadata acquisition; evaluate DHT, PEX, encryption compatibility, IPv6, UDP trackers, uTP, and v2 torrents as separately tracked capabilities. A library/engine choice requires license, ABI, cross-platform, and supply-chain review.
 - Pieces/blocks are **not HTTP byte-range segments**. Share queue/persistence/status abstractions and bandwidth controls, but keep protocol-specific strategy and verification separate.
 - Separate **download cap** and **upload cap**, report both, and document that BitTorrent normally uploads during fetching. Post-completion seeding is optional/configurable; do not silently expose private downloaded files.
@@ -208,10 +209,11 @@ The **multipart segment map** is a small platform-native custom drawing control 
 - Browser extension code must be WebExtensions-compatible **JavaScript/TypeScript**, with minimal vendor-specific glue. **Zig-only** applies to the shared download engine and core CLI; native desktop GUIs intentionally use Swift, C#, and C, while browser extensions use JS/TypeScript.
 - Functions: context-menu **Download with Speed Download**, optional integration with the browser download API, URL handoff with user confirmation, add-from-current-tab when authorized, extension settings, per-site enable/disable, and installed-app status.
 - Never claim all downloads can be intercepted: browser API/security/sandbox restrictions, streaming media, DRM, authentication-bound requests, blob/object URLs, and `POST` transfers may prevent handoff. Avoid promising DRM bypass or media extraction.
-- Use **native messaging** for Chromium and Firefox (with host manifest per OS/browser). The trusted native host is a minimal, separately scoped adapter that validates/authorizes browser messages and forwards only approved operations to the same engine IPC server. Native messaging `stdin/stdout` framing and access policy remain distinct from the engine IPC transport. An extension service worker reconnects as needed; do not open an unauthenticated localhost TCP listener.
-- Safari uses an **Xcode-packaged Safari Web Extension** attached to the SwiftUI containing app and a native Safari bridge. Its entitlement/app-group/signing design must be reviewed; the bridge routes permitted actions to the same engine IPC, not directly to internal Zig APIs. Safari is not simply the Chromium extension binary copied onto macOS.
+- Use **native messaging** for Chromium and Firefox (with host manifest per OS/browser). The trusted native host is a minimal, separately scoped adapter that validates/authorizes browser messages and forwards requests only to the native client, with no engine connection. Native messaging `stdin/stdout` framing and access policy remain distinct from the engine IPC transport. An extension service worker reconnects as needed; do not open an unauthenticated localhost TCP listener.
+- Safari uses an **Xcode-packaged Safari Web Extension** attached to the SwiftUI containing app and a native Safari bridge. Its entitlement/app-group/signing design must be reviewed; the bridge routes permitted actions to the native client; only the client communicates with the engine. Safari is not simply the Chromium extension binary copied onto macOS.
 - Version, validate, size-limit, and authenticate/authorize IPC messages. Maintain strict allowed extension IDs/origins, explicit user intent, least privileges, origin-aware handoff, and redaction of cookies/authorization headers. Do not pass browser session cookies by default.
-- Persist jobs in the daemon **before** acknowledging the browser handoff, and deduplicate retries using request IDs; handle native-host crash and service-worker sleep.
+- Acknowledge delivery to the client for review and deduplicate retry request IDs. One intercepted link opens the Add dialog. A multiple-link selection opens a dedicated checkbox review dialog with filtering and All/None controls; queue only selected links after confirmation. The daemon persists jobs when the client submits confirmed downloads. Handle native-host crash and service-worker sleep.
+- Use the app logo for extension manifest icons, toolbar icons, and popup branding.
 - Keep separate extension store release checklists; permissions and manifests can differ across browsers.
 
 **Security note:** URL handoff is not permission to read arbitrary local files, use ambient OS credentials, or execute commands. The bridge has no general shell-command API.
@@ -245,7 +247,9 @@ flowchart TD
   LIN[Linux: C / GTK 4 app] --> IPC
   CLI[Zig CLI client] --> IPC
   EXT[Browser WebExtensions] --> NM[Native messaging host / Safari adapter]
-  NM --> IPC
+  NM --> MAC
+  NM --> WIN
+  NM --> LIN
   IPC --> DAEMON[Zig single-instance headless engine process]
   DAEMON --> CORE[Job manager / scheduler / policy / events]
   CORE --> HTTP[HTTP / HTTPS]
@@ -267,7 +271,7 @@ flowchart TD
 - Transfer drivers implement documented operations: `probe`, `start`, `pause`, `cancel`, `resume`, `progress`, `verify`, `cleanup`; BitTorrent may implement seeding/upload extensions.
 - `storage` owns atomic journals/files; SQLite remains a **candidate** pending Zig FFI/binding, WAL, recovery, licensing and target-arch review.
 - `platform` in the engine defines trusted OS service adapters for secret storage, launcher/autostart, paths, and notification orchestration. Platform-specific GUI code implements OS-facing window/dialog/status-area details. Do not require a GUI process just to save a progress checkpoint or execute a schedule.
-- `extensions` is packaged separately: a browser cannot talk to the privileged engine API directly. Its native messaging host implements a **restricted allowlist** and delegates to IPC after validation.
+- `extensions` is packaged separately: a browser cannot talk to the privileged engine API directly. Its native messaging host implements a **restricted allowlist** and delivers requests only to the native client after validation.
 - Multiple UI clients and the CLI can connect concurrently. Commands use stable identifiers, idempotency keys where needed, and expected-state revisions; UI cache never overwrites authoritative engine state.
 
 ### 5.2 Suggested repository layout (proposed, not implemented)
@@ -351,12 +355,12 @@ For every OS: scope the daemon to the current interactive account, enforce one e
 - A GUI starts by attempting to connect to the configured endpoint. If no engine is running, launch the installed matching Zig daemon **as that user**, await readiness with a bounded timeout, and reconnect. Handle simultaneous UI/CLI launches via OS process lock/single-instance semantics; never spawn multiple competing engines.
 - Login/background startup manages only the daemon if configured. The GUI can launch later, close, crash, or upgrade independently of active transfers. If the engine stops, GUIs render a disconnected state and offer safe restart/reconnect; do not display stale progress as live.
 - Do not silently terminate ongoing downloads on GUI exit. An explicit **Quit and stop engine** action checks active jobs and uses a graceful stop policy; upgrading binaries preserves verified checkpoints and handles active transfers safely.
-- Discover endpoint via fixed safe per-user rules, not untrusted environment/URL input. A browser native-host process may wake the engine only through the same trusted installation and lifecycle path.
+- Discover endpoint via fixed safe per-user rules, not untrusted environment/URL input. A browser native-host process may open only its installed native client. The client owns engine startup and connection.
 - On reconnect, renegotiate `engine.hello`, get a fresh snapshot/subscription, reconcile revisions/cursor, and reissue only operations with durable idempotency keys. Run engine versions and GUI versions through an explicit backwards-compatibility matrix.
 
 ### 5.7 Browser-facing boundary
 
-Chrome/Firefox/Chromium native messaging uses its browser-defined native host contract, and Safari uses Apple app-extension APIs. These are **not** the engine IPC server. The native host must validate extension identity, payload format, origin and explicit user action, and forward only narrowly approved commands (e.g. add eligible URL) to the authenticated local engine. It must not forward arbitrary JSON-RPC method names, filesystem paths, credentials, or privileged method bodies from a web page. Apply rate limits, replay/deduplication keys, and strict redaction. Browser extension output and engine RPC responses use separate schemas and permissions.
+Chrome/Firefox/Chromium native messaging uses its browser-defined native host contract, and Safari uses Apple app-extension APIs. These are **not** the engine IPC server. The native host must validate extension identity, payload format, origin and explicit user action, and deliver only bounded single-link or multiple-link review requests to the native client. The host never opens an engine connection; the client probes and queues user-confirmed downloads. It must not forward arbitrary JSON-RPC method names, filesystem paths, credentials, or privileged method bodies from a web page. Apply rate limits, replay/deduplication keys, and strict redaction. Browser extension output and engine RPC responses use separate schemas and permissions.
 
 ### 5.8 Implementation spike / contract acceptance tests
 

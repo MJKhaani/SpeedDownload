@@ -7,7 +7,9 @@ pub const Result = struct {
     display_name: ?[]u8,
     trackers: [][]u8,
     peers: [][]u8,
-    /// Set only after authenticated metainfo says this is not a private torrent.
+    /// Payload lookups require verified public metainfo. The desktop metadata
+    /// preview also opts in before the private flag is known, then rejects
+    /// private magnet results before queueing any payload.
     allow_dht: bool = false,
     is_private: bool = false,
     /// Exclusive URL indices for BEP 12 tiers. Zero means one flat tier.

@@ -39,3 +39,18 @@ pub fn pathAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
     @memmove(buffer[0..decoded.len], decoded);
     return allocator.realloc(buffer, decoded.len);
 }
+
+pub fn urlAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, "torrent-file://");
+    for (path) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or std.mem.indexOfScalar(u8, "/-._~", byte) != null) {
+            try output.append(allocator, byte);
+        } else {
+            const hex = "0123456789ABCDEF";
+            try output.appendSlice(allocator, &.{ '%', hex[byte >> 4], hex[byte & 15] });
+        }
+    }
+    return output.toOwnedSlice(allocator);
+}

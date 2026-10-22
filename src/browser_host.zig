@@ -1,144 +1,43 @@
-//! Restricted Firefox native-messaging bridge. It accepts one explicit link
-//! handoff and never exposes arbitrary engine methods or filesystem paths.
+//! Restricted browser-to-client bridge. It never imports or calls engine IPC.
 const std = @import("std");
 const builtin = @import("builtin");
-const client = @import("ipc/client.zig");
-
+const posix_stat = @import("core/posix_stat.zig");
+extern "c" fn chmod(path: [*:0]const u8, mode: std.c.mode_t) c_int;
 const extension_id = "speed-download@mjkhaani.github";
-const chrome_extension_id = "fcjiipabggcamlocakedfideaamdgknn";
-const chrome_origin = "chrome-extension://" ++ chrome_extension_id ++ "/";
-const max_message_bytes = 16 * 1024;
+const chrome_origin = "chrome-extension://fcjiipabggcamlocakedfideaamdgknn/";
+const max_message_bytes = 256 * 1024;
 
 pub fn main(init: std.process.Init) !void {
     if (comptime builtin.os.tag != .macos) return error.UnsupportedPlatform;
     const allocator = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--print-firefox-manifest")) {
+    if (args.len == 2 and (std.mem.eql(u8, args[1], "--print-firefox-manifest") or std.mem.eql(u8, args[1], "--print-chrome-manifest"))) {
         const executable = try std.process.executablePathAlloc(init.io, allocator);
         defer allocator.free(executable);
-        const manifest = try std.json.Stringify.valueAlloc(allocator, .{
-            .name = "com.mjkhaani.speeddownload",
-            .description = "Speed Download Firefox link handoff",
-            .path = executable,
-            .type = "stdio",
-            .allowed_extensions = &.{extension_id},
-        }, .{});
+        const manifest = if (std.mem.eql(u8, args[1], "--print-firefox-manifest"))
+            try std.json.Stringify.valueAlloc(allocator, .{ .name = "com.mjkhaani.speeddownload", .description = "Speed Download client handoff", .path = executable, .type = "stdio", .allowed_extensions = &.{extension_id} }, .{})
+        else
+            try std.json.Stringify.valueAlloc(allocator, .{ .name = "com.mjkhaani.speeddownload", .description = "Speed Download client handoff", .path = executable, .type = "stdio", .allowed_origins = &.{chrome_origin} }, .{});
         defer allocator.free(manifest);
         try std.Io.File.stdout().writeStreamingAll(init.io, manifest);
         try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
         return;
     }
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--print-chrome-manifest")) {
-        const executable = try std.process.executablePathAlloc(init.io, allocator);
-        defer allocator.free(executable);
-        const manifest = try std.json.Stringify.valueAlloc(allocator, .{
-            .name = "com.mjkhaani.speeddownload",
-            .description = "Speed Download Chrome handoff",
-            .path = executable,
-            .type = "stdio",
-            .allowed_origins = &.{chrome_origin},
-        }, .{});
-        defer allocator.free(manifest);
-        try std.Io.File.stdout().writeStreamingAll(init.io, manifest);
-        try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
-        return;
-    }
-    const firefox_caller = args.len == 3 and std.mem.eql(u8, args[2], extension_id);
-    const chrome_caller = args.len == 2 and std.mem.eql(u8, args[1], chrome_origin);
-    if (!firefox_caller and !chrome_caller) {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Extension is not authorized" });
-        return;
-    }
-    const message = readMessage(allocator, init.io) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Invalid native message" });
-        return;
-    };
+    const firefox = args.len == 3 and std.mem.eql(u8, args[2], extension_id);
+    const chrome = args.len == 2 and std.mem.eql(u8, args[1], chrome_origin);
+    if (!firefox and !chrome) return reply(allocator, init.io, .{ .ok = false, .error_message = "Extension is not authorized" });
+    const message = readMessage(allocator, init.io) catch return reply(allocator, init.io, .{ .ok = false, .error_message = "Invalid native message" });
     defer allocator.free(message);
-    const request = parseRequest(allocator, message) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Invalid native request" });
-        return;
-    };
+    const request = parseRequest(allocator, message) catch return reply(allocator, init.io, .{ .ok = false, .error_message = "Invalid client handoff" });
     defer request.parsed.deinit();
-    if (request.action == .status) {
-        const current = client.call(allocator, init, "settings.get", "{}") catch |err| {
-            if (err == error.EndpointUnavailable) {
-                try reply(allocator, init.io, .{ .version = 1, .ok = true, .engine_running = false });
-            } else {
-                try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Could not contact the engine" });
-            }
-            return;
-        };
-        defer allocator.free(current);
-        try reply(allocator, init.io, .{ .version = 1, .ok = true, .engine_running = true });
-        return;
-    }
-
-    const settings = settingsWithEngineStart(allocator, init) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Speed Download engine is unavailable" });
-        return;
-    };
-    defer allocator.free(settings);
-    const destination = defaultFolder(allocator, settings) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Set a default download folder in Speed Download" });
-        return;
-    };
-    defer destination.parsed.deinit();
-
-    const params = try std.json.Stringify.valueAlloc(allocator, .{
-        .url = request.url.?,
-        .destination = destination.folder,
-        .idempotency_key = request.key.?,
-        .priority = @as(i32, 0),
-    }, .{});
-    defer allocator.free(params);
-    const added = client.call(allocator, init, "jobs.add", params) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "The engine rejected this download" });
-        return;
-    };
-    defer allocator.free(added);
-    const job_id = addedJobId(allocator, added) catch {
-        try reply(allocator, init.io, .{ .version = 1, .ok = false, .error_message = "Invalid engine response" });
-        return;
-    };
-    defer job_id.parsed.deinit();
-    try reply(allocator, init.io, .{ .version = 1, .ok = true, .job_id = job_id.id });
+    const app = appPath(allocator, init.io) catch return reply(allocator, init.io, .{ .ok = false, .error_message = "The Speed Download client was not found" });
+    defer allocator.free(app);
+    if (request.status) return reply(allocator, init.io, .{ .ok = true, .client_available = true });
+    sendToClient(allocator, init, app, message, request.key.?) catch return reply(allocator, init.io, .{ .ok = false, .error_message = "Could not open the Speed Download client" });
+    try reply(allocator, init.io, .{ .ok = true, .dialog_opened = true });
 }
 
-fn settingsWithEngineStart(allocator: std.mem.Allocator, init: std.process.Init) ![]u8 {
-    return client.call(allocator, init, "settings.get", "{}") catch |err| {
-        if (err != error.EndpointUnavailable) return err;
-        const host_path = try std.process.executablePathAlloc(init.io, allocator);
-        defer allocator.free(host_path);
-        const helper_path = try std.fs.path.join(allocator, &.{ std.fs.path.dirname(host_path) orelse return error.InvalidHostPath, "speed-download" });
-        defer allocator.free(helper_path);
-        // Native messaging can only wake the engine shipped beside this host.
-        // Never resolve an engine through PATH or browser-controlled input.
-        _ = try std.process.spawn(init.io, .{
-            .argv = &.{ helper_path, "engine" },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-            // Firefox may tear down the native host's process group when its
-            // one-message connection closes. The engine must survive it.
-            .pgid = 0,
-        });
-        for (0..80) |_| {
-            std.Io.sleep(init.io, .fromMilliseconds(50), .awake) catch {};
-            if (client.call(allocator, init, "settings.get", "{}")) |settings| return settings else |retry_err| {
-                if (retry_err != error.EndpointUnavailable) return retry_err;
-            }
-        }
-        return error.EndpointUnavailable;
-    };
-}
-
-const Request = struct {
-    parsed: std.json.Parsed(std.json.Value),
-    action: enum { add, status },
-    url: ?[]const u8 = null,
-    key: ?[]const u8 = null,
-};
-
+const Request = struct { parsed: std.json.Parsed(std.json.Value), status: bool = false, key: ?[]const u8 = null };
 fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, message, .{});
     errdefer parsed.deinit();
@@ -149,24 +48,34 @@ fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
     if (version != .integer or version.integer != 1 or action != .string) return error.InvalidRequest;
     if (std.mem.eql(u8, action.string, "status")) {
         if (object.count() != 2) return error.InvalidRequest;
-        return .{ .parsed = parsed, .action = .status };
+        return .{ .parsed = parsed, .status = true };
     }
-    if (!std.mem.eql(u8, action.string, "add") or object.count() != 4) return error.InvalidRequest;
-    const url = object.get("url") orelse return error.InvalidRequest;
+    if (object.count() != 4) return error.InvalidRequest;
     const key = object.get("idempotency_key") orelse return error.InvalidRequest;
-    if (url != .string or key != .string)
-        return error.InvalidRequest;
-    if (url.string.len == 0 or url.string.len > 8192 or !validUuid(key.string)) return error.InvalidRequest;
-    if (std.mem.startsWith(u8, url.string, "magnet:")) {
-        var magnet = @import("protocols/torrent/magnet.zig").inspect(allocator, url.string) catch return error.InvalidRequest;
-        defer magnet.deinit(allocator);
-        return .{ .parsed = parsed, .action = .add, .url = url.string, .key = key.string };
-    }
-    const uri = std.Uri.parse(url.string) catch return error.InvalidRequest;
-    if (!(std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https")) or
-        uri.host == null or uri.user != null or uri.password != null or uri.fragment != null)
-        return error.InvalidRequest;
-    return .{ .parsed = parsed, .action = .add, .url = url.string, .key = key.string };
+    if (key != .string or !validUuid(key.string)) return error.InvalidRequest;
+    if (std.mem.eql(u8, action.string, "batch")) {
+        const urls = object.get("urls") orelse return error.InvalidRequest;
+        if (urls != .array or urls.array.items.len == 0 or urls.array.items.len > 100) return error.InvalidRequest;
+        var total: usize = 0;
+        for (urls.array.items) |url| {
+            if (url != .string or !validURL(url.string)) return error.InvalidRequest;
+            total += url.string.len;
+        }
+        if (total > 128 * 1024) return error.InvalidRequest;
+    } else if (std.mem.eql(u8, action.string, "add") or std.mem.eql(u8, action.string, "torrent")) {
+        const url = object.get("url") orelse return error.InvalidRequest;
+        if (url != .string or !validURL(url.string)) return error.InvalidRequest;
+    } else return error.InvalidRequest;
+    return .{ .parsed = parsed, .key = key.string };
+}
+
+fn validURL(url: []const u8) bool {
+    if (url.len == 0 or url.len > 8192 or !std.unicode.utf8ValidateSlice(url)) return false;
+    for (url) |byte| if (byte < 0x20 or byte == 0x7f) return false;
+    if (url.len >= 7 and std.ascii.eqlIgnoreCase(url[0..7], "magnet:")) return std.mem.indexOf(u8, url, "xt=") != null;
+    const uri = std.Uri.parse(url) catch return false;
+    return (std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https")) and
+        uri.host != null and uri.user == null and uri.password == null and uri.fragment == null;
 }
 
 fn validUuid(value: []const u8) bool {
@@ -179,30 +88,40 @@ fn validUuid(value: []const u8) bool {
     return true;
 }
 
-const Folder = struct { parsed: std.json.Parsed(std.json.Value), folder: []const u8 };
-
-fn defaultFolder(allocator: std.mem.Allocator, response: []const u8) !Folder {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
-    errdefer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidSettings;
-    const result = parsed.value.object.get("result") orelse return error.InvalidSettings;
-    if (result != .object) return error.InvalidSettings;
-    const folder = result.object.get("default_download_folder") orelse return error.InvalidSettings;
-    if (folder != .string or folder.string.len == 0 or folder.string[0] != '/') return error.InvalidSettings;
-    return .{ .parsed = parsed, .folder = folder.string };
+fn appPath(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    const host = try std.process.executablePathAlloc(io, allocator);
+    defer allocator.free(host);
+    const helpers = std.fs.path.dirname(host) orelse return error.InvalidHostPath;
+    const contents = std.fs.path.dirname(helpers) orelse return error.InvalidHostPath;
+    const app = std.fs.path.dirname(contents) orelse return error.InvalidHostPath;
+    if (!std.mem.endsWith(u8, app, ".app")) return error.InvalidHostPath;
+    return allocator.dupe(u8, app);
 }
 
-const Added = struct { parsed: std.json.Parsed(std.json.Value), id: []const u8 };
-
-fn addedJobId(allocator: std.mem.Allocator, response: []const u8) !Added {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
-    errdefer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidResponse;
-    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
-    if (result != .object) return error.InvalidResponse;
-    const id = result.object.get("job_id") orelse return error.InvalidResponse;
-    if (id != .string or id.string.len == 0 or id.string.len > 128) return error.InvalidResponse;
-    return .{ .parsed = parsed, .id = id.string };
+fn sendToClient(allocator: std.mem.Allocator, init: std.process.Init, app: []const u8, message: []const u8, key: []const u8) !void {
+    const home_directory = init.environ_map.get("HOME") orelse return error.HomeUnavailable;
+    if (!std.fs.path.isAbsolute(home_directory)) return error.HomeUnavailable;
+    const inbox = try std.fs.path.join(allocator, &.{ home_directory, "Library", "Application Support", "Speed Download", "BrowserInbox" });
+    defer allocator.free(inbox);
+    try std.Io.Dir.cwd().createDirPath(init.io, inbox);
+    const inbox_z = try allocator.dupeSentinel(u8, inbox, 0);
+    defer allocator.free(inbox_z);
+    const info = posix_stat.get(inbox_z, false) orelse return error.InvalidInbox;
+    if (!posix_stat.isDirectory(info) or info.uid != posix_stat.currentUid() or chmod(inbox_z, 0o700) != 0) return error.InvalidInbox;
+    const filename = try std.fmt.allocPrint(allocator, "{s}.json", .{key});
+    defer allocator.free(filename);
+    const path = try std.fs.path.join(allocator, &.{ inbox, filename });
+    defer allocator.free(path);
+    var atomic = try std.Io.Dir.createFileAtomic(.cwd(), init.io, path, .{ .permissions = .fromMode(0o600) });
+    defer atomic.deinit(init.io);
+    try atomic.file.writeStreamingAll(init.io, message);
+    try atomic.file.sync(init.io);
+    atomic.link(init.io) catch |err| if (err != error.PathAlreadyExists) return err;
+    const handoff = try std.fmt.allocPrint(allocator, "speeddownload://browser?request={s}", .{key});
+    defer allocator.free(handoff);
+    var child = try std.process.spawn(init.io, .{ .argv = &.{ "/usr/bin/open", "-a", app, handoff }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    const term = try child.wait(init.io);
+    if (!term.success()) return error.ClientLaunchFailed;
 }
 
 fn readExact(io: std.Io, output: []u8) !void {
@@ -214,7 +133,6 @@ fn readExact(io: std.Io, output: []u8) !void {
         offset += amount;
     }
 }
-
 fn readMessage(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     var header: [4]u8 = undefined;
     try readExact(io, &header);
@@ -225,21 +143,18 @@ fn readMessage(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     try readExact(io, payload);
     return payload;
 }
-
 const Reply = struct {
-    version: u8,
+    version: u8 = 1,
     ok: bool,
-    job_id: ?[]const u8 = null,
-    engine_running: ?bool = null,
+    client_available: ?bool = null,
+    dialog_opened: ?bool = null,
     error_message: ?[]const u8 = null,
 };
-
 fn reply(allocator: std.mem.Allocator, io: std.Io, value: Reply) !void {
     const payload = try std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
     defer allocator.free(payload);
-    const length: u32 = @intCast(payload.len);
     var header: [4]u8 = undefined;
-    std.mem.writeInt(u32, &header, length, .little);
+    std.mem.writeInt(u32, &header, @intCast(payload.len), .little);
     try std.Io.File.stdout().writeStreamingAll(io, &header);
     try std.Io.File.stdout().writeStreamingAll(io, payload);
 }

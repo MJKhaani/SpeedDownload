@@ -34,16 +34,12 @@ const FtpHost = union(enum) {
     }
 
     fn connect(self: FtpHost, io: Io, port: u16) !Io.net.Stream {
-        const options: Io.net.IpAddress.ConnectOptions = .{
-            .mode = .stream,
-            .timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } },
-        };
         return switch (self) {
-            .name => |name| name.connect(io, port, options),
+            .name => |name| @import("../../core/net_connect.zig").host(io, name, port, 15_000),
             .address => |address| blk: {
                 var target = address;
                 target.ip6.port = port;
-                break :blk target.connect(io, options);
+                break :blk @import("../../core/net_connect.zig").address(io, target, 15_000);
             },
         };
     }

@@ -501,3 +501,90 @@ fn appendTracker(allocator: Allocator, urls: *std.ArrayList([]u8), value: []cons
     errdefer allocator.free(owned);
     try urls.append(allocator, owned);
 }
+
+/// Change only top-level tracker fields, preserving the exact info dictionary
+/// and all unrelated extensions so the swarm identity cannot change.
+pub fn withTrackers(allocator: Allocator, bytes: []const u8, trackers: []const []const u8) ![]u8 {
+    _ = try inspect(allocator, bytes);
+    if (trackers.len > 32) return error.InvalidTorrentTrackers;
+    const Entry = struct { key: []const u8, value: []const u8 };
+    var entries: std.ArrayList(Entry) = .empty;
+    defer entries.deinit(allocator);
+    var cursor: Cursor = .{ .bytes = bytes };
+    try cursor.take('d');
+    while (cursor.position < bytes.len and bytes[cursor.position] != 'e') {
+        const key = try cursor.string();
+        const start = cursor.position;
+        try cursor.skip(1);
+        if (!std.mem.eql(u8, key, "announce") and !std.mem.eql(u8, key, "announce-list"))
+            try entries.append(allocator, .{ .key = key, .value = bytes[start..cursor.position] });
+    }
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(allocator);
+    var primary: std.ArrayList(u8) = .empty;
+    defer primary.deinit(allocator);
+    if (trackers.len > 0) {
+        try encoded.append(allocator, 'l');
+        for (trackers) |tracker| {
+            if (tracker.len == 0 or tracker.len > 2048 or !std.unicode.utf8ValidateSlice(tracker)) return error.InvalidTorrentTrackers;
+            for (tracker) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidTorrentTrackers;
+            const uri = std.Uri.parse(tracker) catch return error.InvalidTorrentTrackers;
+            if (uri.host == null or uri.user != null or uri.password != null or uri.fragment != null or
+                !(std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https") or std.ascii.eqlIgnoreCase(uri.scheme, "udp"))) return error.InvalidTorrentTrackers;
+            try encoded.append(allocator, 'l');
+            try encodeString(allocator, &encoded, tracker);
+            try encoded.append(allocator, 'e');
+        }
+        try encoded.append(allocator, 'e');
+        try encodeString(allocator, &primary, trackers[0]);
+        try entries.append(allocator, .{ .key = "announce", .value = primary.items });
+        try entries.append(allocator, .{ .key = "announce-list", .value = encoded.items });
+    }
+    std.mem.sort(Entry, entries.items, {}, struct {
+        fn less(_: void, lhs: Entry, rhs: Entry) bool {
+            return std.mem.order(u8, lhs.key, rhs.key) == .lt;
+        }
+    }.less);
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    try output.append(allocator, 'd');
+    for (entries.items) |entry| {
+        try encodeString(allocator, &output, entry.key);
+        try output.appendSlice(allocator, entry.value);
+    }
+    try output.append(allocator, 'e');
+    if (output.items.len > max_metainfo_bytes) return error.InvalidTorrentSize;
+    return output.toOwnedSlice(allocator);
+}
+
+fn encodeString(allocator: Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
+    var buffer: [32]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&buffer, "{d}:", .{value.len});
+    try output.appendSlice(allocator, prefix);
+    try output.appendSlice(allocator, value);
+}
+
+/// Retain the metadata source as a bootstrap peer for a prepared public magnet.
+/// This field is outside the hashed info dictionary and is ignored for private torrents.
+pub fn bootstrapPeer(allocator: Allocator, bytes: []const u8) !?[]const u8 {
+    var cursor: Cursor = .{ .bytes = bytes };
+    try cursor.take('d');
+    while (cursor.position < bytes.len and bytes[cursor.position] != 'e') {
+        const key = try cursor.string();
+        if (std.mem.eql(u8, key, "speed-download-peer")) {
+            const peer = try cursor.string();
+            if (peer.len == 0 or peer.len > 255) return error.InvalidPeerAddress;
+            for (peer) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidPeerAddress;
+            const address = try std.fmt.allocPrint(allocator, "tcp://{s}", .{peer});
+            defer allocator.free(address);
+            const uri = try std.Uri.parse(address);
+            const path = switch (uri.path) {
+                .raw, .percent_encoded => |value| value,
+            };
+            if (uri.host == null or uri.port == null or uri.port.? == 0 or uri.user != null or uri.password != null or uri.query != null or uri.fragment != null or path.len != 0) return error.InvalidPeerAddress;
+            return peer;
+        }
+        try cursor.skip(1);
+    }
+    return null;
+}

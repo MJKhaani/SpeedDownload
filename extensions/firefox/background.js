@@ -24,20 +24,24 @@ function supportedURL(raw) {
   } catch { return null; }
 }
 
-async function handoff(raw, idempotencyKey = crypto.randomUUID()) {
+async function handoff(raw, idempotencyKey = crypto.randomUUID(), torrent = false) {
   const url = supportedURL(raw);
   if (!url) throw new Error("Only public HTTP, HTTPS, and magnet links are supported");
-  const request = { version: 1, action: "add", url, idempotency_key: idempotencyKey };
+  const parsed = new URL(url);
+  const isTorrent = torrent || parsed.protocol === "magnet:" || /\.torrent$/i.test(decodeURIComponent(parsed.pathname));
+  return sendToClient({ version: 1, action: isTorrent ? "torrent" : "add", url, idempotency_key: idempotencyKey });
+}
+
+async function sendToClient(request) {
   let result;
   try {
     result = await browser.runtime.sendNativeMessage(HOST, request);
   } catch (firstError) {
-    // The first host may have committed before its reply was lost.
     try { result = await browser.runtime.sendNativeMessage(HOST, request); }
     catch { throw firstError; }
   }
-  if (!result || result.version !== 1 || result.ok !== true) {
-    throw new Error(result?.error_message || "Speed Download rejected the link");
+  if (!result || result.version !== 1 || result.ok !== true || result.dialog_opened !== true) {
+    throw new Error(result?.error_message || "Could not open Speed Download");
   }
   return result;
 }
@@ -73,7 +77,7 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     if (info.menuItemId === LINK_MENU) {
       await handoff(info.linkUrl);
-      await showResult(1, 0, "Added one link to Speed Download.");
+      await showResult(1, 0, "Review this download in Speed Download.");
       return;
     }
     if (info.menuItemId !== SELECTION_MENU || !Number.isInteger(tab?.id)) return;
@@ -86,14 +90,17 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       await showResult(0, 1, "No supported links were found in the selected area.");
       return;
     }
-    let successes = 0;
-    let failures = 0;
-    for (const link of links.slice(0, MAX_SELECTION_LINKS)) {
-      try { await handoff(link); successes += 1; }
-      catch (error) { failures += 1; console.error("Speed Download link handoff failed:", error); }
+    if (links.length === 1) {
+      await handoff(links[0]);
+      await showResult(1, 0, "Review this download in Speed Download.");
+    } else {
+      const urls = links.slice(0, MAX_SELECTION_LINKS);
+      if (urls.reduce((total, url) => total + new TextEncoder().encode(url).length, 0) > 128 * 1024) {
+        throw new Error("This selection is too large. Select fewer links.");
+      }
+      await sendToClient({ version: 1, action: "batch", urls, idempotency_key: crypto.randomUUID() });
+      await showResult(urls.length, 0, `Review ${urls.length} links in Speed Download and choose which to download.`);
     }
-    await showResult(successes, failures,
-      `Selected links: ${successes} added${failures ? `, ${failures} failed` : ""}.`);
   } catch (error) {
     console.error("Speed Download handoff failed:", error);
     await showResult(0, 1, error.message || "Could not send the selected links.");
@@ -106,22 +113,24 @@ browser.downloads.onCreated.addListener(async (item) => {
   const { automaticGrab = false } = await browser.storage.local.get("automaticGrab");
   if (!automaticGrab) return;
   try {
-    // Keep Firefox's original transfer available until the engine commits the job.
+    // Keep the original transfer available until the client accepts the handoff.
     await browser.downloads.pause(item.id);
   } catch { return; }
   let handedOff = false;
   try {
-    await handoff(item.url);
+    const torrent = /\.torrent$/i.test(item.filename || "") ||
+      (item.mime || "").toLowerCase().split(";", 1)[0] === "application/x-bittorrent";
+    await handoff(item.url, crypto.randomUUID(), torrent);
     handedOff = true;
     await browser.downloads.cancel(item.id);
-    await showResult(1, 0, "Browser download moved to Speed Download.");
+    await showResult(1, 0, "Review this download in Speed Download.");
   } catch (error) {
     console.error("Speed Download automatic handoff failed:", error);
     if (!handedOff) {
       try { await browser.downloads.resume(item.id); } catch { /* The browser may have removed it. */ }
       await showResult(0, 1, "Could not hand off the download; the browser kept it.");
     } else {
-      await showResult(1, 1, "Queued in Speed Download, but the browser copy could not be canceled.");
+      await showResult(1, 1, "Opened in Speed Download, but the browser copy could not be canceled.");
     }
   }
 });

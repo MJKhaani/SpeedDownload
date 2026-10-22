@@ -243,3 +243,16 @@ An explicit stop/shutdown operation (to be defined) must honor running jobs, flu
 - [Linux Unix sockets and SO_PEERCRED](https://man7.org/linux/man-pages/man7/unix.7.html)
 - [macOS getpeereid](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/getpeereid.3.html)
 - [PROJECT.md](../../PROJECT.md)
+
+### Torrent review preparation
+
+`torrents.prepare` (feature `torrents.prepare-v1`) accepts `url`, optional `trackers`
+(up to 32 HTTP(S)/UDP URLs), and optional nonnegative `offset`. It retrieves and
+verifies magnet metadata, reads a local `torrent-file:` source, or fetches bounded
+HTTP(S) metainfo using the engine proxy policy. It never queues a payload.
+The probe-shaped response includes an engine-owned `final_url`, pinned
+`torrent_info_hash`, `torrent_file_count`, `torrent_files`, `torrent_trackers`,
+`torrent_private`, and optional `torrent_next_offset`. Request subsequent pages
+using the returned source and offset. Submit that source to `jobs.add` with the
+pinned hash and optional `selected_torrent_files` only after user confirmation.
+Tracker edits produce a separate prepared source and never change the info hash.

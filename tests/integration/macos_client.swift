@@ -16,6 +16,12 @@ struct MacOSClientConnectionRegression {
               initialInstance == reconnectedInstance else {
             fatalError("GUI restarted a compatible engine during reconnection: \(model.state)")
         }
-        print("PASS: GUI connects and reconnects without replacing the current engine")
+        model.startConnectionLoop()
+        model.startConnectionLoop()
+        for _ in 0..<5 { try? await Task.sleep(for: .milliseconds(20)) }
+        guard case .connected = model.state else {
+            fatalError("Multiple window startup lost the connection: \(model.state)")
+        }
+        print("PASS: GUI connects, reconnects, and shares one responsive connection loop across windows")
     }
 }

@@ -18,20 +18,16 @@ struct SpeedDownloadApp: App {
     var body: some Scene {
         WindowGroup {
             DashboardView()
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .environmentObject(engine)
                 .frame(minWidth: 820, minHeight: 560)
                 .task {
                     NSApplication.shared.activate(ignoringOtherApps: true)
-                    await engine.connect()
-                    while !Task.isCancelled {
-                        await engine.maintainConnection()
-                        if case .disconnected = engine.state {
-                            try? await Task.sleep(for: .seconds(2))
-                        }
-                    }
+                    engine.startConnectionLoop()
                 }
         }
         .defaultSize(width: 1040, height: 700)
+        .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Download…") {

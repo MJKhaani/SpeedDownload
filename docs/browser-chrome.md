@@ -1,8 +1,8 @@
 # Chrome download handoff (macOS preview)
 
-The Chrome extension supports the same context-menu link handoff, selected-area
-link collection, and opt-in automatic download handoff as the
-[Firefox extension](browser-firefox.md). Automatic handoff is off by default.
+The Chrome extension supports the same client-only context-menu link handoff,
+selected-area multiple-link review, and opt-in automatic download handoff as the
+[Firefox extension](browser-firefox.md). Automatic handoff is off by default. Torrent filenames, MIME types, and magnet links open the macOS torrent review dialog for file selection and tracker editing before queueing.
 It does not forward cookies or authentication headers from Chrome.
 
 Build the app and the unpacked extension, then register the native host for
@@ -23,4 +23,4 @@ If the app moves, rerun `install-macos.sh` with its new path.
 
 Chrome's [native messaging documentation](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)
 specifies the per-user macOS host location and `allowed_origins` format.
-The extension has not been verified in a live Chrome session.
+The toolbar, popup, and manifest icons use the app logo. Reload the unpacked extension after updates. The extension has not been verified in a live Chrome session.

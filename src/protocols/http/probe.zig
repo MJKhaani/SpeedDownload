@@ -23,6 +23,9 @@ pub const Result = struct {
     torrent_file_count: ?u32 = null,
     torrent_files: ?[]const TorrentFile = null,
     torrent_info_hash: ?[]const u8 = null,
+    torrent_trackers: ?[]const []const u8 = null,
+    torrent_private: ?bool = null,
+    torrent_next_offset: ?[]const u8 = null,
 };
 
 pub fn inspect(allocator: std.mem.Allocator, io: std.Io, url: []const u8) !Result {

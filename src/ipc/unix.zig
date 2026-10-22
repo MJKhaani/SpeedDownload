@@ -363,6 +363,39 @@ pub fn dispatchMethod(
         scheduleTick(engine);
         return response;
     }
+    if (std.mem.eql(u8, method, "torrents.prepare")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const url = stringField(value.object, "url") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var trackers: ?[]const []const u8 = null;
+        if (value.object.get("trackers")) |edited| {
+            if (edited != .array or edited.array.items.len > 32) return dispatchError(allocator, request_id, -32602, "Use at most 32 tracker URLs");
+            const urls = try a.alloc([]const u8, edited.array.items.len);
+            for (urls, edited.array.items) |*target, entry| {
+                if (entry != .string) return dispatchError(allocator, request_id, -32602, "Invalid tracker URL");
+                target.* = entry.string;
+            }
+            trackers = urls;
+        }
+        var offset: usize = 0;
+        if (value.object.get("offset")) |entry| {
+            if (entry != .integer or entry.integer < 0 or entry.integer > 10_000) return dispatchError(allocator, request_id, -32602, "Invalid file offset");
+            offset = @intCast(entry.integer);
+        }
+        const policy = try jobs.copyProxyPolicy();
+        defer policy.deinit(jobs.allocator);
+        const result = @import("../protocols/torrent/prepare.zig").prepare(a, engine.io, jobs.directory_path, url, trackers, offset, .{ .mode = policy.mode, .url = policy.url, .authentication_required = policy.authentication_required }, &engine.http_connections) catch |err| {
+            jobs.logAction("torrents.prepare", @errorName(err));
+            const message = try std.fmt.allocPrint(a, "Could not prepare torrent: {s}. Check the source or trackers and try again.", .{@errorName(err)});
+            return dispatchError(allocator, request_id, -32021, message);
+        };
+        jobs.logAction("torrents.prepare", "completed");
+        return try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = id, .result = result }, .{});
+    }
     if (std.mem.eql(u8, method, "jobs.probe")) {
         const id = request_id orelse return null;
         const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
@@ -523,7 +556,7 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";

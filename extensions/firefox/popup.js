@@ -21,12 +21,12 @@ async function updateStatus() {
       action: "status",
     });
     if (!result || result.version !== 1 || result.ok !== true ||
-        typeof result.engine_running !== "boolean") {
+        typeof result.client_available !== "boolean") {
       status.textContent = "The app could not be reached";
     } else {
-      status.textContent = result.engine_running
-        ? "App installed · Engine running"
-        : "App installed · Engine stopped";
+      status.textContent = result.client_available
+        ? "Speed Download client is available"
+        : "Speed Download client is unavailable";
     }
   } catch {
     status.textContent = "App connection unavailable";

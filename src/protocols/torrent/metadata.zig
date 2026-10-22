@@ -180,6 +180,29 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
             return .{ .info = bytes, .peer = try allocator.dupe(u8, peer) };
         }
     }
+    if (link.allow_dht) {
+        const discovered = @import("dht.zig").discover(allocator, io, link.info_hash, control, control_context) catch |err| blk: {
+            if (isCheckpointError(err) or err == error.OutOfMemory) return err;
+            break :blk null;
+        };
+        if (discovered) |peers| {
+            defer {
+                for (peers) |peer| allocator.free(peer);
+                allocator.free(peers);
+            }
+            for (peers) |peer| {
+                try checkpoint(control, control_context);
+                if (!try markPeerAttempted(allocator, &attempted, peer)) continue;
+                const bytes = fetchPeer(allocator, io, peer, link.info_hash, session, control, control_context) catch |err| {
+                    if (isCheckpointError(err) or err == error.OutOfMemory) return err;
+                    last_error = err;
+                    continue;
+                };
+                errdefer allocator.free(bytes);
+                return .{ .info = bytes, .peer = try allocator.dupe(u8, peer) };
+            }
+        }
+    }
     return last_error;
 }
 
@@ -428,7 +451,7 @@ fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_has
     const encoded_peer = percentEncode(&session.peer_id);
     const separator: []const u8 = if (std.mem.indexOfScalar(u8, tracker, '?') == null) "?" else "&";
     const url = try std.fmt.allocPrint(allocator, "{s}{s}info_hash={s}&peer_id={s}&key={d}&port=0&uploaded=0&downloaded={d}&left={d}&compact=1&numwant=50{s}", .{
-        tracker, separator, &encoded_hash, &encoded_peer, std.mem.readInt(u32, &session.key, .big), downloaded, left,
+        tracker,                                                                      separator, &encoded_hash, &encoded_peer, std.mem.readInt(u32, &session.key, .big), downloaded, left,
         if (session.hasAnnounced(tracker)) @as([]const u8, "") else "&event=started",
     });
     defer allocator.free(url);
@@ -662,16 +685,12 @@ fn fetchPeer(allocator: Allocator, io: Io, address: []const u8, info_hash: [20]u
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
     const host = address[0..separator];
     if (host.len == 0 or port == 0) return error.InvalidPeerAddress;
-    const options: Io.net.IpAddress.ConnectOptions = .{
-        .mode = .stream,
-        .timeout = .{ .duration = .{ .raw = .fromMilliseconds(10_000), .clock = .awake } },
-    };
     const stream = if (host[0] == '[') blk: {
         const ip = Io.net.IpAddress.parseIp6(host[1 .. host.len - 1], port) catch return error.InvalidPeerAddress;
-        break :blk try ip.connect(io, options);
+        break :blk try @import("../../core/net_connect.zig").address(io, ip, 10_000);
     } else blk: {
         const peer_host = Io.net.HostName.init(host) catch return error.InvalidPeerAddress;
-        break :blk try peer_host.connect(io, port, options);
+        break :blk try @import("../../core/net_connect.zig").host(io, peer_host, port, 10_000);
     };
     defer stream.close(io);
     var write_buffer: [4096]u8 = undefined;

@@ -34,6 +34,22 @@ cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><false/>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>BitTorrent Torrent</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array><string>org.bittorrent.torrent</string></array>
+    <key>CFBundleTypeExtensions</key><array><string>torrent</string></array>
+  </dict></array>
+  <key>UTImportedTypeDeclarations</key><array><dict>
+    <key>UTTypeIdentifier</key><string>org.bittorrent.torrent</string>
+    <key>UTTypeDescription</key><string>BitTorrent Torrent</string>
+    <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    <key>UTTypeTagSpecification</key><dict>
+      <key>public.filename-extension</key><array><string>torrent</string></array>
+      <key>public.mime-type</key><string>application/x-bittorrent</string>
+    </dict>
+  </dict></array>
   <key>CFBundleURLTypes</key><array><dict>
     <key>CFBundleURLName</key><string>com.mjkhaani.SpeedDownload.add</string>
     <key>CFBundleTypeRole</key><string>Viewer</string>

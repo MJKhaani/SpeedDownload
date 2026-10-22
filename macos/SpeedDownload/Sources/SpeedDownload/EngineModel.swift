@@ -27,6 +27,24 @@ final class EngineModel: ObservableObject {
     private var jobSubscription: JobSubscription?
     private var supportsJobStream = false
     private var isMaintainingConnection = false
+    private var connectionTask: Task<Void, Never>?
+
+    deinit { connectionTask?.cancel() }
+
+    /// One app-wide reader, independent of how many windows macOS restores.
+    /// A per-window while loop can spin when another window owns the stream.
+    func startConnectionLoop() {
+        guard connectionTask == nil else { return }
+        connectionTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.maintainConnection()
+                if case .disconnected = self.state {
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+        }
+    }
 
     private var isConnected: Bool {
         if case .connected = state { true } else { false }
@@ -284,6 +302,7 @@ final class EngineModel: ObservableObject {
     }
 
     func probe(url: String) async throws -> DownloadProbe {
+        await ensureConnected()
         do {
             return try await Task.detached(priority: .utility) {
                 try UnixEngineClient().probe(url: url)
@@ -303,6 +322,13 @@ final class EngineModel: ObservableObject {
         let loaded = try await Task.detached(priority: .utility) { try UnixEngineClient().getSettings() }.value
         cachedSettings = loaded
         return loaded
+    }
+
+    func prepareTorrent(url: String, trackers: [String]? = nil, offset: Int = 0) async throws -> DownloadProbe {
+        await ensureConnected()
+        return try await Task.detached(priority: .utility) {
+            try UnixEngineClient().prepareTorrent(url: url, trackers: trackers, offset: offset)
+        }.value
     }
 
     func saveSettings(_ settings: EngineSettings) async throws -> EngineSettings {
@@ -367,6 +393,7 @@ final class EngineModel: ObservableObject {
         isSubmitting = true
         actionError = nil
         defer { isSubmitting = false }
+        await ensureConnected()
         do {
             let client = UnixEngineClient()
             _ = try await Task.detached(priority: .userInitiated) {

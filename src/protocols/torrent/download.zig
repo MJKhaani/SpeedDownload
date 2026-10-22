@@ -143,13 +143,25 @@ pub fn downloadTorrentFileSelectedWithStats(
     const info = try metainfo.inspect(allocator, bytes);
     const map = try metainfo.inspectFileMap(allocator, bytes);
     defer map.deinit(allocator);
-    const tracker_list = try metainfo.trackerUrls(allocator, io, info);
+    const bootstrap = if (!info.is_private) try metainfo.bootstrapPeer(allocator, bytes) else null;
+    const tracker_list = metainfo.trackerUrls(allocator, io, info) catch |err| blk: {
+        if (err != error.NoTorrentTrackers or info.is_private) return err;
+        break :blk metainfo.TrackerList{ .urls = try allocator.alloc([]u8, 0) };
+    };
     const trackers = tracker_list.urls;
-    const peers = allocator.alloc([]u8, 0) catch |err| {
+    const peers = allocator.alloc([]u8, if (bootstrap != null) 1 else 0) catch |err| {
         for (trackers) |tracker| allocator.free(tracker);
         allocator.free(trackers);
         return err;
     };
+    if (bootstrap) |peer| {
+        peers[0] = allocator.dupe(u8, peer) catch |err| {
+            for (trackers) |tracker| allocator.free(tracker);
+            allocator.free(trackers);
+            allocator.free(peers);
+            return err;
+        };
+    }
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers, .tracker_tier_ends = tracker_list.tier_ends, .tracker_tier_count = tracker_list.tier_count, .allow_dht = !info.is_private, .is_private = info.is_private };
     defer link.deinit(allocator);
     var session = try metadata.Session.init(io);
@@ -470,16 +482,12 @@ fn transferFromPeer(
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
     const host = address[0..separator];
     if (host.len == 0 or port == 0) return error.InvalidPeerAddress;
-    const options: Io.net.IpAddress.ConnectOptions = .{
-        .mode = .stream,
-        .timeout = .{ .duration = .{ .raw = .fromMilliseconds(10_000), .clock = .awake } },
-    };
     const stream = if (host[0] == '[') blk: {
         const ip = Io.net.IpAddress.parseIp6(host[1 .. host.len - 1], port) catch return error.InvalidPeerAddress;
-        break :blk try ip.connect(io, options);
+        break :blk try @import("../../core/net_connect.zig").address(io, ip, 10_000);
     } else blk: {
         const name = Io.net.HostName.init(host) catch return error.InvalidPeerAddress;
-        break :blk try name.connect(io, port, options);
+        break :blk try @import("../../core/net_connect.zig").host(io, name, port, 10_000);
     };
     defer stream.close(io);
     var write_buffer: [4096]u8 = undefined;

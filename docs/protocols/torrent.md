@@ -92,7 +92,7 @@ Queued magnet and local `.torrent` workers check pause, cancel, and queue
 schedule state between tracker and peer attempts, during metadata retrieval,
 and while waiting for payload peer messages. A blocked socket read can still
 take up to its 15-second timeout before the worker observes a new request.
-DHT does not resolve magnet metadata because the magnet does not establish whether the torrent is private; querying the info hash before reading the private flag could disclose a private torrent to DHT nodes. After metainfo is hash-verified, a public torrent may query up to eight DHT nodes for payload peers; private torrents never enter this path. This bounded lookup has no listener, routing table, or announce, and it does not seed.
+The desktop torrent metadata preparation path can fall back to read-only DHT peer discovery when trackers and explicit peers cannot supply metadata. A magnet does not establish the private flag, so this can disclose its info hash to DHT nodes before metadata is known. Verified private magnet results are rejected before payload queueing; open the original `.torrent` file for private torrents. The CLI metadata path retains its tracker/explicit-peer behavior. After metainfo is hash-verified, a public torrent may query up to eight DHT nodes for payload peers; private torrents never enter this path. This bounded lookup has no listener, routing table, or announce, and it does not seed.
 The `private=1` flag is read from the hashed `info` dictionary. Private local `.torrent` transfers use peers from one successful tracker at a time and never use DHT. A private magnet is rejected after metadata inspection because this client cannot guarantee that its metadata peer came from the private tracker; use the local `.torrent` source for that case. This follows the tracker-only peer rule in [BEP 27](https://www.bittorrent.org/beps/bep_0027.html).
 The lookup follows the compact contact and `get_peers` formats in [BEP 5](https://www.bittorrent.org/beps/bep_0005.html) and accepts IPv6 contacts from [BEP 32](https://www.bittorrent.org/beps/bep_0032.html). It queries bootstrap contacts first, then prefers unqueried contacts with known node IDs by XOR distance to the info hash within its 48-contact/8-query bounds. A valid response records the queried contact's node ID; a discovered contact can also fill in an unknown ID for an existing address. If the contact set fills, a newly learned contact replaces the most distant unqueried contact only when it is closer to the target. Queried contacts and bootstrap contacts with unknown IDs remain available. It rejects private, loopback, link-local, and multicast addresses learned from DHT responses. This source has only compile validation so far; interoperability and UDP behavior need a native swarm check.
 
@@ -136,21 +136,23 @@ tries other discovered peers. Storage, allocation, and progress callback
 failures stop the attempt immediately. If the available peers lack needed
 pieces, the queue can retry later so newly discovered peers may complete it.
 
-This is an early compatibility slice. The local `.torrent` probe previews up to
-1,000 files within a conservative 128 KiB escaped-response budget and reports
-the full file count to the macOS Add dialog. When the full file map fits,
-the user may include a subset; the job persists the
-chosen paths, skips pieces not overlapping those files, and publishes only
-the selected files. A piece crossing into an unselected file is still fetched
-and verified in full, and progress includes its bytes. Tracker announces
-still report bytes remaining against the full torrent size, so a file subset
-is not advertised as a complete torrent. The Add dialog also
-pins the probed info hash, and the engine rejects a changed source before
-saving its private metainfo snapshot. When the preview is
-incomplete, the macOS dialog currently includes every file. The engine does not upload or seed. DHT discovery is read-only and limited to payload peers after metainfo verification; peer encryption, uTP, and BitTorrent v2 are unsupported.
-Many ordinary magnets depend on one of those discovery methods and will not
-start. The peer transfer path compiles but has not been exercised against a
-live swarm; it is not release-ready.
+The dedicated macOS Add Torrent dialog uses `torrents.prepare` to load local
+`.torrent` files, HTTP(S) torrent sources, and magnet metadata without starting
+payload transfers. It displays Files and Trackers tabs, permits file selection,
+and lets users edit HTTP(S)/UDP tracker URLs before confirming. The RPC returns
+at most 200 files per page within a conservative 128 KiB escaped-response budget;
+`offset` loads further pages from the prepared source, so the full supported file
+map remains selectable. Engine-owned metainfo previews have private permissions.
+Tracker edits change only top-level fields and preserve the exact hashed `info`
+dictionary and unrelated extensions. A public magnet preview retains its metadata
+peer outside `info` so queueing does not lose its initial peer. Private torrent
+payloads ignore this bootstrap field. The engine snapshots the confirmed metainfo
+and persists selected paths when the user queues it.
+
+A piece crossing into an unselected file is still fetched and verified in full,
+and progress includes its bytes. Tracker announces still report bytes remaining
+against the full torrent size. The engine does not upload or seed; peer encryption,
+uTP, and BitTorrent v2 are unsupported. Live swarm interoperability remains unverified.
 
 The parser accepts at most 8 MiB of metainfo, 100,000 bencoded values,
 32 levels of nested unknown values, 10,000 files, and 64 path components

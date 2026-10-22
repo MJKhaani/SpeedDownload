@@ -165,6 +165,9 @@ struct DownloadProbe: Decodable, Sendable {
     let torrentFileCount: Int?
     let torrentFiles: [TorrentFile]?
     let torrentInfoHash: String?
+    let torrentTrackers: [String]?
+    let torrentPrivate: Bool?
+    let torrentNextOffset: String?
 
     enum CodingKeys: String, CodingKey {
         case finalURL = "final_url"
@@ -180,6 +183,9 @@ struct DownloadProbe: Decodable, Sendable {
         case torrentFileCount = "torrent_file_count"
         case torrentFiles = "torrent_files"
         case torrentInfoHash = "torrent_info_hash"
+        case torrentTrackers = "torrent_trackers"
+        case torrentPrivate = "torrent_private"
+        case torrentNextOffset = "torrent_next_offset"
     }
 }
 
@@ -283,6 +289,7 @@ struct UnixEngineClient: Sendable {
         "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2",
         "settings.weekly-schedules", "torrents.magnet-v1-single-file",
         "torrents.local-file-v1-single-file",
+        "torrents.prepare-v1",
     ]
     private static let requestedFeatures = requiredFeatures + [
         "jobs.change-stream-v1", "torrents.file-selection-v1",
@@ -292,6 +299,17 @@ struct UnixEngineClient: Sendable {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         return try negotiate(fd: fd)
+    }
+
+    func prepareTorrent(url: String, trackers: [String]? = nil, offset: Int = 0) throws -> DownloadProbe {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        var params: [String: Any] = ["url": url, "offset": offset]
+        if let trackers { params["trackers"] = trackers }
+        let response: RPCEnvelope<DownloadProbe> = try request(fd: fd, id: "torrent-\(UUID().uuidString)", method: "torrents.prepare", params: params)
+        guard let result = response.result else { throw ClientError.invalidResponse }
+        return result
     }
 
     func listJobs() throws -> [DownloadJob] {

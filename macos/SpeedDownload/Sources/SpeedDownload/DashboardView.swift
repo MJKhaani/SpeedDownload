@@ -8,6 +8,16 @@ struct DashboardView: View {
     @State private var selectedJobID: String?
     @State private var showingAddDownload = false
     @State private var incomingDownloadURL = ""
+    @State private var incomingIsTorrent = false
+    @State private var incomingBatch: [String] = []
+    @State private var handoffError: String?
+    private struct PendingDownload: Equatable {
+        let source: String
+        let torrent: Bool
+        var batch: [String] = []
+    }
+    @State private var pendingDownloadURLs: [PendingDownload] = []
+    @State private var handledRequests: [String] = []
     @State private var showingTaskInspector = false
     @State private var searchText = ""
     @AppStorage("transferSortOrder") private var sortOrderRaw = "queue"
@@ -152,18 +162,31 @@ struct DashboardView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $searchText, placement: .toolbar, prompt: "Filter transfers")
-        .onDrop(of: [UTType.url.identifier, UTType.plainText.identifier], isTargeted: nil, perform: handleDownloadDrop)
-        .sheet(isPresented: $showingAddDownload) {
-            AddDownloadView(
-                initialURL: incomingDownloadURL,
-                isSubmitting: engine.isSubmitting,
-                probeURL: { url in try await engine.probe(url: url) },
-                submit: { url, name, destination, priority, checksum, selectedFiles, infoHash in
-                    let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash)
-                    if added { showingAddDownload = false }
-                    return added
+        .onDrop(of: [UTType.url.identifier, UTType.fileURL.identifier, UTType.plainText.identifier], isTargeted: nil, perform: handleDownloadDrop)
+        .sheet(isPresented: $showingAddDownload, onDismiss: showNextPendingDownload) {
+            if incomingBatch.count > 1 {
+                BatchDownloadView(sources: incomingBatch) { source in
+                    pendingDownloadURLs.append(PendingDownload(source: source, torrent: true))
                 }
-            )
+            } else if incomingIsTorrent {
+                TorrentAddView(source: incomingDownloadURL) { showingAddDownload = false }
+                    .id(incomingDownloadURL)
+            } else {
+                AddDownloadView(
+                    initialURL: incomingDownloadURL,
+                    isSubmitting: engine.isSubmitting,
+                    probeURL: { url in try await engine.probe(url: url) },
+                    onTorrentSource: { source in
+                        incomingDownloadURL = source
+                        incomingIsTorrent = true
+                    },
+                    submit: { url, name, destination, priority, checksum, selectedFiles, infoHash in
+                        let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash)
+                        if added { showingAddDownload = false }
+                        return added
+                    }
+                )
+            }
         }
         .task { reconcileSelection(with: filteredJobs) }
         .onChange(of: engine.jobs) { _, _ in reconcileSelection(with: filteredJobs) }
@@ -171,31 +194,48 @@ struct DashboardView: View {
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadNewTransfer)) { _ in
             incomingDownloadURL = ""
+            incomingBatch = []
+            incomingIsTorrent = false
             showingAddDownload = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadClipboardTransfer)) { notification in
             guard let value = notification.object as? String, value.utf8.count <= 8192 else { return }
-            incomingDownloadURL = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            showingAddDownload = true
+            offerDownloadURL(value)
         }
         .onOpenURL { incoming in
-            if incoming.scheme?.lowercased() == "magnet", incoming.absoluteString.utf8.count <= 8192 {
-                incomingDownloadURL = incoming.absoluteString
-                showingAddDownload = true
-                NSApp.activate(ignoringOtherApps: true)
+            if incoming.scheme?.lowercased() == "speeddownload", incoming.host?.lowercased() == "browser" {
+                do {
+                    guard let token = URLComponents(url: incoming, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "request" })?.value else { return }
+                    let request = try BrowserHandoff.consume(token)
+                    guard !handledRequests.contains(token) else { return }
+                    handledRequests.append(token)
+                    if handledRequests.count > 128 { handledRequests.removeFirst() }
+                    if request.action == "batch", request.sources.count > 1 { offerBatch(request.sources) }
+                    else if let source = request.sources.first { offerDownloadURL(source, forceTorrent: request.action == "torrent") }
+                } catch { handoffError = error.localizedDescription }
                 return
             }
-            guard incoming.scheme?.lowercased() == "speeddownload",
-                  incoming.host?.lowercased() == "add",
-                  let source = URLComponents(url: incoming, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
-                  source.utf8.count <= 8192,
-                  let sourceURL = URL(string: source),
-                  (["http", "https", "ftp", "ftps"].contains(sourceURL.scheme?.lowercased() ?? "") && sourceURL.host != nil || source.lowercased().hasPrefix("magnet:?")) else { return }
-            incomingDownloadURL = source
-            showingAddDownload = true
-            NSApp.activate(ignoringOtherApps: true)
+            if incoming.scheme?.lowercased() == "speeddownload" {
+                guard ["add", "torrent"].contains(incoming.host?.lowercased() ?? ""),
+                      let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false),
+                      let source = components.queryItems?.first(where: { $0.name == "url" })?.value else { return }
+                if let request = components.queryItems?.first(where: { $0.name == "request" })?.value {
+                    guard UUID(uuidString: request) != nil, !handledRequests.contains(request) else { return }
+                    handledRequests.append(request)
+                    if handledRequests.count > 128 { handledRequests.removeFirst() }
+                }
+                offerDownloadURL(source, forceTorrent: incoming.host?.lowercased() == "torrent")
+            } else {
+                offerDownloadURL(incoming.absoluteString)
+            }
         }
+        .alert("Could Not Open Browser Download", isPresented: Binding(
+            get: { handoffError != nil }, set: { if !$0 { handoffError = nil } }
+        )) {
+            Button("OK") { handoffError = nil }
+        } message: { Text(handoffError ?? "") }
     }
+
 
     private func handleDownloadDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
@@ -216,12 +256,44 @@ struct DashboardView: View {
         return false
     }
 
-    private func offerDownloadURL(_ raw: String) {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.utf8.count <= 8192,
-              let parsed = URL(string: value),
-              (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || value.lowercased().hasPrefix("magnet:?")) else { return }
+    private func offerDownloadURL(_ raw: String, forceTorrent: Bool = false) {
+        guard let value = TorrentSource.normalized(raw) else { return }
+        if showingAddDownload {
+            if pendingDownloadURLs.count < 100 {
+                let stored = PendingDownload(source: value, torrent: forceTorrent)
+                if !pendingDownloadURLs.contains(stored) { pendingDownloadURLs.append(stored) }
+            }
+            return
+        }
         incomingDownloadURL = value
+        incomingBatch = []
+        incomingIsTorrent = forceTorrent || TorrentSource.isTorrent(value)
+        showingAddDownload = true
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showNextPendingDownload() {
+        guard !pendingDownloadURLs.isEmpty else { return }
+        let next = pendingDownloadURLs.removeFirst()
+        DispatchQueue.main.async {
+            if next.batch.count > 1 { offerBatch(next.batch) }
+            else { offerDownloadURL(next.source, forceTorrent: next.torrent) }
+        }
+    }
+
+    private func offerBatch(_ sources: [String]) {
+        let urls = sources.compactMap(TorrentSource.normalized)
+        guard !urls.isEmpty else { return }
+        if urls.count == 1 { offerDownloadURL(urls[0]); return }
+        if showingAddDownload {
+            if pendingDownloadURLs.count < 100 {
+                pendingDownloadURLs.append(PendingDownload(source: "", torrent: false, batch: urls))
+            }
+            return
+        }
+        incomingBatch = urls
+        incomingDownloadURL = ""
+        incomingIsTorrent = false
         showingAddDownload = true
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -698,6 +770,7 @@ private struct AddDownloadView: View {
     let initialURL: String
     let isSubmitting: Bool
     let probeURL: (String) async throws -> DownloadProbe
+    let onTorrentSource: (String) -> Void
     let submit: (String, String, String, Int, String?, [String]?, String?) async -> Bool
 
     private var trimmedURL: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -711,11 +784,8 @@ private struct AddDownloadView: View {
             }
             Form {
                 Section("Download source") {
-                    HStack {
-                        TextField("URL", text: $url, prompt: Text("https://example.com/file.zip or magnet:?xt=…"))
-                            .textFieldStyle(.roundedBorder)
-                        Button("Choose Torrent…", action: chooseTorrent)
-                    }
+                    TextField("URL", text: $url, prompt: Text("https://example.com/file.zip or magnet:?xt=…"))
+                        .textFieldStyle(.roundedBorder)
                     probeSummary
                 }
                 Section("File") {
@@ -753,8 +823,10 @@ private struct AddDownloadView: View {
         .fixedSize(horizontal: false, vertical: true)
         .task {
             if !initialURL.isEmpty && url.isEmpty { url = initialURL }
-            if let folder = engine.cachedSettings?.defaultDownloadFolder, !folder.isEmpty {
-                destination = folder
+            await engine.ensureConnected()
+            if let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
+               destination == "\(NSHomeDirectory())/Downloads" {
+                destination = settings.defaultDownloadFolder
             }
         }
         .task(id: trimmedURL) { await inspectURL(trimmedURL) }
@@ -854,7 +926,7 @@ private struct AddDownloadView: View {
             Label(probeError, systemImage: "exclamationmark.triangle")
                 .font(.callout).foregroundStyle(.orange)
         } else if !trimmedURL.isEmpty {
-            Text("Enter a link or choose a .torrent file to inspect the download.")
+            Text("Enter a link to inspect the download.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -881,6 +953,10 @@ private struct AddDownloadView: View {
     }
 
     private func inspectURL(_ value: String) async {
+        if TorrentSource.isTorrent(value) {
+            onTorrentSource(value)
+            return
+        }
         probeResult = nil
         probeError = nil
         selectedTorrentFiles = []
@@ -888,7 +964,7 @@ private struct AddDownloadView: View {
         guard let parsed = URL(string: value),
               (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || value.lowercased().hasPrefix("magnet:?") || value.lowercased().hasPrefix("torrent-file:///")) else {
             isProbing = false
-            probeError = "Enter a valid link or choose a .torrent file."
+            probeError = "Enter a valid download link."
             return
         }
         do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
@@ -898,6 +974,10 @@ private struct AddDownloadView: View {
         do {
             let result = try await probeURL(value)
             guard !Task.isCancelled, trimmedURL == value else { return }
+            if result.contentType?.lowercased().hasPrefix("application/x-bittorrent") == true {
+                onTorrentSource(value)
+                return
+            }
             probeResult = result
             selectedTorrentFiles = Set(result.torrentFiles?.map(\.path) ?? [])
             probeError = nil
@@ -969,9 +1049,13 @@ private struct AddDownloadView: View {
 
     private func save() async {
         let trimmedURL = self.trimmedURL
+        if TorrentSource.isTorrent(trimmedURL) || probeResult?.contentType?.lowercased().hasPrefix("application/x-bittorrent") == true {
+            onTorrentSource(trimmedURL)
+            return
+        }
         guard let parsed = URL(string: trimmedURL),
               (["http", "https", "ftp", "ftps"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil || trimmedURL.lowercased().hasPrefix("magnet:?") || trimmedURL.lowercased().hasPrefix("torrent-file:///")) else {
-            validationError = "Enter a valid link or choose a .torrent file."; return
+            validationError = "Enter a valid download link."; return
         }
         let path = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         var isDirectory: ObjCBool = false
@@ -1006,19 +1090,5 @@ private struct AddDownloadView: View {
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: destination, isDirectory: true)
         if panel.runModal() == .OK, let selectedURL = panel.url { destination = selectedURL.path }
-    }
-    private func chooseTorrent() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Torrent File"
-        panel.prompt = "Choose"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        if let torrentType = UTType(filenameExtension: "torrent") { panel.allowedContentTypes = [torrentType] }
-        if panel.runModal() == .OK, let selectedURL = panel.url,
-           var components = URLComponents(url: selectedURL, resolvingAgainstBaseURL: false) {
-            components.scheme = "torrent-file"
-            if let source = components.url?.absoluteString { url = source }
-        }
     }
 }

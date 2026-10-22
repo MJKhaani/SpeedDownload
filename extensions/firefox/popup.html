@@ -7,7 +7,7 @@
   <style>
     :root { color-scheme: light dark; font: menu; }
     body { width: 260px; margin: 0; padding: 16px; }
-    h1 { font-size: 15px; margin: 0 0 12px; }
+    h1 { display: flex; align-items: center; gap: 8px; font-size: 15px; margin: 0 0 12px; }
     p { line-height: 1.4; margin: 0 0 12px; }
     #status { font-weight: 600; }
     .hint { color: GrayText; font-size: 12px; }
@@ -15,11 +15,11 @@
   </style>
 </head>
 <body>
-  <h1>Speed Download</h1>
+  <h1><img src="icons/icon-32.png" width="24" height="24" alt=""> Speed Download</h1>
   <p id="status" role="status" aria-live="polite">Checking connection…</p>
-  <p class="hint">Right-click a link or select part of a page to send its links.</p>
+  <p class="hint">Right-click a link to review it in the app, or select part of a page to choose from its links.</p>
   <label><input id="automatic" type="checkbox"> Grab new browser downloads automatically</label>
-  <p class="hint">Automatic grabbing is off until enabled. Public HTTP(S) links work best; browser cookies and sign-in are not transferred.</p>
+  <p class="hint">Each intercepted download opens the app’s review dialog. Automatic grabbing is off until enabled. Public HTTP(S) links work best; browser cookies and sign-in are not transferred.</p>
   <p id="last-result" class="hint" role="status" aria-live="polite"></p>
   <button id="refresh" type="button">Refresh</button>
   <script src="popup.js"></script>
