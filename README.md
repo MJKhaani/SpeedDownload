@@ -1,102 +1,104 @@
 # Speed Download
 
 <p align="center">
-  <img src="Resources/logo.png" alt="Speed Download logo" width="180">
+  <img src="Resources/logo.png" alt="Speed Download logo" width="160">
 </p>
 
-Speed Download is a free, open-source download manager in active development. Its Zig core provides a headless HTTP(S) downloader with interruption recovery, validated parallel ranges, and a local IPC engine. Native SwiftUI (macOS), GTK 4 (Linux), and WinUI 3 (Windows) client source is present; the Linux and Windows clients and all platform runtime integrations still need builds and validation.
+A free, open-source download manager with a Zig engine and native desktop clients.
+Speed Download is in active development, with macOS as the current focus.
 
-## macOS client
+![Speed Download on macOS](Resources/macos-client.png)
 
-![Speed Download macOS client showing transfers and the inspector](Resources/macos-client.png)
+## Features
 
-## Project status
+- **Parallel downloads:** multiple connections per HTTP(S) download, with automatic fallback when the server does not support byte ranges.
+- **Pause and resume:** persistent queues and download checkpoints, with checks to avoid resuming changed content.
+- **Queue controls:** priorities, concurrent download limits, and a weekly start/stop schedule.
+- **Bandwidth controls:** global and per-download limits, plus scheduled limits for times such as office hours.
+- **Transfer details:** total download speed, per-task progress, and an inspector showing individual worker progress.
+- **Torrent and magnet review:** choose files, edit trackers, and select a destination before queueing a BitTorrent v1 download.
+- **Browser integration:** send a link or links from a selected area of a page to the client; optionally intercept browser downloads.
+- **Native macOS integration:** menu bar controls, notifications, launch at login, file icons, and `.torrent` and `magnet:` registration.
 
-- Product requirements and release gates: [`PROJECT.md`](PROJECT.md)
-- Contributor and agent workflow: [`Agent.md`](Agent.md)
-- Platform feasibility: [`docs/support-matrix.md`](docs/support-matrix.md)
-- Phase 0 native CI workflow: [`.github/workflows/phase0.yml`](.github/workflows/phase0.yml)
-- Core state rules: [`docs/download-state-machine.md`](docs/download-state-machine.md)
-- Native GUI and local IPC decision: [`docs/adr/0001-native-guis-local-ipc.md`](docs/adr/0001-native-guis-local-ipc.md)
-- Linux GTK 4 client: [`linux/SpeedDownload/README.md`](linux/SpeedDownload/README.md)
-- Windows WinUI 3 client: [`windows/SpeedDownload/README.md`](windows/SpeedDownload/README.md)
-- IPC v1 contract: [`docs/protocols/ipc-v1.md`](docs/protocols/ipc-v1.md)
-- IPC request schema: [`docs/protocols/ipc-v1.schema.json`](docs/protocols/ipc-v1.schema.json)
-- License and dependency notes: [`docs/licenses.md`](docs/licenses.md)
+The GUI starts the bundled engine when needed. Transfers are managed by the engine,
+so closing a client window does not stop them.
 
-The Zig code has bounded JSON framing, `engine.hello` feature negotiation, per-connection handshake state, and persistent job RPCs. The macOS/Linux Unix-domain socket adapter authenticates the connecting user's UID; the Windows named-pipe adapter scopes the pipe to the current user/session, applies a private DACL, and rejects remote clients. Each listener supports up to 32 concurrent client sessions. `speed-download engine` starts the engine listener. Starting a queued HTTP(S) job drains the queue through a host-aware scheduler with configurable global concurrency and two jobs per host; range-capable jobs may use up to 32 validated HTTP requests each when configured. The HTTP driver uses redirect and representation checks, strong-ETag range resume, synced segment checkpoints, and atomic no-replace publication. Native SwiftUI, GTK 4, and WinUI 3 client source covers job listing, add, controls, and progress snapshots. The Windows engine and client now compile for x86_64 targets, but Windows native runtime behavior and WinUI packaging have not been validated. The macOS client waits for engine change signals before refreshing its snapshot. Dynamic range reallocation is implemented. The engine now exposes a bounded job change subscription stream with optional state and search filters; the macOS client applies live updates and falls back to `jobs.wait` with older compatible engines. Subscription runtime behavior remains unverified. See [`docs/support-matrix.md`](docs/support-matrix.md).
+## Current availability
 
-Browser handoffs go exclusively to the native client. A single intercepted link
-opens its Add dialog; selected page links open a multiple-link review dialog
-with checkboxes, filtering, and All/None controls. Batch torrent reviews retain
-the chosen folder and queue priority. Stop finishes the current request and leaves
-remaining links selected for later. The extension and native host
-never talk to the engine or silently queue downloads. Both extension packages
-use the app logo for their toolbar and manifest icons. Reload the extension
-after installing an updated development build.
+| Component | Status |
+| --- | --- |
+| macOS client | Runnable SwiftUI app; requires macOS 14 or later. |
+| Windows and Linux clients | Source included; further client work and native runtime validation are deferred. |
+| Engine and CLI | HTTP(S), initial anonymous FTP/FTPS support, and experimental BitTorrent v1 transfers. |
+| Browser extensions | Experimental Chrome and Firefox extensions for the macOS client. |
 
-## Build
+FTP/FTPS interoperability and BitTorrent transfers against live swarms still need
+validation. BitTorrent seeding and v2 torrents are not implemented. Browser
+extensions are development builds; live-browser validation and store distribution
+remain outstanding. See the [support matrix](docs/support-matrix.md) for detailed
+platform and feature limitations.
 
-Build the command-line prototype and run the unit and local HTTP integration checks (Zig 0.17.0 and Python 3):
+## Build and run
 
-```sh
-mkdir -p zig-out/bin
-zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download
-zig test src/core/root.zig
-zig test src/core/queue.zig
-zig test src/protocols/http/download.zig
-zig build ipc
-zig build ipc-unix
-python3 tests/integration/http_cli.py zig-out/bin/speed-download
-zig-out/bin/speed-download --help
-```
+### macOS app
 
-Start the IPC engine with `zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download && zig-out/bin/speed-download engine` on macOS/Linux, or `zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download.exe && zig-out/bin/speed-download.exe engine` on Windows. macOS listens under `$TMPDIR/speed-download/engine.sock`; Linux listens under `$XDG_RUNTIME_DIR/speed-download/engine.sock`; Windows creates a current-user/session named pipe. Unix runtime directories must be private and owned by the current user.
-
-Job records are saved atomically under `~/Library/Application Support/Speed Download/jobs.json` on macOS, or `$XDG_STATE_HOME/speed-download/jobs.json` (falling back to `~/.local/state/speed-download/jobs.json`) on Linux. Set `SPEED_DOWNLOAD_STATE_DIR` to override the state directory.
-
-Use the engine RPC CLI while the engine is running:
+Prerequisites: **Zig 0.17.0**, **Swift 6**, and the macOS SDK supplied by Xcode or
+its Command Line Tools.
 
 ```sh
-speed-download rpc status
-speed-download rpc list
-speed-download rpc list --state paused --search firefox
-speed-download rpc get <job-id>
-speed-download rpc add https://example.com/archive.zip "$HOME/Downloads" "archive.zip"
-speed-download rpc add https://example.com/archive.zip "$HOME/Downloads" --sha256 <64-hex-digits>
-speed-download rpc control <job-id> start <revision>
-speed-download rpc control <job-id> pause <revision>
-speed-download rpc reorder <job-id> <zero-based-position> <revision>
-speed-download rpc delete <job-id> <revision> [--delete-partial]
+git clone https://github.com/MJKhaani/SpeedDownload.git
+cd SpeedDownload
+bash macos/SpeedDownload/package-app.sh
+open "dist/Speed Download.app"
 ```
 
-`rpc status` reports engine uptime and job counts. `rpc list` prints one JSON-RPC response containing up to 50 jobs and can filter by exact state and case-insensitive name/source text; `rpc get` returns one job with its worker progress. These snapshots omit URL query strings and fragments, which may contain access tokens. `rpc add` accepts an existing destination folder, an optional filename, and an optional SHA-256 digest for completion verification. `rpc control`, `rpc reorder`, and `rpc delete` require the current job revision shown by `rpc list` or `rpc get`; refresh the job after a stale-revision error. Reordering applies to queued, paused, or retry-wait jobs. Deleting removes the job record and leaves completed downloads untouched. `--delete-partial` also removes partial data for an inactive job.
+The bundle includes the engine and browser native-messaging helper. Add a download
+with **⌘N**, paste a link with **⇧⌘V**, or drop a link onto the window. Open a
+`.torrent` file or magnet link to review its files and trackers before downloading.
+Configure the download folder, connections, proxy, bandwidth, and schedules in
+**Speed Download → Settings…**.
 
-The engine automatically retries transient network failures and HTTP 429 or 503 responses up to three times. It honors a server `Retry-After` delay up to one hour; queued retries remain visible and can be paused or resumed immediately.
-After a 429 or 503 response, each automatic retry opens fewer connections for that job, down to one.
-Each download can have its own speed cap through its macOS transfer actions. This cap is saved with the job and can be changed while it is downloading. The global and scheduled caps still apply.
+### Engine and CLI
 
-Build a runnable macOS app bundle, including its engine helper, with `bash macos/SpeedDownload/package-app.sh`. Open `dist/Speed Download.app`; the GUI starts the bundled engine when it cannot connect to an existing one. Linux and Windows clients follow the same connect-first, launch-if-needed behavior. Set `SPEED_DOWNLOAD_ENGINE_PATH` to override helper discovery.
+From the repository root:
 
-On macOS, `bash tests/integration/macos_client.sh` checks the actual GUI model's handshake and reconnection against an isolated engine without changing your downloads or settings.
+```sh
+zig build -Doptimize=ReleaseSafe
+./zig-out/bin/speed-download --help
+./zig-out/bin/speed-download engine
+```
 
-The macOS client can show native completion and failure notifications while it is running. Enable each category in Settings → General; macOS will ask for notification permission. The same pane offers a native launch at login control managed by macOS Login Items. The engine reads macOS static HTTP and HTTPS proxy settings, including simple-host, exact or wildcard host, and numeric IP network exceptions, and applies custom unauthenticated HTTP and HTTPS proxy endpoints to link inspection and downloads. Automatic proxy scripts and SOCKS5 remain unsupported. Custom HTTP links can use Basic proxy credentials stored in macOS Keychain; authenticated HTTPS CONNECT tunneling remains unsupported and fails explicitly. Unsupported system configurations fail rather than silently connecting directly. On macOS, system-proxy bypass rules are rechecked for each redirect destination.
+The engine runs locally and saves queue state and settings for the current user.
+On macOS, its state is stored in `~/Library/Application Support/Speed Download`.
+Set `SPEED_DOWNLOAD_STATE_DIR` to use a different state directory.
 
-On macOS, `speeddownload://add?url=<percent-encoded-download-URL>` opens the Add Download dialog with the URL filled in. HTTP, HTTPS, anonymous FTP, and anonymous explicit FTPS links are accepted. The link is inspected by the engine and requires the user to choose **Add to Queue**; opening the app link never starts a transfer by itself. The packaged app declares `magnet:` and `speeddownload:` URL handlers and registers the bundle with macOS Launch Services; the user’s default magnet handler is not changed. Experimental [Firefox](docs/browser-firefox.md) and [Chrome](docs/browser-chrome.md) extensions can send selected page links and, when enabled in their popup, hand off new browser downloads through a restricted native-messaging host. Live-browser behavior has not been verified.
+### Browser extensions
 
-You can also drop an HTTP, HTTPS, FTP, or FTPS link onto the macOS window to open the same Add Download dialog. The transfer starts only after you confirm it.
-Use File → Add Download from Clipboard (⇧⌘V) to inspect a copied link, or File → New Download (⌘N) to open an empty dialog.
-The macOS list can be sorted by queue order, name, size, or status; queue order is the default and sorting does not change the engine's scheduling order.
+Follow the setup instructions for [Chrome](docs/browser-chrome.md) or
+[Firefox](docs/browser-firefox.md). A single link opens the client's Add dialog;
+multiple links open a review dialog with checkboxes. Torrent links open the torrent
+review dialog. Downloads start after confirmation in the client.
 
-The HTTP(S) transfer routine validates redirects and responses, resumes with strong validators, and publishes the final file without replacing an existing destination. Eligible servers receive a real range probe followed by concurrent, non-overlapping HTTP range requests; completed extents are synced and recorded in an atomic segment journal. Idle workers can divide the untouched tail of an active range at a durable checkpoint. Unsupported or unsuitable responses use the single-stream path. The CLI supports direct `--sha256 <64-hex-digits>` downloads, and the macOS Add Download dialog accepts an optional SHA-256 checksum for queued jobs. The engine verifies that digest before publishing the completed file. The engine runs multiple jobs concurrently through a host-aware scheduler, with cooperative pause/cancel and durable progress checkpoints. Transient connection failures use up to three persisted automatic retries with 2, 4, and 8 second backoff. An interrupted in-flight segment is fetched again from its last checkpoint on resume. The engine offers coalesced job change notifications over a dedicated IPC connection; Linux/Windows native client adoption and subscription runtime validation remain outstanding.
+The extension communicates with the **client**, which communicates with the engine.
+Automatic browser download interception is off by default.
 
-Anonymous passive FTP and FTPS are available as initial engine sources for direct downloads and queued jobs. FTPS uses `AUTH TLS` on port 21 by default, while `ftps://host:990/path` starts TLS before the server greeting. Both validate the server certificate against the system trust store and require encrypted data transfer with `PBSZ 0` and `PROT P`. The driver probes `SIZE`, `MDTM`, and `REST`, uses `EPSV` or `PASV`, checkpoints partial bytes, and checks remote metadata before resuming. FTP currently uses one data connection per job. Authenticated FTP and FTP through a proxy are not implemented; see [FTP protocol status](docs/protocols/ftp.md). Follow [`Agent.md`](Agent.md) when contributing.
+## Development
 
-BitTorrent v1 metainfo inspection is available with `speed-download torrent-info <file.torrent>`. It validates bencoding, paths, file sizes, and piece counts, then prints JSON including the raw v1 info hash. It does not start a torrent transfer. See [BitTorrent status](docs/protocols/torrent.md).
-The CLI can start a v1 torrent transfer with `speed-download torrent-download <file.torrent> <destination>`, using HTTP(S) or UDP trackers when present and a bounded DHT lookup for public torrents when tracker discovery yields no peers. The macOS app registers `.torrent` files and `magnet:` links. Opening a torrent or magnet shows a dedicated Add Torrent dialog with file selection, editable trackers, destination, and queue priority. Browser-intercepted torrents open the same review dialog before queueing. The engine saves a private metainfo copy when the job is added, so the original file can be moved afterward. This transfer path has not been exercised against a live swarm.
-Magnet URI inspection is available with `speed-download magnet-info '<magnet-uri>'`. It decodes the v1 info hash, display name, and trackers.
-For magnets containing an explicit `x.pe` peer or an HTTP(S) or UDP tracker, `speed-download magnet-metadata '<magnet-uri>' output.torrent` can retrieve and verify torrent metadata. The macOS Add Download dialog and engine queue accept v1 magnets and local `.torrent` files, including multi-file payloads, with piece verification and verified-piece resume. The torrent dialog loads the full file list through bounded pages and pins verified metadata before queueing. These transfer paths have not been exercised against a live swarm. Public torrents can try a bounded, read-only DHT lookup for payload peers after metainfo is verified; the desktop metadata preview can also use a bounded DHT lookup when tracker/explicit-peer discovery fails, private magnet payload transfers are rejected in favor of a local `.torrent` source, and seeding is not implemented.
+The engine owns transfers, scheduling, and persistence. Native clients communicate
+with it through local IPC: SwiftUI on macOS, WinUI 3 on Windows, and GTK 4 on Linux.
+
+- [Project plan and requirements](PROJECT.md)
+- [Contribution workflow](Agent.md)
+- [Architecture decision](docs/adr/0001-native-guis-local-ipc.md)
+- [IPC protocol](docs/protocols/ipc-v1.md) and [download state model](docs/download-state-machine.md)
+- [FTP/FTPS details](docs/protocols/ftp.md) and [BitTorrent details](docs/protocols/torrent.md)
+- [Windows client](windows/SpeedDownload/README.md) and [Linux client](linux/SpeedDownload/README.md)
+
+GitHub Actions includes [platform checks](.github/workflows/phase0.yml) and a
+[tag build workflow](.github/workflows/tag-build.yml) that builds CLI and native
+client artifacts for tags matching `v*`.
 
 ## License
 
-Application source is licensed under the MIT License. Third-party components retain their own licenses; review [`docs/licenses.md`](docs/licenses.md) before adding dependencies.
+Speed Download is licensed under the [MIT License](LICENSE).
+Third-party components retain their own licenses; see [dependency notices](docs/licenses.md).
