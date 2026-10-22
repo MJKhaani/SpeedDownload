@@ -17,10 +17,30 @@ struct BrowserHandoff: Decodable {
 
     var sources: [String] { urls ?? url.map { [$0] } ?? [] }
 
+    private static var inbox: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/Speed Download/BrowserInbox", isDirectory: true)
+    }
+
+    /// Recover requests written before a failed client launch. Only review them;
+    /// adding jobs still requires confirmation in the client dialog.
+    static func pendingTokens() -> [String] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        guard let entries = FileManager.default.enumerator(at: inbox, includingPropertiesForKeys: keys,
+                options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]) else { return [] }
+        var pending: [(String, Date)] = []
+        for case let file as URL in entries {
+            guard file.pathExtension == "json", UUID(uuidString: file.deletingPathExtension().lastPathComponent) != nil,
+                  let values = try? file.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            pending.append((file.deletingPathExtension().lastPathComponent, values.contentModificationDate ?? .distantPast))
+            if pending.count == 100 { break }
+        }
+        return pending.sorted { $0.1 < $1.1 }.map { $0.0 }
+    }
+
     static func consume(_ token: String) throws -> BrowserHandoff {
         guard UUID(uuidString: token) != nil else { throw CocoaError(.fileReadInvalidFileName) }
-        let inbox = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/Speed Download/BrowserInbox", isDirectory: true)
         let file = inbox.appendingPathComponent(token + ".json")
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
@@ -32,6 +52,7 @@ struct BrowserHandoff: Decodable {
         let request = try JSONDecoder().decode(BrowserHandoff.self, from: Data(contentsOf: file))
         guard request.version == 1, request.idempotencyKey == token,
               ["add", "torrent", "batch"].contains(request.action),
+              (request.action == "batch" ? (request.url == nil && request.urls != nil) : (request.url != nil && request.urls == nil)),
               !request.sources.isEmpty, request.sources.count <= 100,
               request.sources.reduce(0, { $0 + $1.utf8.count }) <= 128 * 1024 else { throw CocoaError(.fileReadCorruptFile) }
         for source in request.sources {

@@ -60,3 +60,7 @@ API references: [native manifests](https://developer.mozilla.org/en-US/docs/Mozi
 [downloads.onCreated](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/downloads/onCreated),
 [downloads controls](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/downloads),
 and [activeTab](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/activeTab_permission).
+
+On startup, the macOS client recovers up to 100 pending browser inbox requests
+and opens their review dialogs. Recovery never adds jobs without confirmation.
+Duplicate delivery tokens are ignored before reading the consumed request file.

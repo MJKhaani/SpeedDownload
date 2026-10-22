@@ -192,7 +192,10 @@ struct DashboardView: View {
                 )
             }
         }
-        .task { reconcileSelection(with: filteredJobs) }
+        .task {
+            reconcileSelection(with: filteredJobs)
+            for token in BrowserHandoff.pendingTokens() { receiveBrowserHandoff(token, recovering: true) }
+        }
         .onChange(of: engine.jobs) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: selection) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
@@ -210,15 +213,8 @@ struct DashboardView: View {
         }
         .onOpenURL { incoming in
             if incoming.scheme?.lowercased() == "speeddownload", incoming.host?.lowercased() == "browser" {
-                do {
-                    guard let token = URLComponents(url: incoming, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "request" })?.value else { return }
-                    let request = try BrowserHandoff.consume(token)
-                    guard !handledRequests.contains(token) else { return }
-                    handledRequests.append(token)
-                    if handledRequests.count > 128 { handledRequests.removeFirst() }
-                    if request.action == "batch", request.sources.count > 1 { offerBatch(request.sources) }
-                    else if let source = request.sources.first { offerDownloadURL(source, forceTorrent: request.action == "torrent") }
-                } catch { handoffError = error.localizedDescription }
+                guard let token = URLComponents(url: incoming, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "request" })?.value else { return }
+                receiveBrowserHandoff(token)
                 return
             }
             if incoming.scheme?.lowercased() == "speeddownload" {
@@ -260,6 +256,20 @@ struct DashboardView: View {
             return true
         }
         return false
+    }
+
+    private func receiveBrowserHandoff(_ token: String, recovering: Bool = false) {
+        guard !handledRequests.contains(token), pendingDownloadURLs.count < 100 else { return }
+        do {
+            let request = try BrowserHandoff.consume(token)
+            handledRequests.append(token)
+            if handledRequests.count > 128 { handledRequests.removeFirst() }
+            if request.action == "batch", request.sources.count > 1 { offerBatch(request.sources) }
+            else if let source = request.sources.first { offerDownloadURL(source, forceTorrent: request.action == "torrent") }
+        } catch {
+            // Another window may already have consumed a recovered request.
+            if !recovering { handoffError = error.localizedDescription }
+        }
     }
 
     private func offerDownloadURL(_ raw: String, forceTorrent: Bool = false, destination: String? = nil, priority: Int = 0) {
