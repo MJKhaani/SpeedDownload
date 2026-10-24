@@ -6,7 +6,7 @@
 > **Core/engine language:** Zig (shared across all platforms)
 > **Native GUIs:** macOS Swift / SwiftUI; Windows C# / WinUI 3; Linux C / GTK 4
 > **IPC:** JSON-RPC 2.0 over framed, local OS IPC (Windows Named Pipes; macOS/Linux Unix domain sockets)
-> **Document version:** 0.2 — 2026-10-12
+> **Document version:** 0.3 — 2026-10-24
 > **Related:** [Agent.md](Agent.md), [IPC v1](docs/protocols/ipc-v1.md), [ADR 0001](docs/adr/0001-native-guis-local-ipc.md)
 
 ## 1. Vision
@@ -94,6 +94,8 @@ Priority labels: **P0 = release-blocking core**, **P1 = first complete release**
 | DL-03 | P0 | Pause, resume, cancel, retry, reorder, delete, reveal file | Defined state transitions; no stale workers or unexpected file deletion. |
 | DL-04 | P0 | Queue with global and per-host concurrency | Caps observed in multi-job load tests; fair scheduling avoids starvation. |
 | DL-12 | P0 | User-configurable concurrent task limit | Global task concurrency is configurable and applied live by the engine; per-host fairness and safety caps remain enforced. |
+| DL-17 | P1 | Multiple named download queues | The engine creates a non-deletable default queue named `main`; users can create, rename, and delete other queues, and move waiting jobs between them without losing partial data. Existing jobs migrate into `main`. |
+| DL-18 | P1 | Per-queue controls | Each queue has its own concurrent-download limit and weekly start/stop schedule. Queue controls take effect while the engine runs headlessly and remain within global/per-host safety caps. |
 | DL-13 | P0 | Default connections per task | New tasks inherit a configurable default, bounded by server capability and safe engine limits. |
 | DL-14 | P0 | Default download folder | New tasks use the saved per-user default unless the user chooses another destination. |
 | DL-15 | P1 | Proxy policy | User can select system proxy or a custom proxy; credentials are stored only in the OS secret store. |
@@ -107,6 +109,8 @@ Priority labels: **P0 = release-blocking core**, **P1 = first complete release**
 | DL-11 | P2 | Mirror URLs, download categories, export/import job list | Import handles invalid input gracefully; paths and secrets sanitized. |
 
 **Transfer states:** `queued`, `scheduled`, `resolving`, `connecting`, `downloading`, `paused`, `retry_wait`, `verifying`, `completed`, `failed`, `canceled`. `stopping` and `finalizing` may be internal transient states. Document transition permissions and idempotency in `docs/download-state-machine.md`. A *stop* means a resumable pause unless the user explicitly selects **Cancel / delete partial data**.
+
+**Queue model:** Every job has a stable queue ID, independent of its transfer state and queue order. New jobs go to `main` unless the user chooses another queue in the Add dialog. Queue names are unique per user without regard to case; renaming preserves the ID. Deleting a user-defined queue requires a choice to move its jobs to `main` or cancel deletion; deletion never discards downloads or partial files implicitly. The scheduler fairly shares the global concurrency budget among eligible queues and applies each queue's active-task limit. Pausing or stopping one queue does not stop another. Queue membership, ordering, limits, and schedules survive engine restart and schema migration.
 
 ### 4.2 Intelligent HTTP/HTTPS multipart engine (IDM-inspired)
 
@@ -149,7 +153,7 @@ Adopt the **concept** of Internet Download Manager's [dynamic segmentation](http
 
 ### 4.5 Scheduling and bandwidth
 
-**User settings requirements:** Provide a settings surface for maximum concurrent queue tasks, default connections per task, default destination folder, system/custom proxy policy, global download bandwidth, queue start/stop schedule, and time-window bandwidth limits. All settings are engine-owned and persisted for the current OS user. Settings must load before scheduling work, validate on write, use atomic durable updates, and migrate by schema version. Never persist proxy credentials in the settings file.
+**User settings requirements:** Provide a settings surface for the global maximum concurrent tasks, each queue's maximum active tasks and start/stop schedule, default connections per task, default destination folder, system/custom proxy policy, global download bandwidth, and time-window bandwidth limits. All settings are engine-owned and persisted for the current OS user. Settings must load before scheduling work, validate on write, use atomic durable updates, and migrate by schema version. Never persist proxy credentials in the settings file.
 
 | OS | Per-user settings location |
 |---|---|
@@ -157,7 +161,7 @@ Adopt the **concept** of Internet Download Manager's [dynamic segmentation](http
 | Windows | `%LOCALAPPDATA%\Speed Download\settings.json` (user-only ACL) |
 | Linux | `$XDG_STATE_HOME/speed-download/settings.json`, or `~/.local/state/speed-download/settings.json` (mode 0600 inside a mode 0700 directory) |
 
-Settings changes are submitted through `settings.get` / `settings.update` IPC methods; native clients do not write the file directly. Proxy URLs containing credentials must be separated into a non-secret endpoint and OS secret-store reference. A bandwidth limit of zero means unlimited. The queue scheduler and bandwidth scheduler each store a weekly 7-day by 24-hour grid in the user's local time zone. Queue cells select **Active** or **Off**; bandwidth cells select **Global limit** or **Limited speed**. Each cell represents the hour beginning at its row label. Settings schema migrations preserve existing values and supply documented defaults for newly introduced grid cells.
+Settings changes are submitted through engine IPC methods; native clients do not write the file directly. Proxy URLs containing credentials must be separated into a non-secret endpoint and OS secret-store reference. A bandwidth limit of zero means unlimited. Each queue scheduler and the global bandwidth scheduler store a weekly 7-day by 24-hour grid in the user's local time zone. Queue cells select **Active** or **Off**; bandwidth cells select **Global limit** or **Limited speed**. Each cell represents the hour beginning at its row label. Settings schema migrations preserve existing values, assign older jobs/settings to `main`, and supply documented defaults for new queues and grid cells. The `main` queue is active all week with a four-task limit by default; additional queues are active all week unless changed.
 
 An engine debug mode is available in native client preferences and is disabled by default. When enabled, the engine records its own lifecycle, IPC actions, probe outcomes, and transfer state changes in a size-bounded per-user `engine-debug.log` beside `settings.json`. Records omit complete URLs, paths, headers, and credentials; turning the mode off stops further file writes. The engine owns this log, and GUI clients change the mode only through `settings.update`.
 
@@ -168,6 +172,7 @@ An engine debug mode is available in native client preferences and is disabled b
 | SC-03 | P1 | Bandwidth cap global/per-job, optionally per-protocol | Observed aggregate rate stays near configured cap over meaningful windows; engine setting controls the global download cap. |
 | SC-04 | P1 | Time-window bandwidth profiles | For example daytime 2 MiB/s, night unlimited; applied without restart. |
 | SC-05 | P1 | Pause/restart behavior for missed events | Missed start after wake executes if window remains open; expired window stays paused. |
+| SC-07 | P1 | Independent queue schedules and limits | Pausing, scheduling, or changing the concurrency of one queue affects only its jobs; global safety caps still apply. |
 | SC-06 | P2 | Optional network/battery/metered constraints | Policy is explained and user-overridable. |
 
 Use a shared **token-bucket limiter** with monotonic clocks and aggregate accounting, plus fair per-job distribution; separately account for BitTorrent upload and download. Display units explicitly (`MB/s` versus `MiB/s`; `Mb/s` versus `MB/s`). Express recurrence in a named time zone, define daylight saving ambiguity and missed-event behavior, and prevent duplicate triggers on clock adjustments. Schedule policies must work without the GUI.
@@ -178,7 +183,7 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 
 **Core views:**
 
-1. **Downloads:** queue/list of file name, file type, source, status, size, progress, speed, ETA, destination/category; toolbar **Add**, **Pause/Resume**, **Retry**, **Schedule**, **Preferences**, search/filter.
+1. **Downloads:** all-downloads view plus a native list of named queues; each queue shows its jobs, active count, schedule, and controls. Jobs show file name, file type, source, status, size, progress, speed, ETA, and destination/category; toolbar **Add**, **Pause/Resume**, **Retry**, **Schedule**, **Preferences**, search/filter. Users can choose a queue when adding a job and move a waiting job to another queue.
 2. **Download details:** timeline/activity, connection/range map, transfer health, headers/source metadata (safe view), logs with secrets redacted, optional checksum and file operations.
 3. **Schedule:** calendar/time-window editor, bandwidth profiles, preview of upcoming behavior, conflicts and active rules.
 4. **Preferences:** General, Downloads, Connections & Segments, Bandwidth, Schedule, Browser Integration, Privacy & Credentials, Notifications, Appearance, Advanced.
@@ -238,6 +243,27 @@ The **multipart segment map** is a small platform-native custom drawing control 
 - Logging: URL query strings and headers may contain bearer tokens; redact by default. Use structured logs with opt-in diagnostic verbosity and secure export.
 - No analytics/telemetry by default. Any optional crash reporting requires an explicit opt-in, documented privacy policy, and secret scrubbing.
 
+### 4.10 Built-in MCP server
+
+| ID | Priority | Requirement | Acceptance criteria |
+|---|---|---|---|
+| MCP-01 | P2 | Opt-in engine-hosted MCP server | Disabled by default; enabling it in native preferences starts a per-user server on a configurable loopback port, and disabling it closes the listener. The configured port persists across restarts. |
+| MCP-02 | P2 | Agent access to downloads and queues | An authorized MCP client can inspect jobs, queues, schedules, and aggregate status, and can add, pause, resume, reorder, or move jobs and control queues through typed tools. Results match the engine's authoritative state. |
+| MCP-03 | P2 | Safe access control | Every MCP request requires an app-managed credential; read-only and mutation permissions are separate. Invalid credentials, remote addresses, disallowed origins/hosts, excessive requests, and oversized payloads are rejected. |
+
+The MCP server is **built into the Zig engine**, not a separate GUI plug-in or an unrestricted tunnel to JSON-RPC. It exposes a deliberately limited set of MCP tools and read-only resources backed by the same validated engine commands used by native clients. Define input/output schemas, errors, pagination, change notifications where supported, and an explicit capability/version contract. A native settings panel shows the enabled state, loopback address, port, credential management, and connection instructions. Credentials live in the OS secret store and are never printed in logs or exposed as a job field. Do not expose arbitrary filesystem access, shell execution, browser cookies, or proxy credentials. Disabling the server revokes active sessions. The standard local IPC endpoint remains the default desktop control channel; the MCP listener exists only after opt-in. Select and pin a supported MCP protocol revision and transport when implementing this feature, and validate it with at least two independent MCP clients.
+
+### 4.11 Media-site downloads
+
+| ID | Priority | Requirement | Acceptance criteria |
+|---|---|---|---|
+| MED-01 | P2 | Built-in Zig media extractor | Recognize supported media-page URLs, beginning with YouTube, and extract media metadata in the engine without requiring a `youtube-dl`/`yt-dlp` executable or Python at runtime. |
+| MED-02 | P2 | Video and audio choices | Before queueing, present available video qualities, audio-only options, containers/codecs, approximate sizes when known, and the resulting file name. The user chooses a compatible format. |
+| MED-03 | P2 | Playlist review | Show title, item count, and selectable entries; allow all/none and per-item format choices where necessary. Queue only confirmed entries, optionally into a selected named queue. |
+| MED-04 | P2 | Reliable media transfers | The engine refreshes short-lived media URLs when possible, resumes only against the same representation, downloads selected streams, and combines streams when a chosen format requires it, with progress and actionable errors. |
+
+Implement an independently maintained Zig extractor inspired by the **capabilities** of `youtube-dl`, not a code copy. Keep site-specific parsing isolated and versioned because sites change frequently; define a supported-site matrix and regression fixtures. The engine performs probing/extraction and sends structured choices to the GUI over IPC; native clients render a platform-appropriate Add Media dialog and return the user's selection. Browser extensions hand the page URL to the client for review and never connect directly to the engine. The engine owns playlist expansion, queueing, downloads, format selection validation, temporary stream files, merging, and cleanup. A stream merge path must be available in packaged builds, require no separately installed executable, and preserve audio/video sync and provenance. Handle unsupported, private, age-gated, live, or DRM-protected media with clear errors; do not promise circumvention of access controls. Respect site terms and users' rights to downloaded material.
+
 ## 5. Architecture
 
 ### 5.1 Process and ownership architecture
@@ -248,18 +274,22 @@ flowchart TD
   WIN[Windows: C# / WinUI 3 app] --> IPC
   LIN[Linux: C / GTK 4 app] --> IPC
   CLI[Zig CLI client] --> IPC
+  AGENT[Authorized MCP client] --> MCP[Opt-in loopback MCP server]
   EXT[Browser WebExtensions] --> NM[Native messaging host / Safari adapter]
   NM --> MAC
   NM --> WIN
   NM --> LIN
   IPC --> DAEMON[Zig single-instance headless engine process]
+  MCP --> DAEMON
   DAEMON --> CORE[Job manager / scheduler / policy / events]
   CORE --> HTTP[HTTP / HTTPS]
   CORE --> FTP[FTP / FTPS]
   CORE --> BT[BitTorrent]
+  CORE --> MEDIA[Zig media-site extractor / transfer]
   HTTP --> STORE[Verified writer / segment journal]
   FTP --> STORE
   BT --> STORE
+  MEDIA --> STORE
   CORE --> DB[(Durable DB / metadata)]
   DAEMON --> OS[OS adapters: secret store / notifications / startup]
 ```
@@ -268,9 +298,10 @@ flowchart TD
 
 - `engine` is the authoritative owner of transfer workers, jobs, settings, scheduler, queued state, persistence, and download files. It is a **separate Zig process**, not a linked DLL/dylib, framework, or dynamic library embedded in any GUI.
 - `ipc` is a documented JSON-RPC application protocol with OS-specific local transports; it carries commands, snapshot results, and optional streamed event notifications. Messages are validated before entering core services.
+- The optional engine-hosted MCP listener is a separate authenticated adapter to a small allowlist of core commands; it is disabled by default and binds only to loopback on the configured port. It never exposes the full IPC method surface.
 - Each `gui/*` implements only local presentation, interaction, OS integrations, and a typed RPC client: **SwiftUI in Swift**, **WinUI 3 in C#**, and **GTK 4 in C**. Views must never block waiting for synchronous engine I/O on the UI thread.
 - `cli` uses the **same RPC endpoint** for interactive commands; only the `daemon` command starts the engine and hosts the endpoint. Shared Zig modules may define types internally, but the CLI is not a privileged backdoor to core state.
-- Transfer drivers implement documented operations: `probe`, `start`, `pause`, `cancel`, `resume`, `progress`, `verify`, `cleanup`; BitTorrent may implement seeding/upload extensions.
+- Transfer drivers implement documented operations: `probe`, `start`, `pause`, `cancel`, `resume`, `progress`, `verify`, `cleanup`; BitTorrent may implement seeding/upload extensions, and the media driver adds structured format/playlist discovery and stream merging.
 - `storage` owns atomic journals/files; SQLite remains a **candidate** pending Zig FFI/binding, WAL, recovery, licensing and target-arch review.
 - `platform` in the engine defines trusted OS service adapters for secret storage, launcher/autostart, paths, and notification orchestration. Platform-specific GUI code implements OS-facing window/dialog/status-area details. Do not require a GUI process just to save a progress checkpoint or execute a schedule.
 - `extensions` is packaged separately: a browser cannot talk to the privileged engine API directly. Its native messaging host implements a **restricted allowlist** and delivers requests only to the native client after validation.
@@ -290,9 +321,10 @@ flowchart TD
 │   ├── daemon/main.zig              # Single-instance headless engine entry point
 │   ├── cli/main.zig                 # Zig CLI acting as RPC client
 │   ├── core/                        # Jobs, queue, scheduling, policy, events
-│   ├── protocols/{http,ftp,torrent}/
+│   ├── protocols/{http,ftp,torrent,media}/
 │   ├── storage/                     # DB, crash-safe journals, file writer
 │   ├── ipc/                         # JSON-RPC, framing, schema, endpoint and clients
+│   ├── mcp/                         # Optional authenticated loopback server and tool adapter
 │   ├── platform/{macos,windows,linux}/ # Zig OS-specific daemon adapters
 │   └── util/                        # Checked math, units, redaction
 ├── gui/
@@ -322,7 +354,7 @@ The repository structure is a design proposal, not a claim that these files exis
 
 ### 5.3 Persistence / file integrity model
 
-- Store jobs, settings (without secrets), event/checkpoint metadata, scheduler policy, transfer representation validators, and per-range cursors in versioned durable storage.
+- Store jobs with stable queue IDs, named queue definitions and policies, settings (without secrets), event/checkpoint metadata, scheduler policy, transfer representation validators, and per-range cursors in versioned durable storage.
 - Use an incomplete-file extension and a stable job-specific ID. The final path must be chosen by the user or a predictable collision policy; renames happen only after verification and successful durable flush. Avoid replacing an existing completed file silently.
 - Journal the mapping between remote representation identity, allocated intervals, and flushed bytes; invalidate questionable ranges after crash. Disk operations on 32-bit builds require 64-bit safe offsets and carefully audited casts.
 - Resume an HTTP object only if source identity remains trustworthy. Weak metadata may require revalidation or restarting; never treat an arbitrary URL as immutable.
@@ -330,7 +362,7 @@ The repository structure is a design proposal, not a claim that these files exis
 
 ### 5.4 Event/API model
 
-The server implements **JSON-RPC 2.0** (not an ad hoc JSON command format). Recommended names: `engine.hello`, `engine.status`, `jobs.add`, `jobs.list`, `jobs.get`, `jobs.start`, `jobs.pause`, `jobs.resume`, `jobs.cancel`, `jobs.retry`, `jobs.subscribe`, `jobs.unsubscribe`, `settings.get`, `settings.update`, `schedule.set`, `torrents.selectFiles`. Finalize method contracts before implementation in `docs/protocols/ipc-v1.md`.
+The local IPC server implements **JSON-RPC 2.0** (not an ad hoc JSON command format). Recommended names: `engine.hello`, `engine.status`, `jobs.add`, `jobs.list`, `jobs.get`, `jobs.start`, `jobs.pause`, `jobs.resume`, `jobs.cancel`, `jobs.retry`, `jobs.subscribe`, `jobs.unsubscribe`, `jobs.moveQueue`, `queues.list`, `queues.create`, `queues.update`, `queues.delete`, `queues.control`, `settings.get`, `settings.update`, `schedule.set`, `torrents.selectFiles`, `media.probe`, `media.add`. Finalize method contracts before implementation in `docs/protocols/ipc-v1.md`. MCP tool schemas are separately versioned and map to an allowlist of these core operations.
 
 **Requests** have JSON-RPC `id`, `method`, and `params`; requests requiring changes also carry a stable `idempotency_key` and optionally `expected_revision`. **Responses** contain `result` or structured `error`. **Progress/events** are JSON-RPC notifications from server to client with no `id`; clients must not expect a reply to notifications. A GUI should subscribe on a long-lived duplex connection, not poll every job at high frequency.
 
@@ -392,6 +424,9 @@ Targets are release gates to measure, not established benchmark claims.
 | Integration | Local controllable HTTP/HTTPS/FTP/BitTorrent fixtures with artificial disconnects, 429/503, redirects, wrong lengths, TLS failures and disk faults. |
 | GUI | Independent SwiftUI, WinUI 3, GTK 4 smoke tests: focus/accessibility, HiDPI, theme, native dialogs, lifecycle, status area, reconnect, background handoff. |
 | IPC | JSON-RPC 2.0 schema/golden fixtures shared by Zig/Swift/C#/C, framing/parser fuzz tests, peer permission checks, multi-client subscriptions, reconnect/version negotiation, queue backpressure, idempotent mutation retries. |
+| Named queues | Migration of old jobs to `main`, creation/rename/deletion, moving jobs, independent schedules and limits, fairness under the global cap, restart persistence, DST/sleep behavior. |
+| MCP | Disabled-by-default listener, port conflicts and restart, loopback-only binding, authentication, read-only/mutation scopes, host/origin validation, request bounds, concurrent clients, and interoperability with two MCP clients. |
+| Media | Extractor fixtures for supported pages and playlists, format choice, expiring URL refresh, stream merging, partial recovery, unsupported/DRM cases, and site-change detection. |
 | Browser | Manifest permission checks, native host registration, service-worker lifecycle, Safari bridge, browser update compatibility, multi-profile and uninstall. |
 | Packaging | Clean installation, signing/notarization where applicable, upgrade/migration, uninstall without deleting downloads, per-architecture native execution. |
 
@@ -413,10 +448,11 @@ CI should be stratified: `format + unit` on every PR; cross-platform Zig core bu
 | **1 — Core MVP** | Headless Zig daemon and RPC CLI; HTTP/HTTPS single-stream; queue/state DB; safe resume; file writes; unit/integration suite | Reliable headless transfers and restart persistence; GUI not required. |
 | **2 — Acceleration** | Dynamic byte ranges, per-host fairness, retry/backoff, segment journal, limiter, IPC progress subscriptions | Adversarial validators pass, no overlapping writes; multiple UI/CLI clients can't stall core. |
 | **3 — Native desktop UIs** | Independently built SwiftUI/macOS, WinUI 3/Windows, GTK 4/Linux download list, details, segment timeline, preferences, accessibility | Each GUI passes native HIG, IPC, install, restart and platform smoke tests on declared architectures. |
-| **4 — Protocols & automation** | FTP/FTPS, BitTorrent, scheduler, bandwidth profiles, platform secret-store adapters | Cross-protocol integrity, time-window scheduling and secrets tests pass without GUI open. |
+| **4 — Protocols & automation** | FTP/FTPS, BitTorrent, named queues with independent schedules and concurrency, bandwidth profiles, platform secret-store adapters | Cross-protocol integrity, queue fairness, time-window scheduling and secrets tests pass without GUI open. |
 | **5 — Integrations** | Chromium/Firefox bridges, Safari bridge, OS startup/tray/notifications, IPC security audit | Native host only exposes allowed browser actions; each OS/browser can safely hand off and recover after restart. |
 | **6 — Multiarch and distribution** | macOS universal builds/notarization, Windows x86/x64/ARM64 WinUI packages, Linux multiarch GTK packages, migration/upgrade tests | Every advertised combination passes on real hardware or fully validated equivalent; no Capy-related target gate. |
 | **7 — Stable 1.0** | Security, IPC fuzz, HIG/accessibility, performance, docs, versioned protocol compatibility | Source/installer/checksum/license notices published; no unresolved P0 issues. |
+| **8 — Agent and media options** | Opt-in authenticated MCP server; built-in Zig media-site extraction, format review, and playlist downloads | MCP is off until enabled and passes client/security checks; supported media sites pass format, playlist, expiry, and merge tests. |
 
 Phases can overlap, but **do not label 1.0 cross-platform until phase-6 release gates pass**. Early previews must list verified platforms and CPU architectures. Update `Agent.md` and the architecture ADR before a coding agent resumes GUI changes.
 
@@ -439,6 +475,8 @@ Phases can overlap, but **do not label 1.0 cross-platform until phase-6 release 
 | Background/tray behavior differs across Linux desktops | Explicit desktop matrix; recoverable daemon from launcher/notification/CLI. |
 | Architecture-specific large-file and ABI problems | Checked 64-bit offsets, file I/O and CLI/GUI/IPC tests on 32-bit Windows/Linux. |
 | Licensing and third-party notices | Review .NET/Windows App SDK redistribution and LGPL libraries, SBOM, open-source notices. |
+| MCP loopback listener broadens the attack surface | Keep it disabled by default, require a per-user credential and scoped tools, validate host/origin, bind only to loopback, and audit mutations. |
+| Media sites change extraction formats and access rules | Isolate site extractors, maintain fixtures and a supported-site matrix, update promptly, and report unsupported/DRM content without attempting bypass. |
 
 ## 10. Definition of release readiness
 
@@ -460,6 +498,7 @@ These are normative background/verification links, not copied source code:
 - [GTK 4 API documentation](https://docs.gtk.org/gtk4/)
 - [Linux `unix(7)` and `SO_PEERCRED`](https://man7.org/linux/man-pages/man7/unix.7.html)
 - [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification)
+- [Model Context Protocol specification](https://modelcontextprotocol.io/specification/2025-11-25) — pin and test a supported revision before implementing the optional MCP server
 - [IDM dynamic segmentation explanation](https://internet.internetdownloadmanager.com/support/segmentation.html) — behavioral inspiration only
 - [RFC 9110 — HTTP Semantics and Range](https://www.rfc-editor.org/rfc/rfc9110.html)
 - [BitTorrent BEP 3](https://www.bittorrent.org/beps/bep_0003.html) and [BEP 9 metadata exchange](https://www.bittorrent.org/beps/bep_0009.html)
