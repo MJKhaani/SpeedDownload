@@ -92,9 +92,9 @@ Queued magnet and local `.torrent` workers check pause, cancel, and queue
 schedule state between tracker and peer attempts, during metadata retrieval,
 and while waiting for payload peer messages. A blocked socket read can still
 take up to its 15-second timeout before the worker observes a new request.
-The desktop torrent metadata preparation path can fall back to read-only DHT peer discovery when trackers and explicit peers cannot supply metadata. A magnet does not establish the private flag, so this can disclose its info hash to DHT nodes before metadata is known. Verified private magnet results are rejected before payload queueing; open the original `.torrent` file for private torrents. The CLI metadata path retains its tracker/explicit-peer behavior. After metainfo is hash-verified, a public torrent may query up to eight DHT nodes for payload peers; private torrents never enter this path. This bounded lookup has no listener, routing table, or announce, and it does not seed.
+The desktop torrent metadata preparation path can fall back to read-only DHT peer discovery when trackers and explicit peers cannot supply metadata. A magnet does not establish the private flag, so this can disclose its info hash to DHT nodes before metadata is known. Verified private magnet results are rejected before payload queueing; open the original `.torrent` file for private torrents. The CLI metadata path retains its tracker/explicit-peer behavior. After metainfo is hash-verified, a public torrent may query up to 32 DHT nodes for payload peers; private torrents never enter this path. This bounded lookup has no listener, routing table, or announce, and it does not seed.
 The `private=1` flag is read from the hashed `info` dictionary. Private local `.torrent` transfers use peers from one successful tracker at a time and never use DHT. A private magnet is rejected after metadata inspection because this client cannot guarantee that its metadata peer came from the private tracker; use the local `.torrent` source for that case. This follows the tracker-only peer rule in [BEP 27](https://www.bittorrent.org/beps/bep_0027.html).
-The lookup follows the compact contact and `get_peers` formats in [BEP 5](https://www.bittorrent.org/beps/bep_0005.html) and accepts IPv6 contacts from [BEP 32](https://www.bittorrent.org/beps/bep_0032.html). It queries bootstrap contacts first, then prefers unqueried contacts with known node IDs by XOR distance to the info hash within its 48-contact/8-query bounds. A valid response records the queried contact's node ID; a discovered contact can also fill in an unknown ID for an existing address. If the contact set fills, a newly learned contact replaces the most distant unqueried contact only when it is closer to the target. Queried contacts and bootstrap contacts with unknown IDs remain available. It rejects private, loopback, link-local, and multicast addresses learned from DHT responses. This source has only compile validation so far; interoperability and UDP behavior need a native swarm check.
+The lookup follows the compact contact and `get_peers` formats in [BEP 5](https://www.bittorrent.org/beps/bep_0005.html) and accepts IPv6 contacts from [BEP 32](https://www.bittorrent.org/beps/bep_0032.html). It queries bootstrap contacts first, then prefers unqueried contacts with known node IDs by XOR distance to the info hash within its 96-contact/32-query bounds. A valid response records the queried contact's node ID; a discovered contact can also fill in an unknown ID for an existing address. If the contact set fills, a newly learned contact replaces the most distant unqueried contact only when it is closer to the target. Queried contacts and bootstrap contacts with unknown IDs remain available. It rejects private, loopback, link-local, and multicast addresses learned from DHT responses. This source has only compile validation so far; interoperability and UDP behavior need a native swarm check.
 
 The transfer path accepts a v1 magnet URI through the
 macOS Add Download dialog or `jobs.add` IPC. The CLI can also use
@@ -165,8 +165,9 @@ v1 info hash from the exact encoded `info` slice in the input file, following
 File names must be valid UTF-8 and safe as portable path components. The
 parser rejects traversal components, separators, control characters,
 Windows device names, trailing dots or spaces, byte-identical duplicate file paths, and
-symlink attributes. It rejects v2/hybrid metainfo until BEP 52 file trees
-and piece layers are implemented.
+symlink attributes. It accepts v1-compatible hybrid metainfo using only its validated v1 file map
+and SHA-1 piece hashes. V2-only metainfo is rejected; v2 file trees and Merkle
+piece layers are not used for downloading.
 
 The read-only inspector does not access the destination filesystem and cannot
 report its case or Unicode normalization behavior. The transfer publisher
@@ -180,3 +181,37 @@ Every page must retain the same info hash, file count, and total size; offsets
 must exactly follow the files already received. Queueing stays disabled until
 all files arrive with unique paths and valid sizes. Tracker edits are checked
 against the reviewed info hash and file count before submitting the job.
+
+## Hybrid magnets and discovery deadlines
+
+Magnets carrying both `btih` and `btmh` can use the v1 swarm when their metadata
+contains a complete, valid v1 `pieces` and `length`/`files` projection. The v1
+info hash is still checked against the exact raw info dictionary. The presence
+of `meta version: 2` alone no longer rejects such hybrids. This is v1 fallback,
+not v2 transfer support, as permitted by the
+[BEP 52 upgrade path](https://www.bittorrent.org/beps/bep_0052.html#upgrade-path).
+
+Each tracker discovery operation has a 15-second overall deadline, including
+connection, TLS, headers, and response body. Pause/cancel/schedule checks run
+between 250 ms waits; canceled work is joined before its session or allocator
+can leave scope. Public transfers stop collecting once a tracker returns peers;
+when trackers yield none, the existing bounded DHT fallback can run. Network or
+tracker outages can still prevent discovery. The macOS client displays
+**Finding peers…** when the engine reports zero torrent peers. Debug logging
+records the underlying retry error without recording URLs or peer addresses.
+
+Public torrent payloads also try DHT after exhausting unusable tracker peers,
+rather than waiting for the next tracker announce simply because its response
+was nonempty. The read-only DHT lookup keeps at most 96 contacts and issues at
+most 32 one-second queries, checking pause/cancel between queries. Private
+torrents never use this fallback. Tracker announce intervals remain respected.
+
+### Recorded live diagnostic (2026-10-24)
+
+The desktop engine retrieved and verified the AerynOS hybrid magnet with v1
+info hash `4d2ecd5a735023482beb9c620eee1c800799efd0`, returning its ISO name and
+one file through `torrents.prepare`. The existing Ubuntu job retained 1 MiB of
+verified data across the engine reload. Its tracker requests and direct DHT
+bootstrap probes timed out intermittently; one tracker returned a peer that
+closed its connection. Continued Ubuntu payload progress was not established
+by this diagnostic. These observations do not establish full swarm acceptance.

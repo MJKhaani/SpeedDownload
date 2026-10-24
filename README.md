@@ -33,7 +33,7 @@ so closing a client window does not stop them.
 | Browser extensions | Experimental Chrome and Firefox extensions for the macOS client. |
 
 FTP/FTPS interoperability and BitTorrent transfers against live swarms still need
-validation. BitTorrent seeding and v2 torrents are not implemented. Browser
+validation. BitTorrent seeding and v2-only transfers are not implemented; compatible hybrid torrents use the v1 transfer path. Browser
 extensions are development builds; live-browser validation and store distribution
 remain outstanding. See the [support matrix](docs/support-matrix.md) for detailed
 platform and feature limitations.

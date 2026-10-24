@@ -54,6 +54,13 @@ struct TorrentAddView: View {
         _priority = State(initialValue: initialPriority)
     }
 
+    private var sourceName: String {
+        if let components = URLComponents(string: source),
+           let name = components.queryItems?.first(where: { $0.name == "dn" })?.value, !name.isEmpty { return name }
+        if let url = URL(string: source), !url.lastPathComponent.isEmpty { return url.lastPathComponent }
+        return isLoading ? "Retrieving torrent metadata…" : "Torrent metadata unavailable"
+    }
+
     private var trackerURLs: [String] {
         var seen = Set<String>()
         return trackers.components(separatedBy: .newlines)
@@ -67,7 +74,7 @@ struct TorrentAddView: View {
                 Image(systemName: "point.3.connected.trianglepath.dotted").font(.title).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Add Torrent").font(.title2.weight(.semibold))
-                    Text(preview?.suggestedName ?? "Retrieving torrent metadata…")
+                    Text(preview?.suggestedName ?? sourceName)
                         .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
                 Spacer()
@@ -213,6 +220,7 @@ struct TorrentAddView: View {
             }
             selected = Set(files.map(\.path))
             preview = result
+            tab = "files"
         } catch {
             guard !Task.isCancelled else { return }
             preview = nil

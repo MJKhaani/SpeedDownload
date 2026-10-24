@@ -455,7 +455,7 @@ struct DashboardView: View {
 
     private func stateTitle(for job: DownloadJob) -> String {
         switch job.state {
-        case "downloading": job.receivedBytes == nil ? "Connecting" : "Downloading"
+        case "downloading": job.torrentPeerCount == 0 ? "Finding peers…" : (job.receivedBytes == nil ? "Connecting" : "Downloading")
         case "queued": "Waiting"
         case "retry_wait": "Waiting to retry"
         default: job.state.capitalized

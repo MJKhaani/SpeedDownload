@@ -390,7 +390,14 @@ pub fn dispatchMethod(
         defer policy.deinit(jobs.allocator);
         const result = @import("../protocols/torrent/prepare.zig").prepare(a, engine.io, jobs.directory_path, url, trackers, offset, .{ .mode = policy.mode, .url = policy.url, .authentication_required = policy.authentication_required }, &engine.http_connections) catch |err| {
             jobs.logAction("torrents.prepare", @errorName(err));
-            const message = try std.fmt.allocPrint(a, "Could not prepare torrent: {s}. Check the source or trackers and try again.", .{@errorName(err)});
+            const message = if (err == error.UnsupportedTorrentV2)
+                "This torrent contains only BitTorrent v2 metadata. Use a v1 or v1-compatible hybrid torrent; v2-only downloads are not supported yet."
+            else if (err == error.UnsupportedTorrentVersion)
+                "This torrent uses an unsupported metadata version."
+            else if (err == error.MetadataTimeout or err == error.Timeout)
+                "Torrent discovery timed out. Check your network or trackers and retry."
+            else
+                try std.fmt.allocPrint(a, "Could not prepare torrent: {s}. Check the source or trackers and try again.", .{@errorName(err)});
             return dispatchError(allocator, request_id, -32021, message);
         };
         jobs.logAction("torrents.prepare", "completed");
@@ -660,6 +667,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             return;
         }
         if (retryableDownloadError(err)) {
+            engine.jobs.logAction("transfer.retry", @errorName(err));
             if (engine.jobs.scheduleTransientRetry(task.id, @errorName(err), retry_hint.load(.acquire), if (err == error.ServerBusy or err == error.ParallelRangeRejected) task.connections else null) catch false) {
                 engine.jobs.logAction("transfer", "retry-scheduled");
                 return;

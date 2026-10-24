@@ -156,8 +156,8 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         try checkpoint(control, control_context);
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
-        const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session, &counts) catch |err| {
-            if (err == error.OutOfMemory) return err;
+        const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session, &counts, control, control_context) catch |err| {
+            if (isCheckpointError(err) or err == error.OutOfMemory) return err;
             if (counts.retry_delay_seconds != null) if (stats) |report| if (stats_context) |ctx| report(ctx, 0, counts);
             if (err == error.TrackerRetryRequested or last_error != error.TrackerRetryRequested) last_error = err;
             continue;
@@ -250,8 +250,8 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
         if (peers.items.len == max_peers) break;
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
-        const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session, &counts) catch |err| {
-            if (err == error.OutOfMemory) return err;
+        const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session, &counts, control, control_context) catch |err| {
+            if (isCheckpointError(err) or err == error.OutOfMemory) return err;
             if (counts.retry_delay_seconds != null) if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
             if (err == error.TrackerRetryRequested or last_tracker_error == null or last_tracker_error.? != error.TrackerRetryRequested) last_tracker_error = err;
             continue;
@@ -272,7 +272,7 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
         }
         if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
         // BEP 27 keeps a private transfer with one successful tracker.
-        if (link.is_private) break;
+        if (link.is_private or peers.items.len > 0) break;
     }
     if (link.allow_dht and !session.dht_attempted and peers.items.len == 0) {
         try checkpoint(control, control_context);
@@ -304,7 +304,34 @@ fn containsPeer(peers: []const []u8, candidate: []const u8) bool {
     return false;
 }
 
-fn discoverTrackerPeers(allocator: Allocator, io: Io, tracker: []const u8, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64, session: *Session, counts: *TrackerCounts) ![][]u8 {
+fn discoverTrackerPeers(allocator: Allocator, io: Io, tracker: []const u8, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64, session: *Session, counts: *TrackerCounts, control: ?CheckpointCallback, context: ?*anyopaque) ![][]u8 {
+    var complete: Io.Event = .unset;
+    var future = try Io.concurrent(io, discoverTrackerTask, .{ allocator, io, tracker, uri, info_hash, downloaded, left, session, counts, &complete });
+    var joined = false;
+    defer if (!joined) {
+        // A result may win the race with cancellation. Release it only after
+        // joining, before the caller's session/counts/arena can leave scope.
+        if (future.cancel(io)) |peers| {
+            for (peers) |peer| allocator.free(peer);
+            allocator.free(peers);
+        } else |_| {}
+    };
+    const expires = Io.Clock.now(.awake, io).nanoseconds + 15 * std.time.ns_per_s;
+    while (true) {
+        try checkpoint(control, context);
+        complete.waitTimeout(io, .{ .duration = .{ .raw = .fromMilliseconds(250), .clock = .awake } }) catch |err| {
+            if (err != error.Timeout) return err;
+            if (Io.Clock.now(.awake, io).nanoseconds >= expires) return error.Timeout;
+            continue;
+        };
+        joined = true;
+        return future.await(io);
+    }
+}
+
+fn discoverTrackerTask(allocator: Allocator, io: Io, tracker: []const u8, uri: std.Uri, info_hash: [20]u8, downloaded: u64, left: u64, session: *Session, counts: *TrackerCounts, complete: *Io.Event) anyerror![][]u8 {
+    defer complete.set(io);
+
     if (std.ascii.eqlIgnoreCase(uri.scheme, "udp")) return discoverUdpPeers(allocator, io, tracker, uri, info_hash, downloaded, left, session, counts);
     if (std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https"))
         return discoverHttpPeers(allocator, io, tracker, info_hash, downloaded, left, session, counts);
@@ -460,11 +487,10 @@ fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_has
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
     var request = try client.request(.GET, uri, .{ .headers = .{ .accept_encoding = .{ .override = "identity" } } });
-    var response_started = false;
     var complete = false;
     defer {
-        if (response_started and !complete) {
-            request.connection.?.closing = true;
+        if (!complete) {
+            if (request.connection) |connection| connection.closing = true;
             request.reader.state = .ready;
         }
         request.deinit();
@@ -472,7 +498,6 @@ fn discoverHttpPeers(allocator: Allocator, io: Io, tracker: []const u8, info_has
     try request.sendBodiless();
     var head_buffer: [8192]u8 = undefined;
     var response = try request.receiveHead(&head_buffer);
-    response_started = true;
     if (response.head.status != .ok or response.head.content_encoding != .identity) return error.TrackerRejected;
     var body_buffer: [8192]u8 = undefined;
     var body = response.reader(&body_buffer);

@@ -5,8 +5,8 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const control_contract = @import("control.zig");
 
-const max_nodes = 48;
-const max_queries = 8;
+const max_nodes = 96;
+const max_queries = 32;
 const max_peers = 64;
 const packet_limit = 2048;
 

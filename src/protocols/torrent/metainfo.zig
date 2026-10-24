@@ -202,6 +202,7 @@ fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, 
     var piece_length: ?u64 = null;
     var pieces: ?[]const u8 = null;
     var is_private = false;
+    var meta_version: ?i64 = null;
     while (cursor.position < cursor.bytes.len and cursor.bytes[cursor.position] != 'e') {
         const key = try cursor.string();
         try ordered(previous, key);
@@ -227,10 +228,14 @@ fn parseInfo(allocator: Allocator, cursor: *Cursor) !struct { name: []const u8, 
             if (value != 0 and value != 1) return error.InvalidTorrentPrivateFlag;
             is_private = value == 1;
         } else if (std.mem.eql(u8, key, "meta version")) {
-            return error.UnsupportedTorrentV2;
+            meta_version = try cursor.integer();
+            if (meta_version.? != 2) return error.UnsupportedTorrentVersion;
         } else try cursor.skip(1);
     }
     try cursor.take('e');
+    // BEP 52 hybrids retain a complete BEP 3 projection. Consume only that
+    // projection and verify its SHA-1 pieces; do not join or advertise v2.
+    if (meta_version != null and (pieces == null or (file_length == null and files == null))) return error.UnsupportedTorrentV2;
     if (name == null or piece_length == null or pieces == null or (file_length == null and files == null) or
         (file_length != null and files != null)) return error.InvalidTorrentInfo;
     return .{

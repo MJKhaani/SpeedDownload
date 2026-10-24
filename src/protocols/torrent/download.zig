@@ -287,6 +287,32 @@ fn transferValidated(
                 if (remaining == 0) break;
             }
         }
+        if (remaining != 0 and link.allow_dht and !link.is_private and !session.dht_attempted) {
+            // A nonempty tracker response does not prove any returned peer is
+            // reachable. Try public DHT before entering tracker retry wait.
+            try checkControl(control, control_context);
+            session.dht_attempted = true;
+            const discovered = @import("dht.zig").discover(allocator, io, info.info_hash, control, control_context) catch |err| blk: {
+                if (!canTryAnotherPeer(err) and err != error.DhtBootstrapUnavailable) return err;
+                break :blk null;
+            };
+            if (discovered) |peers| {
+                defer {
+                    for (peers) |peer| allocator.free(peer);
+                    allocator.free(peers);
+                }
+                if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.len), .{});
+                for (peers) |peer| {
+                    try checkControl(control, control_context);
+                    transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
+                        if (!canTryAnotherPeer(err)) return err;
+                        last_error = err;
+                        continue;
+                    };
+                    if (remaining == 0) break;
+                }
+            }
+        }
         if (remaining != 0) return last_error;
     }
     try file.sync(io);
