@@ -74,8 +74,10 @@ versioned codec in `src/protocols/http/segment_journal.zig` records
 representation identity, interval ownership, and cursors, and rejects gaps,
 overlaps, invalid validators, and malformed state. `SDRANGE2` adds a SHA-256
 checksum over the journal metadata, so damaged cursors cannot be trusted on
-restart. Older `SDRANGE1` partials remain on disk but cannot resume safely;
-remove the partial and add the download again. This checksum detects accidental
+restart. Older `SDRANGE1` partials can be upgraded after their map passes
+structural validation and a fresh range probe confirms the same strong ETag,
+target URL, total size, and partial file length. The upgrade does not recover
+bytes if the server no longer serves that representation. This checksum detects accidental
 metadata damage; it does not authenticate a malicious local edit. The driver syncs the part
 file before advancing a segment cursor and atomically replaces the journal.
 Checkpoints occur during segments and at pause, schedule stop, or transfer

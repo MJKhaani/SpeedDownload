@@ -205,6 +205,11 @@ struct AddJobResult: Decodable, Sendable {
     }
 }
 
+private struct ReorderJobResult: Decodable, Sendable {
+    let jobID: String
+    enum CodingKeys: String, CodingKey { case jobID = "job_id" }
+}
+
 private struct SetJobBandwidthResult: Decodable, Sendable {
     let jobID: String
     let revision: String
@@ -470,6 +475,19 @@ struct UnixEngineClient: Sendable {
         )
         guard let result = envelope.result else { throw ClientError.invalidResponse }
         return result
+    }
+
+    func reorderJob(jobID: String, expectedRevision: String, position: Int) throws {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        let envelope: RPCEnvelope<ReorderJobResult> = try request(
+            fd: fd,
+            id: "jobs-reorder-\(UUID().uuidString)",
+            method: "jobs.reorder",
+            params: ["job_id": jobID, "expected_revision": expectedRevision, "position": position]
+        )
+        guard envelope.result?.jobID == jobID else { throw ClientError.invalidResponse }
     }
 
     func setJobBandwidthLimit(jobID: String, expectedRevision: String, bytesPerSecond: UInt64) throws {

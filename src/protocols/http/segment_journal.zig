@@ -21,6 +21,7 @@ pub const Snapshot = struct {
     target_hash: [32]u8,
     etag: []const u8,
     map: ranges.ExtentMap,
+    legacy: bool = false,
 };
 
 const magic = "SDRANGE2";
@@ -78,11 +79,15 @@ pub fn encode(allocator: std.mem.Allocator, snapshot: Snapshot) ![]u8 {
 /// Decodes and fully validates a snapshot. The returned ETag is owned by the
 /// caller and must be freed with the same allocator.
 pub fn decode(allocator: std.mem.Allocator, input: []const u8) !Snapshot {
-    if (input.len >= legacy_magic.len and std.mem.eql(u8, input[0..legacy_magic.len], legacy_magic)) return Error.JournalUpgradeRequired;
-    if (input.len < fixed_size + checksum_size or !std.mem.eql(u8, input[0..magic.len], magic)) return Error.InvalidJournal;
-    var actual_checksum: [checksum_size]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(input[0 .. input.len - checksum_size], &actual_checksum, .{});
-    if (!std.mem.eql(u8, &actual_checksum, input[input.len - checksum_size ..])) return Error.InvalidJournal;
+    if (input.len < fixed_size) return Error.InvalidJournal;
+    const legacy = std.mem.eql(u8, input[0..magic.len], legacy_magic);
+    if (!legacy and !std.mem.eql(u8, input[0..magic.len], magic)) return Error.InvalidJournal;
+    if (!legacy) {
+        if (input.len < fixed_size + checksum_size) return Error.InvalidJournal;
+        var actual_checksum: [checksum_size]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(input[0 .. input.len - checksum_size], &actual_checksum, .{});
+        if (!std.mem.eql(u8, &actual_checksum, input[input.len - checksum_size ..])) return Error.InvalidJournal;
+    }
     var cursor = magic.len;
     var source_hash: [32]u8 = undefined;
     @memcpy(&source_hash, input[cursor..][0..32]);
@@ -104,7 +109,7 @@ pub fn decode(allocator: std.mem.Allocator, input: []const u8) !Snapshot {
     }
     const entry_bytes = std.math.mul(usize, count, segment_size) catch return Error.InvalidJournal;
     const data_length = std.math.add(usize, fixed_size + etag_length, entry_bytes) catch return Error.InvalidJournal;
-    const expected_length = std.math.add(usize, data_length, checksum_size) catch return Error.InvalidJournal;
+    const expected_length = std.math.add(usize, data_length, if (legacy) 0 else checksum_size) catch return Error.InvalidJournal;
     if (input.len != expected_length) return Error.InvalidJournal;
 
     const etag = try allocator.dupe(u8, input[cursor..][0..etag_length]);
@@ -125,7 +130,7 @@ pub fn decode(allocator: std.mem.Allocator, input: []const u8) !Snapshot {
         if (state > 1) return Error.InvalidJournal;
         segment.state = if (state == 1) .complete else .active;
     }
-    const snapshot = Snapshot{ .source_hash = source_hash, .target_hash = target_hash, .etag = etag, .map = map };
+    const snapshot = Snapshot{ .source_hash = source_hash, .target_hash = target_hash, .etag = etag, .map = map, .legacy = legacy };
     validate(snapshot) catch return Error.InvalidJournal;
     return snapshot;
 }

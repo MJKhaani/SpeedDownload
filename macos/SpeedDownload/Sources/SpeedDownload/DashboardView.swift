@@ -28,6 +28,7 @@ struct DashboardView: View {
     @State private var pendingDownloadURLs: [PendingDownload] = []
     @State private var handledRequests: [String] = []
     @State private var showingTaskInspector = false
+    @State private var hoveredJobID: String?
     @State private var searchText = ""
     @AppStorage("transferSortOrder") private var sortOrderRaw = "queue"
 
@@ -59,7 +60,6 @@ struct DashboardView: View {
             .listStyle(.sidebar)
             .navigationTitle("Speed Download")
             .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
-            .safeAreaInset(edge: .bottom) { engineBadge.padding(16) }
         } detail: {
             VStack(spacing: 0) {
                 HStack {
@@ -502,6 +502,15 @@ struct DashboardView: View {
                 }
             }
             .frame(width: 174)
+            if hoveredJobID == job.jobID && sortOrderRaw == SortOrder.queue.rawValue {
+                VStack(spacing: 0) {
+                    queueMoveButton(job, direction: -1, symbol: "chevron.up", title: "Move up in queue")
+                    queueMoveButton(job, direction: 1, symbol: "chevron.down", title: "Move down in queue")
+                }
+                .frame(width: 20)
+            } else {
+                Color.clear.frame(width: 20, height: 24)
+            }
             if let control = rowControl(for: job) {
                 Button {
                     Task { await engine.controlJob(job, action: control.action) }
@@ -531,6 +540,29 @@ struct DashboardView: View {
         }
         .frame(minHeight: 48)
         .padding(.vertical, 3)
+        .onHover { hoveredJobID = $0 ? job.jobID : (hoveredJobID == job.jobID ? nil : hoveredJobID) }
+    }
+
+    private func queueMoveButton(_ job: DownloadJob, direction: Int, symbol: String, title: String) -> some View {
+        Button {
+            guard let position = queueMovePosition(for: job, direction: direction) else { return }
+            Task { await engine.reorderJob(job, position: position) }
+        } label: {
+            Image(systemName: symbol).font(.system(size: 9, weight: .semibold)).frame(width: 18, height: 13)
+        }
+        .buttonStyle(.borderless)
+        .disabled(engine.isSubmitting || queueMovePosition(for: job, direction: direction) == nil)
+        .help(title)
+        .accessibilityLabel("\(title): \(jobTitle(for: job))")
+    }
+
+    private func queueMovePosition(for job: DownloadJob, direction: Int) -> Int? {
+        let waiting: Set<String> = ["queued", "scheduled", "paused", "retry_wait"]
+        guard waiting.contains(job.state),
+              let current = engine.jobs.firstIndex(where: { $0.jobID == job.jobID }) else { return nil }
+        let indices = engine.jobs.indices.filter { waiting.contains(engine.jobs[$0].state) }
+        guard let offset = indices.firstIndex(of: current), indices.indices.contains(offset + direction) else { return nil }
+        return indices[offset + direction]
     }
 
     private func rowControl(for job: DownloadJob) -> (title: String, symbol: String, action: String)? {
@@ -806,12 +838,6 @@ struct DashboardView: View {
             }
             .disabled(engine.isSubmitting)
         }
-    }
-
-    private var engineBadge: some View {
-        Label(connectionStatus, systemImage: isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
-            .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-            .help(connectionError ?? connectionStatus)
     }
 
     private var connectionStatus: String {

@@ -113,7 +113,9 @@ pub fn downloadIfSupported(
     var map = if (prior) |snapshot| snapshot.map else try ranges.ExtentMap.init(probe.total);
     const connection_limit = @min(max_workers, @as(usize, @max(requested_connections, 1)));
     const target_segments = @min(ranges.max_segments, connection_limit * 2);
-    var map_changed = prior == null;
+    // Rewrite legacy metadata only after the live range probe, validator,
+    // target, source, and partial length have all been checked.
+    var map_changed = prior == null or (prior != null and prior.?.legacy);
     while (map.len < target_segments) {
         _ = map.splitLargest(minimum_segment_size) catch break;
         map_changed = true;

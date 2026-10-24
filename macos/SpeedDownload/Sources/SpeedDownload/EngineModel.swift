@@ -489,6 +489,22 @@ final class EngineModel: ObservableObject {
         }
     }
 
+    func reorderJob(_ job: DownloadJob, position: Int) async {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+        actionError = nil
+        defer { isSubmitting = false }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try UnixEngineClient().reorderJob(jobID: job.jobID, expectedRevision: job.revision, position: position)
+            }.value
+            await refreshJobs()
+        } catch {
+            actionError = error.localizedDescription
+            await refreshJobs()
+        }
+    }
+
     func setJobSpeedLimit(_ job: DownloadJob, bytesPerSecond: UInt64) async {
         guard !isSubmitting else { return }
         isSubmitting = true
