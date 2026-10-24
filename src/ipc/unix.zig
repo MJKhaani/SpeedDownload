@@ -497,6 +497,35 @@ pub fn dispatchMethod(
         if (control.action == .retry) scheduleQueued(engine);
         return @as(?[]u8, response);
     }
+    if (std.mem.eql(u8, method, "jobs.resume-queue")) {
+        const id = request_id orelse return null;
+        if (params) |value| {
+            if (value != .object or value.object.count() != 0) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        }
+        const response = jobs.resumeQueueJson(id) catch return dispatchError(allocator, request_id, -32020, "Could not resume the queue");
+        scheduleQueued(engine);
+        return response;
+    }
+    if (std.mem.eql(u8, method, "jobs.replace-source")) {
+        const id = request_id orelse return null;
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const job_id = stringField(value.object, "job_id") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const url = stringField(value.object, "url") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const revision_text = stringField(value.object, "expected_revision") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const revision = std.fmt.parseInt(u64, revision_text, 10) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const restart = value.object.get("restart") orelse return dispatchError(allocator, request_id, -32602, "Confirm restart before replacing a link");
+        if (restart != .bool or !restart.bool) return dispatchError(allocator, request_id, -32602, "Confirm restart before replacing a link");
+        const response = jobs.replaceSourceJson(id, job_id, revision, url) catch |err| {
+            if (err == error.JobNotFound) return dispatchError(allocator, request_id, -32012, "Download job not found");
+            if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job changed; review its current state before replacing the link");
+            if (err == error.InvalidJobControl) return dispatchError(allocator, request_id, -32013, "Pause the HTTP download before replacing its link");
+            if (err == error.DestinationReserved or err == error.DestinationExists) return dispatchError(allocator, request_id, -32020, "The destination is already present or belongs to another download");
+            return dispatchError(allocator, request_id, -32020, "Could not replace the download link");
+        };
+        scheduleQueued(engine);
+        return response;
+    }
     if (std.mem.eql(u8, method, "jobs.set-bandwidth")) {
         const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
         if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
@@ -556,7 +585,7 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.replace-source", "jobs.resume-queue", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";
@@ -1087,6 +1116,11 @@ fn parseAddInput(allocator: std.mem.Allocator, params: std.json.Value) !job_stor
     const url = stringField(object, "url") orelse return error.InvalidParams;
     const destination = stringField(object, "destination") orelse return error.InvalidParams;
     const key = stringField(object, "idempotency_key") orelse return error.InvalidParams;
+    const reference_url = if (object.get("reference_url")) |value| switch (value) {
+        .null => null,
+        .string => |text| text,
+        else => return error.InvalidParams,
+    } else null;
     const name_value = object.get("name");
     const name = if (name_value) |value| switch (value) {
         .string => |text| text,
@@ -1124,7 +1158,7 @@ fn parseAddInput(allocator: std.mem.Allocator, params: std.json.Value) !job_stor
         }
         break :blk paths;
     } else null;
-    return .{ .url = url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected, .torrent_info_hash = torrent_info_hash };
+    return .{ .url = url, .reference_url = reference_url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected, .torrent_info_hash = torrent_info_hash };
 }
 
 fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {

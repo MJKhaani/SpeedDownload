@@ -5,6 +5,7 @@ struct BatchDownloadView: View {
     @EnvironmentObject private var engine: EngineModel
     @Environment(\.dismiss) private var dismiss
     let sources: [String]
+    let referenceURL: String?
     let reviewTorrent: (String, String, Int) -> Void
     @State private var selected: Set<String> = []
     @State private var destination = "\(NSHomeDirectory())/Downloads"
@@ -135,7 +136,7 @@ struct BatchDownloadView: View {
                 selected.remove(source)
                 continue
             }
-            let success = await engine.addJob(url: source, name: "", destination: destination, priority: priority)
+            let success = await engine.addJob(url: source, name: "", destination: destination, priority: priority, referenceURL: referenceURL)
             if success {
                 completed.insert(source)
                 selected.remove(source)

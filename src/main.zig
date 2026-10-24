@@ -318,7 +318,7 @@ fn runEngine(init: std.process.Init) !void {
         var instance_id_buffer: [36]u8 = undefined;
         const instance_id = formatUuid(&instance_id_buffer, instance_bytes);
 
-        const features = [_][]const u8{ "jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.change-stream-v1", "jobs.change-deltas-v1", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules", "torrents.magnet-v1-single-file", "torrents.local-file-v1-single-file", "torrents.file-selection-v1", "torrents.prepare-v1" };
+        const features = [_][]const u8{ "jobs.probe", "jobs.worker-progress", "jobs.probe-filename-decoding", "jobs.change-wait", "jobs.change-stream-v1", "jobs.change-deltas-v1", "jobs.per-job-bandwidth", "settings.persisted-v2", "settings.weekly-schedules", "torrents.magnet-v1-single-file", "torrents.local-file-v1-single-file", "torrents.file-selection-v1", "torrents.prepare-v1", "jobs.reference-page-v1", "jobs.source-refresh-v1", "jobs.queue-resume-v1" };
         std.debug.print("Speed Download engine starting; IPC endpoint: {s}/speed-download/engine.sock\n", .{runtime_dir});
         try unix_ipc.serve(init.gpa, .{
             .runtime_dir = runtime_dir,

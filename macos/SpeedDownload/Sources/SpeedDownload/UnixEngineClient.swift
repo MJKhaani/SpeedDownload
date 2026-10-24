@@ -13,6 +13,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let url: String
     let name: String?
     let destination: String
+    let referenceURL: String?
     let state: String
     let revision: String
     let errorMessage: String?
@@ -35,6 +36,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case jobID = "job_id"
         case url, name, destination, state, revision
+        case referenceURL = "reference_url"
         case errorMessage = "error_message"
         case retryAttempts = "retry_attempts"
         case retryAtUnixMS = "retry_at_unix_ms"
@@ -289,7 +291,7 @@ struct UnixEngineClient: Sendable {
         "jobs.change-wait", "jobs.per-job-bandwidth", "settings.persisted-v2",
         "settings.weekly-schedules", "torrents.magnet-v1-single-file",
         "torrents.local-file-v1-single-file",
-        "torrents.prepare-v1",
+        "torrents.prepare-v1", "jobs.reference-page-v1", "jobs.source-refresh-v1", "jobs.queue-resume-v1",
     ]
     private static let requestedFeatures = requiredFeatures + [
         "jobs.change-stream-v1", "torrents.file-selection-v1",
@@ -369,7 +371,7 @@ struct UnixEngineClient: Sendable {
         }
     }
 
-    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil) throws -> AddJobResult {
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil, referenceURL: String? = nil) throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         let hello = try negotiate(fd: fd)
@@ -388,6 +390,7 @@ struct UnixEngineClient: Sendable {
         if let expectedSHA256 { params["expected_sha256"] = expectedSHA256 }
         if let selectedTorrentFiles { params["selected_torrent_files"] = selectedTorrentFiles }
         if let torrentInfoHash { params["torrent_info_hash"] = torrentInfoHash }
+        if let referenceURL { params["reference_url"] = referenceURL }
         let envelope: RPCEnvelope<AddJobResult> = try request(
             fd: fd,
             id: "jobs-add-\(UUID().uuidString)",
@@ -396,6 +399,26 @@ struct UnixEngineClient: Sendable {
         )
         guard let result = envelope.result else { throw ClientError.invalidResponse }
         return result
+    }
+
+    func resumeQueue() throws {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        struct Resumed: Decodable { let resumed: Int }
+        let envelope: RPCEnvelope<Resumed> = try request(fd: fd, id: UUID().uuidString,
+            method: "jobs.resume-queue", params: [:])
+        guard envelope.result != nil else { throw ClientError.invalidResponse }
+    }
+
+    func replaceSource(jobID: String, revision: String, url: String) throws {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        struct Replacement: Decodable { let job_id: String; let state: String }
+        let envelope: RPCEnvelope<Replacement> = try request(fd: fd, id: UUID().uuidString,
+            method: "jobs.replace-source", params: ["job_id": jobID, "expected_revision": revision, "url": url, "restart": true])
+        guard envelope.result != nil else { throw ClientError.invalidResponse }
     }
 
     func probe(url: String) throws -> DownloadProbe {

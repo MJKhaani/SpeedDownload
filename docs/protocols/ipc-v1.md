@@ -64,7 +64,7 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 | `jobs.list` | Pagination, optional exact `state`, optional text `search` | Authoritative job summaries + revision | Bounded page size; search matches names and query-redacted source URLs, case-insensitively for ASCII text; `total` and `next_offset` count filtered matches |
 | `jobs.wait` | In-memory change cursor | New cursor + changed flag, within 5 seconds | Bounded long poll; client fetches a fresh `jobs.list` snapshot when changed |
 | `jobs.get` | `job_id` | One job summary with worker progress, using the same fields as `jobs.list` | Redacted URL query/fragment; returns job-not-found for an unknown ID; available through `speed-download rpc get <job-id>` |
-| `jobs.add` | URL, optional name/priority/`expected_sha256`/`bandwidth_limit_bytes_per_second`/`selected_torrent_files`, destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); `expected_sha256` is an optional 64-character hexadecimal digest checked before completion; bandwidth zero means no per-job cap; require an absolute existing writable destination directory; validate URL and idempotent retries |
+| `jobs.add` | URL, optional `reference_url`/name/priority/`expected_sha256`/`bandwidth_limit_bytes_per_second`/`selected_torrent_files`, destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); `expected_sha256` is an optional 64-character hexadecimal digest checked before completion; bandwidth zero means no per-job cap; require an absolute existing writable destination directory; validate URL and idempotent retries |
 | `jobs.control` | `job_id`, action (`start`, `pause`, `resume`, `cancel`, `retry`), `expected_revision` | Updated job state/revision | Start fills scheduler slots; retry moves a failed job back to the queue; active pause/cancel persists `requested_control` and returns the still-downloading job; worker applies it at its next progress callback; reject stale revisions and per-host cap violations |
 | `jobs.set-bandwidth` | `job_id`, `expected_revision`, `bandwidth_limit_bytes_per_second` | Updated revision and limit | Persists a per-job cap and applies it to active workers at their next progress callback; zero removes the per-job cap while the global cap still applies |
 | `jobs.reorder` | `job_id`, zero-based `position`, `expected_revision` | Updated position and revision | Only queued, scheduled, paused, or retry-wait jobs; persist order atomically; reject out-of-range position and stale revision |
@@ -256,3 +256,32 @@ The probe-shaped response includes an engine-owned `final_url`, pinned
 using the returned source and offset. Submit that source to `jobs.add` with the
 pinned hash and optional `selected_torrent_files` only after user confirmation.
 Tracker edits produce a separate prepared source and never change the info hash.
+
+## Browser reference pages and replacement links
+
+The Unix engine advertises `jobs.reference-page-v1`, `jobs.source-refresh-v1`, and `jobs.queue-resume-v1`.
+`jobs.add` accepts an optional `reference_url`: an HTTP(S) page of at most 8192
+UTF-8 bytes, without credentials, control characters, or a fragment. It is stored
+in the private job record and returned to the local client as `reference_url`.
+It is not logged or sent as an HTTP Referer header. Reference pages can contain
+query parameters, so clients must treat them as private data.
+
+`jobs.replace-source` takes `job_id`, decimal-string `expected_revision`, a new
+HTTP(S) `url`, and explicit `restart: true` confirmation. Only inactive HTTP(S)
+jobs can be replaced. The engine removes the old partial files, clears progress
+and retry state, preserves the destination/name/checksum/priority/reference page,
+persists the replacement, and queues it under normal scheduling rules. The reply
+contains `job_id` and `state`. A stale revision or active job is rejected.
+This operation restarts the payload; it does not treat two different URLs as
+proof of the same representation. In particular, matching file names or sizes
+alone cannot authorize reuse of partial bytes.
+
+The engine acquires an exclusive, nonblocking profile file lock before loading
+or recovering persisted state. The lock remains held for the store's lifetime;
+OS process exit releases it without deleting the lock file.
+
+`jobs.resume-queue` takes empty params and returns `{ "resumed": <count> }`.
+It atomically moves paused and retry-wait jobs to queued state, preserving their
+partial progress, and wakes normal scheduling. It neither retries failed jobs
+nor bypasses global concurrency, host limits, or queue schedules. Existing queued
+jobs are also considered by that scheduler wakeup.

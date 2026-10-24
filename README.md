@@ -17,7 +17,7 @@ Speed Download is in active development, with macOS as the current focus.
 - **Bandwidth controls:** global and per-download limits, plus scheduled limits for times such as office hours.
 - **Transfer details:** total download speed, per-task progress, and an inspector showing individual worker progress.
 - **Torrent and magnet review:** choose files, edit trackers, and select a destination before queueing a BitTorrent v1 download.
-- **Browser integration:** send a link or links from a selected area of a page to the client; optionally intercept browser downloads.
+- **Browser integration:** send a link or links from a selected area of a page to the client; optionally intercept browser downloads. Save the reference page to recapture expired links through the browser.
 - **Native macOS integration:** menu bar controls, notifications, launch at login, file icons, and `.torrent` and `magnet:` registration.
 
 The GUI starts the bundled engine when needed. Transfers are managed by the engine,

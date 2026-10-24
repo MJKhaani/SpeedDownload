@@ -50,7 +50,12 @@ fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
         if (object.count() != 2) return error.InvalidRequest;
         return .{ .parsed = parsed, .status = true };
     }
-    if (object.count() != 4) return error.InvalidRequest;
+    const reference = object.get("reference_url");
+    if (object.count() != (if (reference != null) @as(usize, 5) else 4)) return error.InvalidRequest;
+    if (reference) |value| {
+        if (value != .string or !validURL(value.string) or
+            !(std.mem.startsWith(u8, value.string, "https://") or std.mem.startsWith(u8, value.string, "http://"))) return error.InvalidRequest;
+    }
     const key = object.get("idempotency_key") orelse return error.InvalidRequest;
     if (key != .string or !validUuid(key.string)) return error.InvalidRequest;
     if (std.mem.eql(u8, action.string, "batch")) {

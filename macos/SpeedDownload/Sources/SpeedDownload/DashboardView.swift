@@ -12,13 +12,18 @@ struct DashboardView: View {
     @State private var incomingBatch: [String] = []
     @State private var incomingDestination: String?
     @State private var incomingPriority = 0
+    @State private var incomingReferenceURL: String?
+    @State private var incomingRefreshJobID: String?
     @State private var handoffError: String?
-    private struct PendingDownload: Equatable {
+    private struct PendingDownload: Equatable, Identifiable {
+        var id: String { ([source, String(torrent), refreshJobID ?? "", referenceURL ?? ""] + batch).joined(separator: "\n") }
         let source: String
         let torrent: Bool
         var batch: [String] = []
         var destination: String? = nil
         var priority: Int = 0
+        var referenceURL: String? = nil
+        var refreshJobID: String? = nil
     }
     @State private var pendingDownloadURLs: [PendingDownload] = []
     @State private var handledRequests: [String] = []
@@ -153,10 +158,12 @@ struct DashboardView: View {
             .navigationSubtitle("Manage and monitor your transfers")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await engine.refreshJobs() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    Button { Task { await engine.resumeQueue() } } label: { Label("Resume Queue", systemImage: "play.fill") }
+                        .help("Resume paused downloads and start waiting downloads")
+                        .disabled(!isConnected || engine.isSubmitting)
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button { incomingDownloadURL = ""; showingAddDownload = true } label: {
+                    Button { newDownload() } label: {
                         Label("Add Download", systemImage: "plus").labelStyle(.iconOnly)
                     }
                     .help("Add Download")
@@ -167,25 +174,35 @@ struct DashboardView: View {
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $searchText, placement: .toolbar, prompt: "Filter transfers")
         .onDrop(of: [UTType.url.identifier, UTType.fileURL.identifier, UTType.plainText.identifier], isTargeted: nil, perform: handleDownloadDrop)
-        .sheet(isPresented: $showingAddDownload, onDismiss: showNextPendingDownload) {
-            if incomingBatch.count > 1 {
-                BatchDownloadView(sources: incomingBatch) { source, destination, priority in
-                    pendingDownloadURLs.append(PendingDownload(source: source, torrent: true, destination: destination, priority: priority))
+        .sheet(item: Binding(
+            get: { showingAddDownload ? PendingDownload(source: incomingDownloadURL, torrent: incomingIsTorrent, batch: incomingBatch, destination: incomingDestination, priority: incomingPriority, referenceURL: incomingReferenceURL, refreshJobID: incomingRefreshJobID) : nil },
+            set: { if $0 == nil { showingAddDownload = false } }
+        ), onDismiss: showNextPendingDownload) { request in
+            if request.batch.count > 1 {
+                BatchDownloadView(sources: request.batch, referenceURL: request.referenceURL) { source, destination, priority in
+                    pendingDownloadURLs.append(PendingDownload(source: source, torrent: true, destination: destination, priority: priority, referenceURL: request.referenceURL))
                 }
-            } else if incomingIsTorrent {
-                TorrentAddView(source: incomingDownloadURL, initialDestination: incomingDestination, initialPriority: incomingPriority) { showingAddDownload = false }
-                    .id(incomingDownloadURL)
+            } else if request.torrent {
+                TorrentAddView(source: request.source, initialDestination: request.destination, initialPriority: request.priority, referenceURL: request.referenceURL) { showingAddDownload = false }
+                    .id(request.id)
             } else {
                 AddDownloadView(
-                    initialURL: incomingDownloadURL,
+                    initialURL: request.source,
+                    initialReferenceURL: request.referenceURL,
+                    replacingJob: engine.jobs.first(where: { $0.jobID == request.refreshJobID }),
                     isSubmitting: engine.isSubmitting,
                     probeURL: { url in try await engine.probe(url: url) },
                     onTorrentSource: { source in
                         incomingDownloadURL = source
                         incomingIsTorrent = true
                     },
-                    submit: { url, name, destination, priority, checksum, selectedFiles, infoHash in
-                        let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash)
+                    submit: { url, name, destination, priority, checksum, selectedFiles, infoHash, referenceURL in
+                        if let jobID = request.refreshJobID {
+                            let replaced = await engine.replaceSource(jobID: jobID, url: url)
+                            if replaced { showingAddDownload = false }
+                            return replaced
+                        }
+                        let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash, referenceURL: referenceURL)
                         if added { showingAddDownload = false }
                         return added
                     }
@@ -199,19 +216,26 @@ struct DashboardView: View {
         .onChange(of: engine.jobs) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: selection) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
-        .onReceive(NotificationCenter.default.publisher(for: .speedDownloadNewTransfer)) { _ in
-            incomingDownloadURL = ""
-            incomingDestination = nil
-            incomingPriority = 0
-            incomingBatch = []
-            incomingIsTorrent = false
-            showingAddDownload = true
-        }
+        .onReceive(NotificationCenter.default.publisher(for: .speedDownloadNewTransfer)) { _ in newDownload() }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadClipboardTransfer)) { notification in
             guard let value = notification.object as? String, value.utf8.count <= 8192 else { return }
             offerDownloadURL(value)
         }
-        .onOpenURL { incoming in
+        .onReceive(ClientOpenRequests.shared.$urls) { urls in
+            guard !urls.isEmpty else { return }
+            DispatchQueue.main.async {
+                for incoming in ClientOpenRequests.shared.take() { receiveOpenURL(incoming) }
+            }
+        }
+        .onOpenURL { incoming in receiveOpenURL(incoming) }
+        .alert("Could Not Open Browser Download", isPresented: Binding(
+            get: { handoffError != nil }, set: { if !$0 { handoffError = nil } }
+        )) {
+            Button("OK") { handoffError = nil }
+        } message: { Text(handoffError ?? "") }
+    }
+
+    private func receiveOpenURL(_ incoming: URL) {
             if incoming.scheme?.lowercased() == "speeddownload", incoming.host?.lowercased() == "browser" {
                 guard let token = URLComponents(url: incoming, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "request" })?.value else { return }
                 receiveBrowserHandoff(token)
@@ -230,14 +254,18 @@ struct DashboardView: View {
             } else {
                 offerDownloadURL(incoming.absoluteString)
             }
-        }
-        .alert("Could Not Open Browser Download", isPresented: Binding(
-            get: { handoffError != nil }, set: { if !$0 { handoffError = nil } }
-        )) {
-            Button("OK") { handoffError = nil }
-        } message: { Text(handoffError ?? "") }
     }
 
+    private func newDownload() {
+        incomingDownloadURL = ""
+        incomingDestination = nil
+        incomingPriority = 0
+        incomingReferenceURL = nil
+        incomingRefreshJobID = nil
+        incomingBatch = []
+        incomingIsTorrent = false
+        showingAddDownload = true
+    }
 
     private func handleDownloadDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
@@ -264,19 +292,23 @@ struct DashboardView: View {
             let request = try BrowserHandoff.consume(token)
             handledRequests.append(token)
             if handledRequests.count > 128 { handledRequests.removeFirst() }
-            if request.action == "batch", request.sources.count > 1 { offerBatch(request.sources) }
-            else if let source = request.sources.first { offerDownloadURL(source, forceTorrent: request.action == "torrent") }
+            if request.action == "batch", request.sources.count > 1 { offerBatch(request.sources, referenceURL: request.referenceURL) }
+            else if let source = request.sources.first {
+                let refreshing = engine.jobs.first(where: { $0.jobID == engine.refreshingJobID && $0.referenceURL == request.referenceURL })
+                offerDownloadURL(source, forceTorrent: request.action == "torrent", referenceURL: request.referenceURL,
+                    refreshJobID: request.action == "add" ? refreshing?.jobID : nil)
+            }
         } catch {
             // Another window may already have consumed a recovered request.
             if !recovering { handoffError = error.localizedDescription }
         }
     }
 
-    private func offerDownloadURL(_ raw: String, forceTorrent: Bool = false, destination: String? = nil, priority: Int = 0) {
+    private func offerDownloadURL(_ raw: String, forceTorrent: Bool = false, destination: String? = nil, priority: Int = 0, referenceURL: String? = nil, refreshJobID: String? = nil) {
         guard let value = TorrentSource.normalized(raw) else { return }
         if showingAddDownload {
             if pendingDownloadURLs.count < 100 {
-                let stored = PendingDownload(source: value, torrent: forceTorrent, destination: destination, priority: priority)
+                let stored = PendingDownload(source: value, torrent: forceTorrent, destination: destination, priority: priority, referenceURL: referenceURL, refreshJobID: refreshJobID)
                 if !pendingDownloadURLs.contains(stored) { pendingDownloadURLs.append(stored) }
             }
             return
@@ -284,6 +316,8 @@ struct DashboardView: View {
         incomingDownloadURL = value
         incomingDestination = destination
         incomingPriority = priority
+        incomingReferenceURL = referenceURL
+        incomingRefreshJobID = refreshJobID
         incomingBatch = []
         incomingIsTorrent = forceTorrent || TorrentSource.isTorrent(value)
         showingAddDownload = true
@@ -294,22 +328,24 @@ struct DashboardView: View {
         guard !pendingDownloadURLs.isEmpty else { return }
         let next = pendingDownloadURLs.removeFirst()
         DispatchQueue.main.async {
-            if next.batch.count > 1 { offerBatch(next.batch) }
-            else { offerDownloadURL(next.source, forceTorrent: next.torrent, destination: next.destination, priority: next.priority) }
+            if next.batch.count > 1 { offerBatch(next.batch, referenceURL: next.referenceURL) }
+            else { offerDownloadURL(next.source, forceTorrent: next.torrent, destination: next.destination, priority: next.priority, referenceURL: next.referenceURL, refreshJobID: next.refreshJobID) }
         }
     }
 
-    private func offerBatch(_ sources: [String]) {
+    private func offerBatch(_ sources: [String], referenceURL: String? = nil) {
         let urls = sources.compactMap(TorrentSource.normalized)
         guard !urls.isEmpty else { return }
-        if urls.count == 1 { offerDownloadURL(urls[0]); return }
+        if urls.count == 1 { offerDownloadURL(urls[0], referenceURL: referenceURL); return }
         if showingAddDownload {
             if pendingDownloadURLs.count < 100 {
-                pendingDownloadURLs.append(PendingDownload(source: "", torrent: false, batch: urls))
+                pendingDownloadURLs.append(PendingDownload(source: "", torrent: false, batch: urls, referenceURL: referenceURL))
             }
             return
         }
         incomingBatch = urls
+        incomingRefreshJobID = nil
+        incomingReferenceURL = referenceURL
         incomingDownloadURL = ""
         incomingIsTorrent = false
         showingAddDownload = true
@@ -711,6 +747,23 @@ struct DashboardView: View {
 
     @ViewBuilder private func actionMenu(for job: DownloadJob) -> some View {
         actionButtons(for: job)
+        if let reference = job.referenceURL, let page = URL(string: reference) {
+            Button("Open Reference Page", systemImage: "globe") { NSWorkspace.shared.open(page) }
+            if ["paused", "failed", "queued", "scheduled", "retry_wait"].contains(job.state),
+               URL(string: job.url)?.scheme?.hasPrefix("http") == true {
+                Button("Refresh Download Link…", systemImage: "arrow.clockwise") {
+                    Task {
+                        if !["paused", "failed"].contains(job.state) {
+                            await engine.controlJob(job, action: "pause")
+                            guard engine.actionError == nil else { return }
+                        }
+                        engine.refreshingJobID = job.jobID
+                        NSWorkspace.shared.open(page)
+                    }
+                }
+                .help("Click Download on the reference page, then send the fresh link to Speed Download for review.")
+            }
+        }
         if !["completed", "canceled"].contains(job.state) {
             Menu("Download Speed") {
                 ForEach(speedLimits, id: \.self) { limit in
@@ -775,6 +828,7 @@ private struct AddDownloadView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var engine: EngineModel
     @State private var url = ""
+    @State private var referencePage = ""
     @State private var name = ""
     @State private var destination = "\(NSHomeDirectory())/Downloads"
     @State private var priority = 0
@@ -786,18 +840,38 @@ private struct AddDownloadView: View {
     @State private var lastSuggestedName: String?
     @State private var selectedTorrentFiles: Set<String> = []
     let initialURL: String
+    let replacingJob: DownloadJob?
     let isSubmitting: Bool
     let probeURL: (String) async throws -> DownloadProbe
     let onTorrentSource: (String) -> Void
-    let submit: (String, String, String, Int, String?, [String]?, String?) async -> Bool
+    let submit: (String, String, String, Int, String?, [String]?, String?, String?) async -> Bool
+
+    init(initialURL: String, initialReferenceURL: String? = nil, replacingJob: DownloadJob? = nil, isSubmitting: Bool, probeURL: @escaping (String) async throws -> DownloadProbe,
+         onTorrentSource: @escaping (String) -> Void,
+         submit: @escaping (String, String, String, Int, String?, [String]?, String?, String?) async -> Bool) {
+        self.initialURL = initialURL
+        self.replacingJob = replacingJob
+        if let job = replacingJob {
+            _name = State(initialValue: job.name ?? "")
+            _destination = State(initialValue: job.destination)
+            _priority = State(initialValue: job.priority ?? 0)
+            _expectedSHA256 = State(initialValue: job.expectedSHA256 ?? "")
+        }
+        self.isSubmitting = isSubmitting
+        self.probeURL = probeURL
+        self.onTorrentSource = onTorrentSource
+        self.submit = submit
+        _url = State(initialValue: initialURL)
+        _referencePage = State(initialValue: initialReferenceURL ?? "")
+    }
 
     private var trimmedURL: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Add Download").font(.title2.weight(.semibold))
-                Text("Inspect a link, then choose its name, priority, and destination.")
+                Text(replacingJob == nil ? "Add Download" : "Replace Download Link").font(.title2.weight(.semibold))
+                Text(replacingJob == nil ? "Inspect a link, then choose its name, priority, and destination." : "Confirm the fresh link for this download. Restarting removes its old partial data and downloads the file from the beginning.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Form {
@@ -805,6 +879,10 @@ private struct AddDownloadView: View {
                     TextField("URL", text: $url, prompt: Text("https://example.com/file.zip or magnet:?xt=…"))
                         .textFieldStyle(.roundedBorder)
                     probeSummary
+                    TextField("Reference page", text: $referencePage, prompt: Text("Web page containing the download (optional)"))
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(replacingJob != nil)
+                        .help("Saved with the download so you can return to this page to refresh an expired link.")
                 }
                 Section("File") {
                     TextField("File name", text: $name, prompt: Text("Suggested after URL check"))
@@ -813,9 +891,11 @@ private struct AddDownloadView: View {
                         Button("Choose…", action: chooseDestination)
                     }
                 }
+                .disabled(replacingJob != nil)
                 Picker("Queue Priority", selection: $priority) {
                     Text("Low").tag(-1); Text("Normal").tag(0); Text("High").tag(1)
                 }
+                .disabled(replacingJob != nil)
                 Section("Verification") {
                     TextField("SHA-256 checksum (optional)", text: $expectedSHA256)
                         .textFieldStyle(.roundedBorder)
@@ -824,13 +904,15 @@ private struct AddDownloadView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .disabled(replacingJob != nil)
             }
+            .disabled(isSubmitting)
             if let validationError { Text(validationError).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button { Task { await save() } } label: {
-                    if isSubmitting { ProgressView().controlSize(.small) } else { Text("Add to Queue") }
+                    if isSubmitting { ProgressView().controlSize(.small) } else { Text(replacingJob == nil ? "Add to Queue" : "Replace Link & Restart") }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                     .disabled(isSubmitting || url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -842,7 +924,7 @@ private struct AddDownloadView: View {
         .task {
             if !initialURL.isEmpty && url.isEmpty { url = initialURL }
             await engine.ensureConnected()
-            if let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
+            if replacingJob == nil, let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
                destination == "\(NSHomeDirectory())/Downloads" {
                 destination = settings.defaultDownloadFolder
             }
@@ -972,6 +1054,7 @@ private struct AddDownloadView: View {
 
     private func inspectURL(_ value: String) async {
         if TorrentSource.isTorrent(value) {
+            guard replacingJob == nil else { probeError = "A replacement must be an HTTP or HTTPS link."; return }
             onTorrentSource(value)
             return
         }
@@ -993,6 +1076,7 @@ private struct AddDownloadView: View {
             let result = try await probeURL(value)
             guard !Task.isCancelled, trimmedURL == value else { return }
             if result.contentType?.lowercased().hasPrefix("application/x-bittorrent") == true {
+                guard replacingJob == nil else { throw CocoaError(.fileReadUnsupportedScheme) }
                 onTorrentSource(value)
                 return
             }
@@ -1100,7 +1184,19 @@ private struct AddDownloadView: View {
                 selectedFiles = files.map(\.path).filter { selectedTorrentFiles.contains($0) }
             }
         }
-        let added = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles, probeResult?.torrentInfoHash)
+        var reference: String? = nil
+        let page = referencePage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !page.isEmpty {
+            guard page.utf8.count <= 8192, var components = URLComponents(string: page),
+                  ["http", "https"].contains(components.scheme?.lowercased() ?? ""), components.host != nil,
+                  components.user == nil, components.password == nil,
+                  page.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+                validationError = "Enter an HTTP or HTTPS reference page without embedded credentials."; return
+            }
+            components.fragment = nil
+            reference = components.url?.absoluteString
+        }
+        let added = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles, probeResult?.torrentInfoHash, reference)
         if !added { validationError = engine.actionError ?? "Could not add this download." }
     }
     private func chooseDestination() {

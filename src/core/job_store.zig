@@ -70,6 +70,7 @@ pub const WorkerProgress = struct {
 pub const Job = struct {
     id: []const u8,
     url: []const u8,
+    reference_url: ?[]const u8 = null,
     name: ?[]const u8,
     destination: []const u8,
     idempotency_key: []const u8,
@@ -97,6 +98,7 @@ pub const Job = struct {
 
 pub const AddInput = struct {
     url: []const u8,
+    reference_url: ?[]const u8 = null,
     name: ?[]const u8,
     destination: []const u8,
     idempotency_key: []const u8,
@@ -118,6 +120,7 @@ pub const Store = struct {
     directory_path: []const u8,
     file_path: []const u8,
     settings_path: []const u8,
+    instance_lock: ?std.Io.File = null,
     settings: Settings = .{},
     settings_owned: bool = false,
     jobs: std.ArrayList(Job) = .empty,
@@ -259,6 +262,24 @@ pub const Store = struct {
                 return error.UnsafeStoreDirectory;
         }
 
+        // Hold the profile lock before loading or recovering any persisted job.
+        const lock_file = directory.createFile(io, "engine.lock", .{
+            .exclusive = true,
+            .truncate = false,
+            .permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600),
+            .lock = .exclusive,
+            .lock_nonblocking = true,
+        }) catch |err| switch (err) {
+            error.PathAlreadyExists => try directory.openFile(io, "engine.lock", .{
+                .mode = .read_write,
+                .follow_symlinks = false,
+                .lock = .exclusive,
+                .lock_nonblocking = true,
+            }),
+            else => return err,
+        };
+        errdefer lock_file.close(io);
+
         const file_path = try std.fs.path.join(allocator, &.{ directory_path, "jobs.json" });
         errdefer allocator.free(file_path);
         const settings_path = try std.fs.path.join(allocator, &.{ directory_path, "settings.json" });
@@ -274,10 +295,12 @@ pub const Store = struct {
         try store.load();
         try store.loadSettings();
         store.cleanupTorrentSnapshots() catch {};
+        store.instance_lock = lock_file;
         return store;
     }
 
     pub fn deinit(self: *Store) void {
+        if (self.instance_lock) |file| file.close(self.io);
         for (self.jobs.items) |job| {
             self.freeJob(job);
         }
@@ -626,6 +649,87 @@ pub const Store = struct {
                 .duplicate = result.duplicate,
             },
         }, .{});
+    }
+
+    pub fn resumeQueueJson(self: *Store, request_id: std.json.Value) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const previous = try self.allocator.dupe(Job, self.jobs.items);
+        defer self.allocator.free(previous);
+        var count: usize = 0;
+        for (self.jobs.items) |*job| {
+            if (job.state != .paused and job.state != .retry_wait) continue;
+            job.state = .queued;
+            job.requested_control = null;
+            job.retry_at_unix_ms = null;
+            job.revision += 1;
+            count += 1;
+        }
+        if (count > 0) {
+            self.persist() catch |err| {
+                @memcpy(self.jobs.items, previous);
+                return err;
+            };
+            self.recordChange(null);
+        }
+        return std.json.Stringify.valueAlloc(self.allocator, .{
+            .jsonrpc = "2.0",
+            .id = request_id,
+            .result = .{ .resumed = count },
+        }, .{});
+    }
+
+    /// Replacing an expiring URL is an explicit restart: old partial bytes are
+    /// never combined with a representation fetched from another resource.
+    pub fn replaceSourceJson(self: *Store, request_id: std.json.Value, job_id: []const u8, expected_revision: u64, url: []const u8) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!validReferenceURL(url)) return error.InvalidJob;
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.revision != expected_revision) return error.StaleJobRevision;
+            if (!(job.state == .paused or job.state == .failed or job.state == .queued or job.state == .scheduled or job.state == .retry_wait)) return error.InvalidJobControl;
+            if (!(std.mem.startsWith(u8, job.url, "http://") or std.mem.startsWith(u8, job.url, "https://"))) return error.InvalidJobControl;
+            const replacement = try self.allocator.dupe(u8, url);
+            var replacement_owned = true;
+            errdefer if (replacement_owned) self.allocator.free(replacement);
+            if (try self.destinationOccupied(job.*, false)) return error.DestinationReserved;
+            const old_path = try self.destinationPath(job.*);
+            defer self.allocator.free(old_path);
+            const retained_name = job.name orelse try self.allocator.dupe(u8, std.fs.path.basename(old_path));
+            errdefer if (replacement_owned and job.name == null) self.allocator.free(retained_name);
+            // Explicit confirmation is required by the RPC before this call.
+            try self.deletePartialFilesStrict(job.*);
+            const previous = job.*;
+            job.url = replacement;
+            job.name = retained_name;
+            job.state = .queued;
+            job.revision += 1;
+            job.completed_bytes = 0;
+            job.total_bytes = null;
+            job.live_received_bytes = null;
+            job.live_total_bytes = null;
+            job.error_message = null;
+            job.requested_control = null;
+            job.retry_attempts = 0;
+            job.retry_at_unix_ms = null;
+            job.adaptive_connections = null;
+            job.worker_count = 0;
+            self.persist() catch |err| {
+                job.* = previous;
+                return err;
+            };
+            replacement_owned = false;
+            self.allocator.free(previous.url);
+            if (previous.error_message) |message| self.allocator.free(message);
+            self.recordChange(job.id);
+            return std.json.Stringify.valueAlloc(self.allocator, .{
+                .jsonrpc = "2.0",
+                .id = request_id,
+                .result = .{ .job_id = job.id, .state = job.state },
+            }, .{});
+        }
+        return error.JobNotFound;
     }
 
     pub fn controlJson(self: *Store, request_id: std.json.Value, job_id: []const u8, action: Action, expected_revision: u64) ![]u8 {
@@ -1342,6 +1446,8 @@ pub const Store = struct {
         errdefer self.allocator.free(id);
         const url = try self.allocator.dupe(u8, input.url);
         errdefer self.allocator.free(url);
+        const reference_url = if (input.reference_url) |value| try self.allocator.dupe(u8, value) else null;
+        errdefer if (reference_url) |value| self.allocator.free(value);
         const name = if (input.name) |text| try self.allocator.dupe(u8, text) else null;
         errdefer if (name) |text| self.allocator.free(text);
         const destination = try self.allocator.dupe(u8, input.destination);
@@ -1355,6 +1461,7 @@ pub const Store = struct {
         return .{
             .id = id,
             .url = url,
+            .reference_url = reference_url,
             .name = name,
             .destination = destination,
             .idempotency_key = idempotency_key,
@@ -1368,6 +1475,7 @@ pub const Store = struct {
     fn freeJob(self: *Store, job: Job) void {
         self.allocator.free(job.id);
         self.allocator.free(job.url);
+        if (job.reference_url) |value| self.allocator.free(value);
         if (job.name) |name| self.allocator.free(name);
         self.allocator.free(job.destination);
         self.allocator.free(job.idempotency_key);
@@ -1435,6 +1543,10 @@ pub const Store = struct {
         const object = value.object;
         const id = try getString(object, "id");
         const url = try getString(object, "url");
+        const reference_value = object.get("reference_url") orelse .null;
+        if (reference_value != .null and reference_value != .string) return error.InvalidJobStore;
+        const reference_url = if (reference_value == .string) reference_value.string else null;
+        if (reference_url) |reference| if (!validReferenceURL(reference)) return error.InvalidJobStore;
         const destination = try getString(object, "destination");
         const key = try getString(object, "idempotency_key");
         const state_value = object.get("state") orelse return error.InvalidJobStore;
@@ -1498,6 +1610,7 @@ pub const Store = struct {
         try self.jobs.append(self.allocator, .{
             .id = try self.allocator.dupe(u8, id),
             .url = try self.allocator.dupe(u8, url),
+            .reference_url = if (reference_url) |reference| try self.allocator.dupe(u8, reference) else null,
             .name = name,
             .destination = try self.allocator.dupe(u8, destination),
             .idempotency_key = try self.allocator.dupe(u8, key),
@@ -1523,6 +1636,7 @@ pub const Store = struct {
         for (self.jobs.items) |job| try persisted_jobs.append(self.allocator, .{
             .id = job.id,
             .url = job.url,
+            .reference_url = job.reference_url,
             .name = job.name,
             .destination = job.destination,
             .idempotency_key = job.idempotency_key,
@@ -1737,6 +1851,7 @@ pub const Store = struct {
 const Summary = struct {
     job_id: []const u8,
     url: []const u8,
+    reference_url: ?[]const u8 = null,
     name: ?[]const u8,
     destination: []const u8,
     expected_sha256: ?[]const u8,
@@ -1771,6 +1886,7 @@ fn makeSummary(allocator: std.mem.Allocator, job: *const Job) !Summary {
     return .{
         .job_id = job.id,
         .url = redactUrl(job.url),
+        .reference_url = job.reference_url,
         .name = job.name,
         .destination = job.destination,
         .expected_sha256 = job.expected_sha256,
@@ -1803,6 +1919,7 @@ fn freeSummary(allocator: std.mem.Allocator, summary: Summary) void {
 const PersistedJob = struct {
     id: []const u8,
     url: []const u8,
+    reference_url: ?[]const u8 = null,
     name: ?[]const u8,
     destination: []const u8,
     idempotency_key: []const u8,
@@ -1847,7 +1964,16 @@ fn decimalAlloc(allocator: std.mem.Allocator, value: u64) ![]u8 {
     return try std.fmt.allocPrint(allocator, "{d}", .{value});
 }
 
+fn validReferenceURL(value: []const u8) bool {
+    if (value.len == 0 or value.len > 8192 or !std.unicode.utf8ValidateSlice(value)) return false;
+    for (value) |byte| if (byte < 0x20 or byte == 0x7f) return false;
+    const uri = std.Uri.parse(value) catch return false;
+    return (std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https")) and
+        uri.host != null and uri.user == null and uri.password == null and uri.fragment == null;
+}
+
 fn validateInput(allocator: std.mem.Allocator, io: std.Io, input: AddInput) !void {
+    if (input.reference_url) |value| if (!validReferenceURL(value)) return error.InvalidJob;
     if (input.expected_sha256) |digest| if (!validSha256(digest)) return error.InvalidJob;
     if (input.url.len == 0 or input.url.len > 8192) return error.InvalidJob;
     if (input.priority < -100 or input.priority > 100) return error.InvalidJob;
@@ -1933,6 +2059,8 @@ fn decodeSha256(value: ?[]const u8) ?[32]u8 {
 }
 
 fn sameInput(job: *const Job, input: AddInput) bool {
+    if (!std.meta.eql(job.reference_url == null, input.reference_url == null)) return false;
+    if (job.reference_url) |reference| if (!std.mem.eql(u8, reference, input.reference_url.?)) return false;
     const same_name = if (job.name) |name|
         if (input.name) |input_name| std.mem.eql(u8, name, input_name) else false
     else

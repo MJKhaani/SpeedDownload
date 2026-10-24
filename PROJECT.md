@@ -103,6 +103,7 @@ Priority labels: **P0 = release-blocking core**, **P1 = first complete release**
 | DL-08 | P1 | `.torrent` and `magnet:` via BitTorrent | Peer data verified against metadata/piece hashes, file selection and resume. |
 | DL-09 | P1 | Queue/history search, filters, sort, grouping and batch operations | Works for large lists without freezing interface. |
 | DL-10 | P1 | Checksum entry/import, verify on completion | Mismatches are flagged; no false success notification. |
+| DL-16 | P1 | Browser reference page and expired-link recovery | Save the originating HTTP(S) page with each browser download when supplied; permit entering it manually. Reopen it to capture a replacement link, review the replacement in the client, and require explicit consent before discarding partial data or restarting. Never infer representation identity from matching file names or sizes. |
 | DL-11 | P2 | Mirror URLs, download categories, export/import job list | Import handles invalid input gracefully; paths and secrets sanitized. |
 
 **Transfer states:** `queued`, `scheduled`, `resolving`, `connecting`, `downloading`, `paused`, `retry_wait`, `verifying`, `completed`, `failed`, `canceled`. `stopping` and `finalizing` may be internal transient states. Document transition permissions and idempotency in `docs/download-state-machine.md`. A *stop* means a resumable pause unless the user explicitly selects **Cancel / delete partial data**.
@@ -220,6 +221,7 @@ The **multipart segment map** is a small platform-native custom drawing control 
 
 ### 4.8 Headless, startup, tray, and notifications
 
+- The macOS GUI is a single process with one reusable main window. OS-opened URLs and browser handoffs must populate an immutable review request, preserving the source and torrent classification on cold and warm launch. A toolbar Resume Queue action starts waiting jobs and resumes paused jobs under the engine scheduling policy.
 - Expose one **single-instance per-user Zig engine process** that survives GUI restarts, runs without graphical windows, and exposes the authenticated local IPC endpoint. Every GUI/CLI client attaches independently. Closing a window follows preferences (`quit GUI`, `hide when supported`, `leave engine running`, or `stop engine`) and gives confirmation when ambiguous. Do not stop the engine merely because a UI connection is lost.
 - Settings: **Launch on login**, **Start minimized**, **Run engine in background**, **Minimize to tray / menu-bar/status area when supported**, and **Launch GUI when manually invoked**. Each is an independent explicit preference.
 - Distinguish desktop login startup from **system service at boot**. Service-before-login is optional, platform-specific, carefully permissioned, and not enabled by default.

@@ -17,6 +17,7 @@ final class EngineModel: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var isSubmitting = false
     @Published private(set) var cachedSettings: EngineSettings?
+    var refreshingJobID: String?
     private var previousSamples: [String: (bytes: UInt64, workers: [UInt32: UInt64], time: Date)] = [:]
     private var isChangingSpeedLimit = false
     private var attempt = 0
@@ -388,7 +389,7 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    func addJob(url: String, name: String, destination: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil) async -> Bool {
+    func addJob(url: String, name: String, destination: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil, referenceURL: String? = nil) async -> Bool {
         guard !isSubmitting else { return false }
         isSubmitting = true
         actionError = nil
@@ -405,7 +406,8 @@ final class EngineModel: ObservableObject {
                     priority: priority,
                     expectedSHA256: expectedSHA256,
                     selectedTorrentFiles: selectedTorrentFiles,
-                    torrentInfoHash: torrentInfoHash
+                    torrentInfoHash: torrentInfoHash,
+                    referenceURL: referenceURL
                 )
             }.value
             do {
@@ -421,6 +423,39 @@ final class EngineModel: ObservableObject {
             actionError = error.localizedDescription
             return false
         }
+    }
+
+    func replaceSource(jobID: String, url: String) async -> Bool {
+        guard !isSubmitting else { return false }
+        guard let job = jobs.first(where: { $0.jobID == jobID }) else {
+            actionError = "The original download is no longer in the queue."
+            return false
+        }
+        isSubmitting = true
+        actionError = nil
+        defer { isSubmitting = false }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try UnixEngineClient().replaceSource(jobID: jobID, revision: job.revision, url: url)
+            }.value
+            refreshingJobID = nil
+            await refreshJobs()
+            return true
+        } catch {
+            actionError = error.localizedDescription
+            return false
+        }
+    }
+
+    func resumeQueue() async {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+        actionError = nil
+        defer { isSubmitting = false }
+        do {
+            try await Task.detached(priority: .userInitiated) { try UnixEngineClient().resumeQueue() }.value
+            await refreshJobs()
+        } catch { actionError = error.localizedDescription }
     }
 
     func controlJob(_ job: DownloadJob, action: String) async {

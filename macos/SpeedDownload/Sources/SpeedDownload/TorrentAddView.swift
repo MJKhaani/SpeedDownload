@@ -28,6 +28,7 @@ struct TorrentAddView: View {
     @Environment(\.dismiss) private var dismiss
     let source: String
     let initialDestination: String?
+    let referenceURL: String?
     let added: () -> Void
     @State private var preview: DownloadProbe?
     @State private var files: [DownloadProbe.TorrentFile] = []
@@ -44,9 +45,10 @@ struct TorrentAddView: View {
     @State private var metadataAttempt = 0
     @State private var tab = "files"
 
-    init(source: String, initialDestination: String? = nil, initialPriority: Int = 0, added: @escaping () -> Void) {
+    init(source: String, initialDestination: String? = nil, initialPriority: Int = 0, referenceURL: String? = nil, added: @escaping () -> Void) {
         self.source = source
         self.initialDestination = initialDestination
+        self.referenceURL = referenceURL
         self.added = added
         _destination = State(initialValue: initialDestination ?? "\(NSHomeDirectory())/Downloads")
         _priority = State(initialValue: initialPriority)
@@ -242,7 +244,7 @@ struct TorrentAddView: View {
             let chosen = files.map(\.path).filter { selected.contains($0) }
             guard !chosen.isEmpty else { error = "Select at least one file."; return }
             let success = await engine.addJob(url: prepared.finalURL, name: name.trimmingCharacters(in: .whitespacesAndNewlines), destination: destination, priority: priority,
-                selectedTorrentFiles: chosen.count == files.count ? nil : chosen, torrentInfoHash: prepared.torrentInfoHash)
+                selectedTorrentFiles: chosen.count == files.count ? nil : chosen, torrentInfoHash: prepared.torrentInfoHash, referenceURL: referenceURL)
             if success { added() } else { error = engine.actionError ?? "Could not add the torrent." }
         } catch { self.error = error.localizedDescription }
     }

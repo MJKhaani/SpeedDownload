@@ -8,10 +8,12 @@ struct BrowserHandoff: Decodable {
     let action: String
     let url: String?
     let urls: [String]?
+    let referenceURL: String?
     let idempotencyKey: String
 
     enum CodingKeys: String, CodingKey {
         case version, action, url, urls
+        case referenceURL = "reference_url"
         case idempotencyKey = "idempotency_key"
     }
 
@@ -55,6 +57,14 @@ struct BrowserHandoff: Decodable {
               (request.action == "batch" ? (request.url == nil && request.urls != nil) : (request.url != nil && request.urls == nil)),
               !request.sources.isEmpty, request.sources.count <= 100,
               request.sources.reduce(0, { $0 + $1.utf8.count }) <= 128 * 1024 else { throw CocoaError(.fileReadCorruptFile) }
+        if let reference = request.referenceURL {
+            guard reference.utf8.count <= 8192, let page = URL(string: reference),
+                  ["http", "https"].contains(page.scheme?.lowercased() ?? ""), page.host != nil,
+                  page.user == nil, page.password == nil, page.fragment == nil,
+                  reference.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+        }
         for source in request.sources {
             guard source.utf8.count <= 8192, let parsed = URL(string: source),
                   source.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),

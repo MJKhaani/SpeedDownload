@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Speed Download",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Review single downloads, selected page links, and torrents in the Speed Download app.",
   "permissions": [
     "contextMenus",
@@ -9,8 +9,11 @@
     "activeTab",
     "scripting",
     "downloads",
-    "storage"
+    "storage",
+    "tabs",
+    "webRequest"
   ],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
   },

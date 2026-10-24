@@ -13,6 +13,8 @@
     { "$ref": "#/$defs/jobsUnsubscribe" },
     { "$ref": "#/$defs/jobsAdd" },
     { "$ref": "#/$defs/jobsControl" },
+    { "$ref": "#/$defs/jobsReplaceSource" },
+    { "$ref": "#/$defs/jobsResumeQueue" },
     { "$ref": "#/$defs/jobsSetBandwidth" },
     { "$ref": "#/$defs/jobsReorder" },
     { "$ref": "#/$defs/jobsDelete" }
@@ -149,6 +151,7 @@
               "required": ["url", "destination", "idempotency_key"],
               "properties": {
                 "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
+                "reference_url": { "type": ["string", "null"], "maxLength": 8192 },
                 "name": { "type": ["string", "null"], "maxLength": 255 },
                 "destination": { "type": "string", "minLength": 1, "maxLength": 4096 },
                 "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -160,6 +163,29 @@
             }
           }
         }
+      ]
+    },
+    "jobsResumeQueue": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.resume-queue" },
+          "params": { "type": "object", "additionalProperties": false }
+        } }
+      ]
+    },
+    "jobsReplaceSource": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        { "properties": {
+          "method": { "const": "jobs.replace-source" },
+          "params": { "type": "object", "required": ["job_id", "expected_revision", "url", "restart"], "properties": {
+            "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "expected_revision": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
+            "restart": { "const": true }
+          }, "additionalProperties": false }
+        } }
       ]
     },
     "jobsControl": {

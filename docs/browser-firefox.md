@@ -64,3 +64,30 @@ and [activeTab](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExte
 On startup, the macOS client recovers up to 100 pending browser inbox requests
 and opens their review dialogs. Recovery never adds jobs without confirmation.
 Duplicate delivery tokens are ignored before reading the consumed request file.
+
+## Reference pages and expired links
+
+Version 0.3.0 includes `reference_url` in handoffs when available: the page URL
+for context-menu links and selections, or a bounded mapping from the download's
+request to its originating tab (falling back to the browser download's `referrer`).
+If the browser supplies no referrer, the app's Add dialog lets you enter a
+reference page. The engine saves it with the job; the extension does not connect
+to the engine. Reload the extension and install the updated native host together.
+
+For an inactive HTTP(S) job, choose **Refresh Download Link…** to reopen its
+reference page. Waiting jobs are paused first so they cannot start during refresh. Click the site's download button and hand off the fresh link
+(using interception or Download with Speed Download). A handoff from the same
+reference page opens **Replace Download Link** for the original job. Confirmation
+is labeled **Replace Link & Restart** and removes the old partial data. Canceling
+leaves the original job untouched. Sites requiring login or interaction remain
+in the browser; automatic page scraping and cross-URL partial reuse are not
+implemented. A pending refresh is held only while the client is running.
+
+Automatic reference capture uses `tabs`, `webRequest`, and HTTP(S) host permissions.
+Observation is nonblocking and does not request headers or bodies. It is enabled
+only while automatic grabbing is enabled, ignores private tabs, and keeps at most
+256 associations in memory; only entries under ten minutes old are used. The
+browser may request permission approval when updating the extension. See the
+[Chrome request API](https://developer.chrome.com/docs/extensions/reference/api/webRequest)
+and [Firefox request API](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest)
+for the originating request and tab fields used by this bridge.
