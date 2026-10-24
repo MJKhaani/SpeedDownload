@@ -285,3 +285,14 @@ It atomically moves paused and retry-wait jobs to queued state, preserving their
 partial progress, and wakes normal scheduling. It neither retries failed jobs
 nor bypasses global concurrency, host limits, or queue schedules. Existing queued
 jobs are also considered by that scheduler wakeup.
+
+### Connected torrent peer
+
+Job snapshots additionally expose optional `torrent_active_peer` (address and
+port) while a torrent payload peer is connected. It is transient, copied under
+the job-store lock, cleared on disconnect, and never written to job state or
+debug logs. The present payload engine uses one peer at a time. This field is
+not a seeder count: a connected peer may hold only some pieces. Tracker swarm
+counts remain separate from actual connections. Uploading, incoming peers and
+post-completion seeding are not implemented; clients must not invent upload
+counts, rates or ratios.

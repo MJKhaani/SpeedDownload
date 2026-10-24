@@ -394,6 +394,8 @@ pub fn dispatchMethod(
                 "This torrent contains only BitTorrent v2 metadata. Use a v1 or v1-compatible hybrid torrent; v2-only downloads are not supported yet."
             else if (err == error.UnsupportedTorrentVersion)
                 "This torrent uses an unsupported metadata version."
+            else if (err == error.NoReachablePeer or err == error.NoTorrentPeers or err == error.NoTrackerPeers)
+                "No reachable peers supplied torrent metadata. For a trackerless magnet, DHT must be reachable. Open the .torrent file or add working trackers and retry."
             else if (err == error.MetadataTimeout or err == error.Timeout)
                 "Torrent discovery timed out. Check your network or trackers and retry."
             else
@@ -675,6 +677,8 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
         }
         const error_message = if (err == error.ExpectedChecksumMismatch)
             "SHA-256 checksum does not match the downloaded file"
+        else if (err == error.NoTorrentPeers or err == error.NoTrackerPeers or err == error.NoPeerHasPieces)
+            "No reachable peers have the remaining pieces. Verified partial data was preserved. Retry when peers or trackers are reachable."
         else if (err == error.ProxyAuthenticationUnavailable)
             "Authenticated proxy transfers are not available in this engine version"
         else if (err == error.ProxyCredentialsUnavailable)
@@ -714,12 +718,14 @@ fn downloadStoredTorrent(engine: *EngineContext, task: job_store.Store.DownloadT
         else => return err,
     };
     if (exists) {
-        return @import("../protocols/torrent/download.zig").downloadTorrentFileSelectedWithStats(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, task.selected_torrent_files, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress), updateTorrentStats, @ptrCast(progress));
+        return @import("../protocols/torrent/download.zig").downloadTorrentFileSelectedWithTransport(engine.allocator, engine.io, snapshot, destination, task.expected_sha256, task.selected_torrent_files, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress), updateTorrentStats, @ptrCast(progress), .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &engine.http_connections);
     }
     // Jobs queued before source snapshots were introduced can still resume
     // from the original selected file when it remains available.
     if (task.selected_torrent_files != null) return error.MissingTorrentSnapshot;
-    return @import("../protocols/torrent/download.zig").downloadTorrentSourceWithStats(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress), updateTorrentStats, @ptrCast(progress));
+    const original_path = try @import("../protocols/torrent/source.zig").pathAlloc(engine.allocator, task.url);
+    defer engine.allocator.free(original_path);
+    return @import("../protocols/torrent/download.zig").downloadTorrentFileSelectedWithTransport(engine.allocator, engine.io, original_path, destination, task.expected_sha256, null, updateDownloadProgress, @ptrCast(progress), checkTorrentControl, @ptrCast(progress), updateTorrentStats, @ptrCast(progress), .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &engine.http_connections);
 }
 
 fn checkTorrentControl(context: *anyopaque) @import("../protocols/torrent/metadata.zig").CheckpointError!void {
@@ -738,6 +744,10 @@ fn checkHttpControl(context: *anyopaque) anyerror!void {
 
 fn updateTorrentStats(context: *anyopaque, peers: u32, counts: @import("../protocols/torrent/metadata.zig").TrackerCounts) void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    if (counts.peer_event) {
+        progress.engine.jobs.updateTorrentPeer(progress.job_id, counts.active_peer);
+        return;
+    }
     if (counts.retry_delay_seconds) |seconds| {
         const hint = progress.retry_hint orelse unreachable;
         const current = hint.load(.acquire);

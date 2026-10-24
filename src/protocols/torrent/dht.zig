@@ -16,7 +16,7 @@ const Response = struct { id: ?[20]u8 = null, nodes: []const u8 = "", nodes6: []
 pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?control_contract.CheckpointCallback, context: ?*anyopaque) ![][]u8 {
     var nodes: [max_nodes]Node = undefined;
     var node_count: usize = 0;
-    for ([_][]const u8{ "router.bittorrent.com", "router.utorrent.com" }) |host| {
+    for ([_][]const u8{ "router.bittorrent.com", "router.utorrent.com", "dht.transmissionbt.com" }) |host| {
         const name = Io.net.HostName.init(host) catch continue;
         var buffer: [8]Io.net.HostName.LookupResult = undefined;
         var results: Io.Queue(Io.net.HostName.LookupResult) = .init(&buffer);
@@ -24,7 +24,6 @@ pub fn discover(allocator: Allocator, io: Io, info_hash: [20]u8, control: ?contr
         while (results.getOne(io)) |entry| {
             if (entry != .address) continue;
             addNode(&nodes, &node_count, .{ .id = null, .address = entry.address });
-            break;
         } else |_| {}
     }
     if (node_count == 0) return error.DhtBootstrapUnavailable;
@@ -212,7 +211,7 @@ fn query(allocator: Allocator, io: Io, address: Io.net.IpAddress, own_id: [20]u8
     try request.appendSlice(allocator, &own_id);
     try request.appendSlice(allocator, "9:info_hash20:");
     try request.appendSlice(allocator, &hash);
-    try request.appendSlice(allocator, "e1:q9:get_peers1:t2:");
+    try request.appendSlice(allocator, "e1:q9:get_peers2:roi1e1:t2:");
     try request.appendSlice(allocator, &transaction);
     try request.appendSlice(allocator, "1:y1:qe");
     const deadline: Io.Timeout = (Io.Timeout{ .duration = .{ .raw = .fromMilliseconds(1000), .clock = .awake } }).toDeadline(io);

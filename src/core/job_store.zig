@@ -91,6 +91,8 @@ pub const Job = struct {
     bandwidth_limit_bytes_per_second: u64 = 0,
     workers: [32]WorkerProgress = @splat(.{}),
     worker_count: usize = 0,
+    torrent_active_peer: [256]u8 = @splat(0),
+    torrent_active_peer_len: usize = 0,
     torrent_peer_count: ?u32 = null,
     torrent_seeder_count: ?u32 = null,
     torrent_leecher_count: ?u32 = null,
@@ -1402,9 +1404,27 @@ pub const Store = struct {
         defer self.mutex.unlock(self.io);
         for (self.jobs.items) |*job| {
             if (!std.mem.eql(u8, job.id, job_id)) continue;
+            job.torrent_active_peer_len = 0;
             job.torrent_peer_count = null;
             job.torrent_seeder_count = null;
             job.torrent_leecher_count = null;
+            self.recordChange(job.id);
+            return;
+        }
+    }
+
+    pub fn updateTorrentPeer(self: *Store, job_id: []const u8, address: ?[]const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id) or job.state != .downloading) continue;
+            job.torrent_active_peer_len = 0;
+            if (address) |value| {
+                if (value.len <= job.torrent_active_peer.len) {
+                    @memcpy(job.torrent_active_peer[0..value.len], value);
+                    job.torrent_active_peer_len = value.len;
+                }
+            }
             self.recordChange(job.id);
             return;
         }
@@ -1867,6 +1887,7 @@ const Summary = struct {
     priority: i32,
     bandwidth_limit_bytes_per_second: u64,
     workers: []const WorkerProgress,
+    torrent_active_peer: ?[]const u8,
     torrent_peer_count: ?u32,
     torrent_seeder_count: ?u32,
     torrent_leecher_count: ?u32,
@@ -1902,6 +1923,7 @@ fn makeSummary(allocator: std.mem.Allocator, job: *const Job) !Summary {
         .priority = job.priority,
         .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
         .workers = job.workers[0..job.worker_count],
+        .torrent_active_peer = if (job.state == .downloading and job.torrent_active_peer_len > 0) job.torrent_active_peer[0..job.torrent_active_peer_len] else null,
         .torrent_peer_count = job.torrent_peer_count,
         .torrent_seeder_count = job.torrent_seeder_count,
         .torrent_leecher_count = job.torrent_leecher_count,

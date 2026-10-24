@@ -215,3 +215,47 @@ verified data across the engine reload. Its tracker requests and direct DHT
 bootstrap probes timed out intermittently; one tracker returned a peer that
 closed its connection. Continued Ubuntu payload progress was not established
 by this diagnostic. These observations do not establish full swarm acceptance.
+
+### Metadata reuse and native inspector
+
+Magnet preparation first inspects up to 256 engine-owned metainfo snapshots in
+the private profile. It revalidates the raw info hash and file map, rejects
+private metadata for magnet reuse, and preserves cached trackers when a magnet
+has none. Explicit tracker edits override the cached list. This permits an
+already imported public torrent's magnet to open even if DHT is unreachable;
+it does not manufacture peers or make an unavailable swarm downloadable.
+
+DHT bootstrap uses all resolved addresses for three bootstrap hosts and sends
+the BEP 43 read-only flag. Lookup contact/query bounds still apply. The macOS
+torrent inspector separates tracker-reported swarm counts, the actual connected
+download peer and its current rate, progress, and unsupported uploading. Peer
+addresses exist only in local IPC snapshots, not persistent state or logs.
+
+The Arch torrent reported `NoTorrentPeers` with 7 MiB verified; its info hash
+matches the user's trackerless magnet. The old magnet preparation returned
+`NoReachablePeer` in a live IPC reproduction. No verified data was discarded.
+
+### Single-file web seeds (BEP 19)
+
+Public single-file torrents can fill missing pieces from up to 32 HTTP(S)
+`url-list` entries. Directory URLs append the percent-encoded torrent name.
+Requests cover contiguous gaps of at most 64 MiB; the response must match the
+requested Content-Range and torrent size. Each piece is SHA-1 checked before
+positional write, sync, and durable progress. A bad seed is abandoned without
+trusting unverified bytes; verified pieces remain available to later seeds or
+peers. Resume rehashes the same spool, so no separate HTTP representation or
+journal can override torrent piece identity. Private and multi-file web seeds,
+FTP web seeds, and magnet `ws` parameters remain unsupported.
+
+Web seed requests use the queue task's proxy policy, shared HTTP connection
+budget, global/per-job progress-based bandwidth limits, and pause/cancel
+checks. A 15-second inactivity watchdog cancels and joins blocked HTTP work
+before its buffers leave scope. The inspector identifies a web seed by host;
+URL queries are not exposed as peer addresses or logged.
+
+Live confirmation on 2026-10-24: the exact Arch magnet returned one file with
+matching info hash in 6–7 ms using the cached metainfo. The existing Arch job
+resumed via `mirror.aarnet.edu.au`, increasing verified progress from 7,340,032
+to 14,155,776 bytes before a requested diagnostic pause. No partial reset was
+performed. This confirms partial web-seed resume, not completion of the ISO or
+general DHT reachability.

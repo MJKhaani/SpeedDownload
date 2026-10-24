@@ -137,6 +137,25 @@ pub fn downloadTorrentFileSelectedWithStats(
     stats: ?metadata.StatsCallback,
     stats_context: ?*anyopaque,
 ) !void {
+    return downloadTorrentFileSelectedWithTransport(allocator, io, torrent_path, destination, expected_sha256, selected_files, callback, context, control, control_context, stats, stats_context, .{}, null);
+}
+
+pub fn downloadTorrentFileSelectedWithTransport(
+    allocator: Allocator,
+    io: Io,
+    torrent_path: []const u8,
+    destination: []const u8,
+    expected_sha256: ?[32]u8,
+    selected_files: ?[]const []const u8,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+    stats: ?metadata.StatsCallback,
+    stats_context: ?*anyopaque,
+    policy: @import("../http/proxy.zig").Policy,
+    budget: ?*http_download.connection_budget.Budget,
+) !void {
     try checkControl(control, control_context);
     const bytes = try Io.Dir.readFileAlloc(.cwd(), io, torrent_path, allocator, .limited(metainfo.max_metainfo_bytes));
     defer allocator.free(bytes);
@@ -165,6 +184,8 @@ pub fn downloadTorrentFileSelectedWithStats(
     var link: magnet.Result = .{ .info_hash = info.info_hash, .display_name = null, .trackers = trackers, .peers = peers, .tracker_tier_ends = tracker_list.tier_ends, .tracker_tier_count = tracker_list.tier_count, .allow_dht = !info.is_private, .is_private = info.is_private };
     defer link.deinit(allocator);
     var session = try metadata.Session.init(io);
+    session.webseed_policy = policy;
+    session.webseed_budget = budget;
     try transferValidated(allocator, io, info, map, &link, null, destination, expected_sha256, selected_files, callback, context, &session, control, control_context, stats, stats_context);
 }
 
@@ -207,6 +228,8 @@ fn transferValidated(
     stats_context: ?*anyopaque,
 ) !void {
     try checkControl(control, control_context);
+    session.peer_observer = stats;
+    session.peer_observer_context = stats_context;
     const cwd = Io.Dir.cwd();
     if (cwd.statFile(io, destination, .{})) |_| return error.DestinationExists else |err| switch (err) {
         error.FileNotFound => {},
@@ -258,6 +281,49 @@ fn transferValidated(
     var remaining = try scanVerified(io, file, info, piece_buffer, verified, needed, &verified_bytes);
     try file.setLength(io, info.total_bytes);
     if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes, needed_bytes, true);
+
+    // Public single-file web seeds can fill the verified spool without DHT.
+    // Never expose a private torrent to an unconfirmed external web endpoint.
+    if (remaining != 0 and info.single_file and !info.is_private) {
+        const seeds = metainfo.webSeedUrls(allocator, info) catch try allocator.alloc([]const u8, 0);
+        defer allocator.free(seeds);
+        for (seeds) |seed| {
+            try checkControl(control, control_context);
+            const url = if (std.mem.endsWith(u8, seed, "/")) blk: {
+                var encoded: std.Io.Writer.Allocating = .init(allocator);
+                defer encoded.deinit();
+                try encoded.writer.writeAll(seed);
+                try (std.Uri.Component{ .raw = info.name }).formatPath(&encoded.writer);
+                break :blk try allocator.dupe(u8, encoded.written());
+            } else try allocator.dupe(u8, seed);
+            defer allocator.free(url);
+            var transfer: @import("webseed.zig").Transfer = .{
+                .allocator = allocator,
+                .io = io,
+                .info = info,
+                .file = file,
+                .buffer = piece_buffer,
+                .verified = verified,
+                .remaining = &remaining,
+                .verified_bytes = &verified_bytes,
+                .callback = callback,
+                .context = context,
+                .control = control,
+                .control_context = control_context,
+                .policy = session.webseed_policy,
+                .budget = session.webseed_budget,
+                .stats = stats,
+                .stats_context = stats_context,
+            };
+            transfer.run(url) catch |err| {
+                if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused or err == error.OutOfMemory) return err;
+                // Network/protocol failures can use another seed or peers;
+                // local I/O errors must not be hidden by discovery failures.
+                if (!canTryAnotherPeer(err) and err != error.InvalidWebSeedResponse and err != error.ResponseLengthMismatch and err != error.ReadFailed and err != error.InvalidResponseStatus and err != error.ConnectionClosed and err != error.TlsInitializationFailed) return err;
+            };
+            if (remaining == 0) break;
+        }
+    }
 
     if (remaining != 0) {
         var last_error: anyerror = error.NoPeerHasPieces;
@@ -530,6 +596,12 @@ fn transferFromPeer(
     try checkControl(control, control_context);
     if (response[0] != 19 or !std.mem.eql(u8, response[1..20], "BitTorrent protocol") or
         !std.mem.eql(u8, response[28..48], &info.info_hash)) return error.PeerHandshakeMismatch;
+    if (session.peer_observer) |report| if (session.peer_observer_context) |ctx|
+        report(ctx, 0, .{ .peer_event = true, .active_peer = address });
+    defer if (session.peer_observer) |report| {
+        if (session.peer_observer_context) |ctx|
+            report(ctx, 0, .{ .peer_event = true });
+    };
     try socket_writer.interface.writeAll(&.{ 0, 0, 0, 1, 2 }); // interested
     try socket_writer.interface.flush();
 

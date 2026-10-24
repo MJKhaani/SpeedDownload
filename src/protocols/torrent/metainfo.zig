@@ -13,6 +13,7 @@ pub const Result = struct {
     name: []const u8,
     announce: ?[]const u8,
     announce_list: ?[]const u8,
+    web_seed_list: ?[]const u8 = null,
     total_bytes: u64,
     file_count: u32,
     single_file: bool,
@@ -256,6 +257,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
     var previous: ?[]const u8 = null;
     var announce: ?[]const u8 = null;
     var announce_list: ?[]const u8 = null;
+    var web_seed_list: ?[]const u8 = null;
     var info_name: ?[]const u8 = null;
     var info_files: Files = .{};
     var single_file = false;
@@ -276,6 +278,10 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
             const start = cursor.position;
             try cursor.skip(1);
             announce_list = bytes[start..cursor.position];
+        } else if (std.mem.eql(u8, key, "url-list")) {
+            const start = cursor.position;
+            try cursor.skip(1);
+            web_seed_list = bytes[start..cursor.position];
         } else if (std.mem.eql(u8, key, "info")) {
             const start = cursor.position;
             const info = try parseInfo(allocator, &cursor);
@@ -298,6 +304,7 @@ pub fn inspect(allocator: Allocator, bytes: []const u8) !Result {
         .name = info_name.?,
         .announce = announce,
         .announce_list = announce_list,
+        .web_seed_list = web_seed_list,
         .total_bytes = info_files.total,
         .file_count = info_files.count,
         .single_file = single_file,
@@ -592,4 +599,32 @@ pub fn bootstrapPeer(allocator: Allocator, bytes: []const u8) !?[]const u8 {
         try cursor.skip(1);
     }
     return null;
+}
+
+/// BEP 19 single-file HTTP(S) seeds. Strings borrow the validated metainfo;
+/// only the returned outer slice is owned. Unsupported schemes are ignored.
+pub fn webSeedUrls(allocator: Allocator, info: Result) ![][]const u8 {
+    var urls: std.ArrayList([]const u8) = .empty;
+    errdefer urls.deinit(allocator);
+    const encoded = info.web_seed_list orelse return urls.toOwnedSlice(allocator);
+    var cursor: Cursor = .{ .bytes = encoded };
+    const list = encoded.len > 0 and encoded[0] == 'l';
+    if (list) try cursor.take('l');
+    while (cursor.position < encoded.len and encoded[cursor.position] != 'e') {
+        const value = try cursor.string();
+        if (urls.items.len == 32) break;
+        if (value.len == 0 or value.len > 4096) continue;
+        var invalid = false;
+        for (value) |byte| if (byte < 0x20 or byte == 0x7f) {
+            invalid = true;
+            break;
+        };
+        if (invalid) continue;
+        const uri = std.Uri.parse(value) catch continue;
+        if (uri.host == null or uri.user != null or uri.password != null or uri.fragment != null or
+            !(std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https"))) continue;
+        try urls.append(allocator, value);
+        if (!list) break;
+    }
+    return urls.toOwnedSlice(allocator);
 }

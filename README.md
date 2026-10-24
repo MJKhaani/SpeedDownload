@@ -29,7 +29,7 @@ so closing a client window does not stop them.
 | --- | --- |
 | macOS client | Runnable SwiftUI app; requires macOS 14 or later. |
 | Windows and Linux clients | Source included; further client work and native runtime validation are deferred. |
-| Engine and CLI | HTTP(S), initial anonymous FTP/FTPS support, and experimental BitTorrent v1 transfers. |
+| Engine and CLI | HTTP(S), initial anonymous FTP/FTPS support, and experimental BitTorrent v1 transfers, including HTTP(S) web seeds for public single-file torrents. |
 | Browser extensions | Experimental Chrome and Firefox extensions for the macOS client. |
 
 FTP/FTPS interoperability and BitTorrent transfers against live swarms still need

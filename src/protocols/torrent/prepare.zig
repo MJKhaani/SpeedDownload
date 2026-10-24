@@ -46,6 +46,14 @@ pub fn prepare(allocator: std.mem.Allocator, io: std.Io, directory: []const u8, 
             allocator.free(link.trackers);
             link.trackers = replacement;
         }
+        // Local metadata is useful even when public discovery is unreachable.
+        // Match the raw info hash and revalidate paths; never trust the name.
+        if (try cachedMetadata(allocator, io, directory, link.info_hash)) |cached| {
+            break :blk if (trackers != null or link.trackers.len > 0)
+                try metainfo.withTrackers(allocator, cached, link.trackers)
+            else
+                cached;
+        }
         // A magnet does not carry the private flag. Metadata discovery may use
         // DHT; a verified private result is rejected below before queueing.
         link.allow_dht = true;
@@ -140,4 +148,37 @@ fn fetchTorrent(allocator: std.mem.Allocator, io: std.Io, url: []const u8, polic
     }
     complete = true;
     return bytes.toOwnedSlice(allocator);
+}
+
+/// Only inspect bounded engine-owned snapshots, never arbitrary user files.
+fn cachedMetadata(allocator: std.mem.Allocator, io: std.Io, directory: []const u8, hash: [20]u8) !?[]u8 {
+    var dir = try std.Io.Dir.openDirAbsolute(io, directory, .{ .iterate = true, .follow_symlinks = false });
+    defer dir.close(io);
+    var iterator = dir.iterate();
+    var inspected: usize = 0;
+    var read_bytes: usize = 0;
+    const cache_read_limit = 32 * 1024 * 1024;
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".torrent") or
+            !(std.mem.startsWith(u8, entry.name, "preview-") or std.mem.startsWith(u8, entry.name, "torrent-"))) continue;
+        if (inspected == 256 or read_bytes >= cache_read_limit) break;
+        inspected += 1;
+        const bytes = dir.readFileAlloc(io, entry.name, allocator, .limited(@min(metainfo.max_metainfo_bytes, cache_read_limit - read_bytes))) catch continue;
+        read_bytes += bytes.len;
+        const info = metainfo.inspect(allocator, bytes) catch {
+            allocator.free(bytes);
+            continue;
+        };
+        if (info.is_private or !std.mem.eql(u8, &info.info_hash, &hash)) {
+            allocator.free(bytes);
+            continue;
+        }
+        const map = metainfo.inspectFileMap(allocator, bytes) catch {
+            allocator.free(bytes);
+            continue;
+        };
+        map.deinit(allocator);
+        return bytes;
+    }
+    return null;
 }

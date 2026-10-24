@@ -32,6 +32,10 @@ pub const Session = struct {
     announced_trackers: [32][]const u8 = undefined,
     announced_count: usize = 0,
     dht_attempted: bool = false,
+    webseed_policy: @import("../http/proxy.zig").Policy = .{},
+    webseed_budget: ?*@import("../http/connection_budget.zig").Budget = null,
+    peer_observer: ?StatsCallback = null,
+    peer_observer_context: ?*anyopaque = null,
 
     pub fn init(io: Io) !Session {
         var result: Session = .{ .peer_id = undefined, .key = undefined };
@@ -113,6 +117,9 @@ pub const Fetched = struct {
 };
 
 pub const TrackerCounts = struct {
+    /// Transient connected peer event; the callback must copy the address.
+    peer_event: bool = false,
+    active_peer: ?[]const u8 = null,
     seeders: ?u32 = null,
     leechers: ?u32 = null,
     retry_delay_seconds: ?u32 = null,
