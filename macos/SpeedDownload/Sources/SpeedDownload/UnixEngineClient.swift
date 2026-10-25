@@ -56,6 +56,33 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         case torrentSeederCount = "torrent_seeder_count"
         case torrentLeecherCount = "torrent_leecher_count"
     }
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        jobID = try fields.decode(String.self, forKey: .jobID)
+        queueID = try fields.decodeIfPresent(String.self, forKey: .queueID) ?? "main"
+        url = try fields.decode(String.self, forKey: .url)
+        name = try fields.decodeIfPresent(String.self, forKey: .name)
+        destination = try fields.decode(String.self, forKey: .destination)
+        referenceURL = try fields.decodeIfPresent(String.self, forKey: .referenceURL)
+        state = try fields.decode(String.self, forKey: .state)
+        revision = try fields.decode(String.self, forKey: .revision)
+        errorMessage = try fields.decodeIfPresent(String.self, forKey: .errorMessage)
+        retryAttempts = try fields.decodeIfPresent(Int.self, forKey: .retryAttempts)
+        retryAtUnixMS = try fields.decodeIfPresent(String.self, forKey: .retryAtUnixMS)
+        completedBytes = try fields.decodeIfPresent(String.self, forKey: .completedBytes)
+        receivedBytes = try fields.decodeIfPresent(String.self, forKey: .receivedBytes)
+        totalBytes = try fields.decodeIfPresent(String.self, forKey: .totalBytes)
+        requestedControl = try fields.decodeIfPresent(String.self, forKey: .requestedControl)
+        priority = try fields.decodeIfPresent(Int.self, forKey: .priority)
+        bandwidthLimitBytesPerSecond = try fields.decodeIfPresent(UInt64.self, forKey: .bandwidthLimitBytesPerSecond)
+        expectedSHA256 = try fields.decodeIfPresent(String.self, forKey: .expectedSHA256)
+        workers = try fields.decodeIfPresent([DownloadWorker].self, forKey: .workers)
+        torrentActivePeer = try fields.decodeIfPresent(String.self, forKey: .torrentActivePeer)
+        torrentPeerCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentPeerCount)
+        torrentSeederCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentSeederCount)
+        torrentLeecherCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentLeecherCount)
+    }
 }
 
 struct DownloadWorker: Decodable, Sendable, Equatable, Identifiable {
