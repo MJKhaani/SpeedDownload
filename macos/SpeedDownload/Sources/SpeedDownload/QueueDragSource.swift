@@ -36,6 +36,11 @@ struct QueueDragSource: NSViewRepresentable {
         private var origin: NSPoint = .zero
 
         override func mouseDown(with event: NSEvent) {
+            if event.clickCount >= 2, let rename {
+                rename()
+                beganDrag = false
+                return
+            }
             origin = convert(event.locationInWindow, from: nil)
             beganDrag = false
         }
@@ -54,13 +59,11 @@ struct QueueDragSource: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
-            if !beganDrag {
-                if event.clickCount >= 2, let rename { rename() } else { select?() }
-            }
+            if !beganDrag && event.clickCount == 1 { select?() }
         }
 
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-            .copy
+            context == .outsideApplication ? .delete : .copy
         }
 
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {

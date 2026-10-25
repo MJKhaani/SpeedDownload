@@ -11,7 +11,9 @@ struct DashboardView: View {
     @AppStorage("showCompleted") private var showCompleted = true
     @AppStorage("showFailed") private var showFailed = true
     @State private var queueDraftNames: [String: String] = [:]
+    @State private var editingQueueID: String?
     @FocusState private var focusedQueueID: String?
+    @FocusState private var addButtonFocused: Bool
     @State private var hoveredQueueID: String?
     @State private var settingsQueue: DownloadQueue?
     @State private var queuePendingRemoval: DownloadQueue?
@@ -117,8 +119,13 @@ struct DashboardView: View {
                         }
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 11))
+                            .frame(width: 18, height: 18)
                     }
                     .menuStyle(.borderlessButton)
+                    .controlSize(.mini)
+                    .fixedSize()
+                    .focusable(false)
                     .help("Sort transfers")
                     .accessibilityLabel("Sort transfers")
                 }
@@ -202,10 +209,13 @@ struct DashboardView: View {
                     }
                     .help("Add Download")
                     .disabled(!isConnected)
+                    .focused($addButtonFocused)
                 }
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .animation(nil, value: columnVisibility)
+        .animation(nil, value: showingTaskInspector)
         .background(MainWindowPaneSizer(sidebarVisible: columnVisibility != .detailOnly, inspectorVisible: showingTaskInspector))
         .sheet(item: $settingsQueue) { queue in
             QueueSettingsView(queue: queue) { updated in
@@ -262,6 +272,7 @@ struct DashboardView: View {
         }
         .task {
             if alwaysShowSidebar { columnVisibility = .all }
+            DispatchQueue.main.async { addButtonFocused = true }
             reconcileSelection(with: filteredJobs)
             for token in BrowserHandoff.pendingTokens() { receiveBrowserHandoff(token, recovering: true) }
         }
@@ -269,6 +280,12 @@ struct DashboardView: View {
         .onChange(of: selection) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: alwaysShowSidebar) { _, enabled in if enabled { columnVisibility = .all } }
+        .onChange(of: isConnected) { _, connected in
+            if connected { DispatchQueue.main.async { addButtonFocused = true } }
+        }
+        .onChange(of: focusedQueueID) { old, new in
+            if old != nil, new == nil, editingQueueID == old { saveQueueNames() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadNewTransfer)) { _ in newDownload() }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadClipboardTransfer)) { notification in
             guard let value = notification.object as? String, value.utf8.count <= 8192 else { return }
@@ -508,7 +525,7 @@ struct DashboardView: View {
     private func queueSidebarRow(_ queue: DownloadQueue) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "tray.full")
-            if focusedQueueID == queue.id && queue.id != "main" {
+            if editingQueueID == queue.id && queue.id != "main" {
                 TextField("Queue name", text: Binding(
                     get: { queueDraftNames[queue.id] ?? queue.name },
                     set: { queueDraftNames[queue.id] = $0 }
@@ -516,6 +533,7 @@ struct DashboardView: View {
                 .textFieldStyle(.plain)
                 .focused($focusedQueueID, equals: queue.id)
                 .onSubmit { saveQueueNames() }
+                .onAppear { DispatchQueue.main.async { focusedQueueID = queue.id } }
             } else {
                 Text(queue.name).lineLimit(1)
                     .onTapGesture(count: 2) { beginRenaming(queue) }
@@ -533,7 +551,7 @@ struct DashboardView: View {
             }
         }
         .overlay(alignment: .leading) {
-            if queue.id != "main" && focusedQueueID != queue.id {
+            if queue.id != "main" && editingQueueID != queue.id {
                 QueueDragSource(name: queue.name, select: { selection = "Queue:\(queue.id)" }, remove: { requestQueueRemoval(queue) }, rename: { beginRenaming(queue) })
                     .frame(width: 135, height: 24)
                     .help("Drag outside the window to remove this queue")
@@ -552,13 +570,14 @@ struct DashboardView: View {
         guard let queue = await engine.createQueue() else { return }
         queueDraftNames[queue.id] = queue.name
         selection = "Queue:\(queue.id)"
-        focusedQueueID = queue.id
+        editingQueueID = queue.id
         columnVisibility = .all
     }
 
     private func saveQueueNames() {
         let drafts = queueDraftNames
         focusedQueueID = nil
+        editingQueueID = nil
         Task { await engine.renameQueues(drafts) }
     }
 
@@ -566,7 +585,7 @@ struct DashboardView: View {
         guard queue.id != "main" else { return }
         queueDraftNames[queue.id] = queue.name
         selection = "Queue:\(queue.id)"
-        focusedQueueID = queue.id
+        editingQueueID = queue.id
     }
 
     private func requestQueueRemoval(_ queue: DownloadQueue) {
@@ -580,6 +599,7 @@ struct DashboardView: View {
     private func removeQueue(_ queue: DownloadQueue) {
         Task {
             if await engine.deleteQueue(queue) {
+                NSSound(named: NSSound.Name("Funk"))?.play()
                 if selection == "Queue:\(queue.id)" { selection = "Queue:main" }
                 queueDraftNames.removeValue(forKey: queue.id)
             }
@@ -1440,12 +1460,8 @@ private struct MainWindowPaneSizer: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
     func updateNSView(_ view: NSView, context: Context) {
-        let sidebar = sidebarVisible
-        let inspector = inspectorVisible
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            context.coordinator.resize(window, sidebar: sidebar, inspector: inspector)
-        }
+        guard let window = view.window else { return }
+        context.coordinator.resize(window, sidebar: sidebarVisible, inspector: inspectorVisible)
     }
 
     final class Coordinator {
@@ -1462,7 +1478,7 @@ private struct MainWindowPaneSizer: NSViewRepresentable {
             var frame = window.frame
             let maxWidth = window.screen?.visibleFrame.width ?? frame.width + CGFloat(delta)
             frame.size.width = min(maxWidth, max(window.minSize.width, frame.width + CGFloat(delta)))
-            window.setFrame(frame, display: true, animate: true)
+            window.setFrame(frame, display: true, animate: false)
         }
     }
 }

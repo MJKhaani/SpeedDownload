@@ -3,10 +3,12 @@ import SwiftUI
 struct QueueSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var queue: DownloadQueue
-    @State private var days: [QueueDay]
+    @State private var selectedDays: Set<Int>
+    @State private var startHour: Int
+    @State private var stopHour: Int
     let save: (DownloadQueue) -> Void
 
-    private static let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    private static let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
     init(queue: DownloadQueue, save: @escaping (DownloadQueue) -> Void) {
         var queue = queue
@@ -16,17 +18,19 @@ struct QueueSettingsView: View {
             queue.customApp = nil
         }
         _queue = State(initialValue: queue)
-        _days = State(initialValue: (0..<7).map { day in
-            let slots = Array(queue.scheduleSlots.dropFirst(day * 24).prefix(24))
-            let first = slots.firstIndex(of: true)
-            let last = slots.lastIndex(of: true)
-            return QueueDay(enabled: first != nil, start: first ?? 0, stop: (last ?? 23) + 1)
+        let activeDays = Set((0..<7).filter { day in
+            queue.scheduleSlots.dropFirst(day * 24).prefix(24).contains(true)
         })
+        _selectedDays = State(initialValue: activeDays)
+        let firstDay = activeDays.sorted().first ?? 0
+        let hours = Array(queue.scheduleSlots.dropFirst(firstDay * 24).prefix(24))
+        _startHour = State(initialValue: hours.firstIndex(of: true) ?? 0)
+        _stopHour = State(initialValue: (hours.lastIndex(of: true) ?? 23) + 1)
         self.save = save
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             Text("\(queue.name) Settings").font(.title2.weight(.semibold))
             GroupBox("Downloads") {
                 Stepper(value: $queue.maxActive, in: 1...32) {
@@ -35,29 +39,33 @@ struct QueueSettingsView: View {
                 .padding(6)
             }
             GroupBox("Schedule") {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 12) {
                     Toggle("Start and stop this queue on a schedule", isOn: $queue.scheduleEnabled)
-                    ForEach(days.indices, id: \.self) { index in
-                        HStack {
-                            Toggle(Self.names[index], isOn: $days[index].enabled)
-                                .frame(width: 125, alignment: .leading)
-                                .disabled(!queue.scheduleEnabled)
-                            Picker("Start", selection: $days[index].start) {
-                                ForEach(0..<24, id: \.self) { hour in Text(Self.hourLabel(hour)).tag(hour) }
+                    HStack(spacing: 6) {
+                        ForEach(0..<7, id: \.self) { day in
+                            Button(Self.names[day]) {
+                                if selectedDays.contains(day) { selectedDays.remove(day) }
+                                else { selectedDays.insert(day) }
                             }
-                            .frame(width: 165)
-                            .disabled(!queue.scheduleEnabled || !days[index].enabled)
-                            Picker("Stop", selection: $days[index].stop) {
-                                ForEach(1...24, id: \.self) { hour in Text(Self.hourLabel(hour)).tag(hour) }
-                            }
-                            .frame(width: 165)
-                            .disabled(!queue.scheduleEnabled || !days[index].enabled)
+                            .buttonStyle(.bordered)
+                            .tint(selectedDays.contains(day) ? .accentColor : .secondary)
+                            .accessibilityLabel("\(Self.names[day]), \(selectedDays.contains(day) ? "selected" : "not selected")")
                         }
                     }
-                    Text("Hours use your Mac’s local time. To span midnight, set both days.")
+                    .disabled(!queue.scheduleEnabled)
+                    HStack(spacing: 20) {
+                        Picker("Start", selection: $startHour) {
+                            ForEach(0..<24, id: \.self) { hour in Text(Self.hourLabel(hour)).tag(hour) }
+                        }
+                        Picker("Stop", selection: $stopHour) {
+                            ForEach((startHour + 1)...24, id: \.self) { hour in Text(Self.hourLabel(hour)).tag(hour) }
+                        }
+                    }
+                    .disabled(!queue.scheduleEnabled || selectedDays.isEmpty)
+                    Text("The queue runs between these hours on the selected days, using local time.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                .padding(6)
+                .padding(8)
             }
             GroupBox("When all downloads finish") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -73,7 +81,7 @@ struct QueueSettingsView: View {
                             set: { queue.userCommand = $0 }
                         ))
                         .textFieldStyle(.roundedBorder)
-                        Text("Runs with /bin/sh when this queue finishes. Commands run as your user account.")
+                        Text("Runs with /bin/sh as your user account when the queue finishes.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -83,26 +91,23 @@ struct QueueSettingsView: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Save") {
-                    queue.scheduleSlots = days.flatMap { day in
-                        (0..<24).map { day.enabled && $0 >= day.start && $0 < day.stop }
+                    queue.scheduleSlots = (0..<7).flatMap { day in
+                        (0..<24).map { hour in selectedDays.contains(day) && hour >= startHour && hour < stopHour }
                     }
                     save(queue)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(queue.finishAction == "user_command" && (queue.userCommand ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(queue.scheduleEnabled && selectedDays.isEmpty || queue.finishAction == "user_command" && (queue.userCommand ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
-        .frame(width: 660)
+        .frame(width: 570)
+        .onChange(of: startHour) { _, newValue in
+            if stopHour <= newValue { stopHour = min(24, newValue + 1) }
+        }
     }
 
     private static func hourLabel(_ hour: Int) -> String { String(format: "%02d:00", hour) }
     private static func shellQuoted(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-}
-
-private struct QueueDay {
-    var enabled: Bool
-    var start: Int
-    var stop: Int
 }
