@@ -70,6 +70,8 @@ struct MainWindowPaneSizer: NSViewRepresentable {
         private var previous: (sidebar: Bool, inspector: Bool)?
         private var sidebarExtent = PaneExtent()
         private var inspectorExtent = PaneExtent()
+        private var appliedSidebarWidth: CGFloat = 220
+        private var appliedInspectorWidth: CGFloat = 320
         private var lastTarget: CGRect?
         private var lastAdjustmentTime: TimeInterval = 0
 
@@ -82,10 +84,15 @@ struct MainWindowPaneSizer: NSViewRepresentable {
                 // when the window closed. New panels still need an expansion.
                 sidebarExtent = restoredSidebarVisible ? PaneExtent(left: sidebarWidth) : PaneExtent()
                 inspectorExtent = restoredInspectorVisible ? PaneExtent(right: inspectorWidth) : PaneExtent()
+                appliedSidebarWidth = sidebarWidth
+                appliedInspectorWidth = inspectorWidth
                 if restoredSidebarVisible == sidebarVisible && restoredInspectorVisible == inspectorVisible { return }
             }
             let old = self.previous!
-            guard old.sidebar != sidebarVisible || old.inspector != inspectorVisible else { return }
+            let sidebarWidthChanged = sidebarVisible && abs(sidebarWidth - appliedSidebarWidth) > 3
+            let inspectorWidthChanged = inspectorVisible && abs(inspectorWidth - appliedInspectorWidth) > 3
+            guard old.sidebar != sidebarVisible || old.inspector != inspectorVisible ||
+                    sidebarWidthChanged || inspectorWidthChanged else { return }
             self.previous = (sidebarVisible, inspectorVisible)
 
             // Fullscreen, zoomed, tiled/full-display, and miniaturized windows
@@ -95,6 +102,8 @@ struct MainWindowPaneSizer: NSViewRepresentable {
                   !window.isMiniaturized, !window.inLiveResize else {
                 sidebarExtent = PaneExtent()
                 inspectorExtent = PaneExtent()
+                appliedSidebarWidth = sidebarWidth
+                appliedInspectorWidth = inspectorWidth
                 lastTarget = nil
                 return
             }
@@ -106,6 +115,8 @@ struct MainWindowPaneSizer: NSViewRepresentable {
             if fillsScreenHeight && alignedToScreenEdge {
                 sidebarExtent = PaneExtent()
                 inspectorExtent = PaneExtent()
+                appliedSidebarWidth = sidebarWidth
+                appliedInspectorWidth = inspectorWidth
                 lastTarget = nil
                 return
             }
@@ -127,10 +138,22 @@ struct MainWindowPaneSizer: NSViewRepresentable {
             if !old.sidebar && sidebarVisible {
                 (target, sidebarExtent) = PaneWindowGeometry.expand(target, by: sidebarWidth, toward: .left,
                                                                     in: visible, maximumWidth: maximum)
+                appliedSidebarWidth = sidebarWidth
             }
             if !old.inspector && inspectorVisible {
                 (target, inspectorExtent) = PaneWindowGeometry.expand(target, by: inspectorWidth, toward: .right,
                                                                       in: visible, maximumWidth: maximum)
+                appliedInspectorWidth = inspectorWidth
+            }
+            if old.sidebar && sidebarVisible && sidebarWidthChanged {
+                adjust(&target, extent: &sidebarExtent, from: appliedSidebarWidth,
+                       to: sidebarWidth, toward: .left, in: visible, minimum: minimum, maximum: maximum)
+                appliedSidebarWidth = sidebarWidth
+            }
+            if old.inspector && inspectorVisible && inspectorWidthChanged {
+                adjust(&target, extent: &inspectorExtent, from: appliedInspectorWidth,
+                       to: inspectorWidth, toward: .right, in: visible, minimum: minimum, maximum: maximum)
+                appliedInspectorWidth = inspectorWidth
             }
             guard target != current else { return }
             lastTarget = target
@@ -143,6 +166,28 @@ struct MainWindowPaneSizer: NSViewRepresentable {
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     window.animator().setFrame(target, display: true)
                 }
+            }
+        }
+
+        private func adjust(_ frame: inout CGRect, extent: inout PaneExtent, from oldWidth: CGFloat,
+                            to newWidth: CGFloat, toward side: PaneWindowGeometry.Side,
+                            in visible: CGRect, minimum: CGFloat, maximum: CGFloat) {
+            let difference = newWidth - oldWidth
+            if difference > 0 {
+                let (expanded, added) = PaneWindowGeometry.expand(frame, by: difference, toward: side,
+                                                                   in: visible, maximumWidth: maximum)
+                frame = expanded
+                extent.left += added.left
+                extent.right += added.right
+            } else if difference < 0, extent.width > 0 {
+                let fraction = min(1, -difference / extent.width)
+                let removed = PaneExtent(left: extent.left * fraction, right: extent.right * fraction)
+                let oldFrame = frame
+                frame = PaneWindowGeometry.collapse(frame, removing: removed, minimumWidth: minimum)
+                let applied = oldFrame.width - frame.width
+                let ratio = removed.width > 0 ? applied / removed.width : 0
+                extent.left -= removed.left * ratio
+                extent.right -= removed.right * ratio
             }
         }
     }
@@ -167,10 +212,16 @@ struct PaneSizingModifier: ViewModifier {
                                             restoredSidebarVisible: restoredSidebarVisible,
                                             restoredInspectorVisible: restoredInspectorVisible))
             .onPreferenceChange(SidebarWidthPreference.self) { width in
-                if width > 1 { sidebarWidth = width }
+                if width > 1 {
+                    sidebarWidth = width
+                    UserDefaults.standard.set(Double(width), forKey: "dashboardSidebarWidth")
+                }
             }
             .onPreferenceChange(InspectorWidthPreference.self) { width in
-                if width > 1 { inspectorWidth = width }
+                if width > 1 {
+                    inspectorWidth = width
+                    UserDefaults.standard.set(Double(width), forKey: "dashboardInspectorWidth")
+                }
             }
     }
 }

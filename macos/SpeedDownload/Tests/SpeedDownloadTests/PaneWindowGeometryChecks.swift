@@ -32,6 +32,23 @@ struct PaneWindowGeometryChecks {
         let (both, rightExtent) = PaneWindowGeometry.expand(sidebarFrame, by: 280, toward: .right, in: screen)
         let withoutSidebar = PaneWindowGeometry.collapse(both, removing: sidebar, minimumWidth: 500)
         precondition(PaneWindowGeometry.collapse(withoutSidebar, removing: rightExtent, minimumWidth: 500) == original)
+
+        // Repeat the same transitions near both edges and on a monitor whose
+        // coordinates do not begin at zero. The final frame must not drift.
+        for screenX in [-1920.0, 0.0, 1440.0] {
+            let display = CGRect(x: screenX, y: 0, width: 1440, height: 900)
+            for offset in stride(from: 0.0, through: 600.0, by: 50.0) {
+                let start = CGRect(x: screenX + offset, y: 80, width: 800, height: 600)
+                var frame = start
+                for _ in 0..<20 {
+                    let (openedSidebar, left) = PaneWindowGeometry.expand(frame, by: 220, toward: .left, in: display)
+                    let (openedBoth, right) = PaneWindowGeometry.expand(openedSidebar, by: 320, toward: .right, in: display)
+                    frame = PaneWindowGeometry.collapse(openedBoth, removing: left, minimumWidth: 500)
+                    frame = PaneWindowGeometry.collapse(frame, removing: right, minimumWidth: 500)
+                }
+                precondition(frame == start)
+            }
+        }
         print("Pane window geometry checks passed")
     }
 }

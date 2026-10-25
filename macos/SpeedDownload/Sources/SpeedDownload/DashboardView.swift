@@ -59,6 +59,10 @@ struct DashboardView: View {
         restoredInspectorVisible = savedInspector
         _columnVisibility = State(initialValue: savedSidebar || defaults.bool(forKey: "alwaysShowSidebar") ? .all : .detailOnly)
         _showingTaskInspector = State(initialValue: savedInspector)
+        _sidebarWidth = State(initialValue: defaults.double(forKey: "dashboardSidebarWidth") > 1
+                              ? defaults.double(forKey: "dashboardSidebarWidth") : 220)
+        _inspectorWidth = State(initialValue: defaults.double(forKey: "dashboardInspectorWidth") > 1
+                                ? defaults.double(forKey: "dashboardInspectorWidth") : 320)
     }
     private enum SortOrder: String, CaseIterable {
         case queue, name, size, status
