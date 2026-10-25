@@ -29,6 +29,11 @@ struct PaneWindowGeometryChecks {
         precondition(limitedExtent.width == 200)
         precondition(PaneWindowGeometry.collapse(limitedFrame, removing: limitedExtent, minimumWidth: 500) == edge)
 
+        let secondMonitor = CGRect(x: -1920, y: 40, width: 1600, height: 860)
+        let moved = CGRect(x: -2300, y: 100, width: 1800, height: 600)
+        let fitted = PaneWindowGeometry.fitHorizontally(moved, in: secondMonitor)
+        precondition(fitted == CGRect(x: -1920, y: 100, width: 1600, height: 600))
+
         let (both, rightExtent) = PaneWindowGeometry.expand(sidebarFrame, by: 280, toward: .right, in: screen)
         let withoutSidebar = PaneWindowGeometry.collapse(both, removing: sidebar, minimumWidth: 500)
         precondition(PaneWindowGeometry.collapse(withoutSidebar, removing: rightExtent, minimumWidth: 500) == original)

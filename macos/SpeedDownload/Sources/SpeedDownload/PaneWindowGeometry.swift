@@ -14,10 +14,8 @@ enum PaneWindowGeometry {
     static func expand(_ original: CGRect, by requested: CGFloat, toward side: Side,
                        in visible: CGRect, maximumWidth: CGFloat = .greatestFiniteMagnitude) -> (CGRect, PaneExtent) {
         guard requested > 0, visible.width > 0 else { return (original, PaneExtent()) }
-        var frame = original
         // A monitor change may leave the window partly outside the new visible frame.
-        frame.size.width = min(frame.width, visible.width)
-        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+        var frame = fitHorizontally(original, in: visible)
         let available = max(0, min(visible.width, maximumWidth) - frame.width)
         let amount = min(requested, available)
         let leftSpace = max(0, frame.minX - visible.minX)
@@ -44,5 +42,13 @@ enum PaneWindowGeometry {
         result.origin.x += extent.left * removed / extent.width
         result.size.width -= removed
         return result
+    }
+
+    static func fitHorizontally(_ original: CGRect, in visible: CGRect) -> CGRect {
+        guard visible.width > 0 else { return original }
+        var frame = original
+        frame.size.width = min(frame.width, visible.width)
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+        return frame
     }
 }

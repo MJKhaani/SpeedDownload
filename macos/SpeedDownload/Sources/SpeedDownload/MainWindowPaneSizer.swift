@@ -34,7 +34,7 @@ struct MainWindowPaneSizer: NSViewRepresentable {
     func makeNSView(context: Context) -> WindowProbeView {
         let view = WindowProbeView(frame: .zero)
         view.windowChanged = { [weak coordinator = context.coordinator] window in
-            coordinator?.window = window
+            coordinator?.attach(to: window)
             coordinator?.reconcile()
         }
         return view
@@ -47,7 +47,7 @@ struct MainWindowPaneSizer: NSViewRepresentable {
         context.coordinator.inspectorWidth = inspectorWidth
         context.coordinator.restoredSidebarVisible = restoredSidebarVisible
         context.coordinator.restoredInspectorVisible = restoredInspectorVisible
-        context.coordinator.window = view.window
+        context.coordinator.attach(to: view.window)
         context.coordinator.reconcile()
     }
 
@@ -74,6 +74,30 @@ struct MainWindowPaneSizer: NSViewRepresentable {
         private var appliedInspectorWidth: CGFloat = 320
         private var lastTarget: CGRect?
         private var lastAdjustmentTime: TimeInterval = 0
+        private var lastScreenFrame: CGRect?
+        private var observers: [NSObjectProtocol] = []
+
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+        func attach(to newWindow: NSWindow?) {
+            guard window !== newWindow else { return }
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers.removeAll()
+            window = newWindow
+            lastTarget = nil
+            lastAdjustmentTime = 0
+            lastScreenFrame = nil
+            guard let newWindow else { return }
+            for name in [NSWindow.didEndLiveResizeNotification, NSWindow.didChangeScreenNotification,
+                         NSWindow.didDeminiaturizeNotification] {
+                let observer = NotificationCenter.default.addObserver(forName: name, object: newWindow, queue: .main) { [weak self] _ in
+                    self?.lastTarget = nil
+                    self?.lastAdjustmentTime = 0
+                    self?.reconcile()
+                }
+                observers.append(observer)
+            }
+        }
 
         func reconcile() {
             guard let window else { return }
@@ -93,13 +117,15 @@ struct MainWindowPaneSizer: NSViewRepresentable {
             let inspectorWidthChanged = inspectorVisible && abs(inspectorWidth - appliedInspectorWidth) > 3
             guard old.sidebar != sidebarVisible || old.inspector != inspectorVisible ||
                     sidebarWidthChanged || inspectorWidthChanged else { return }
+            // Keep this transition pending until the user's resize gesture ends.
+            guard !window.inLiveResize else { return }
             self.previous = (sidebarVisible, inspectorVisible)
 
             // Fullscreen, zoomed, tiled/full-display, and miniaturized windows
             // keep the system-managed frame. SwiftUI still presents both panes.
             guard let screen = window.screen,
                   !window.styleMask.contains(.fullScreen), !window.isZoomed,
-                  !window.isMiniaturized, !window.inLiveResize else {
+                  !window.isMiniaturized else {
                 sidebarExtent = PaneExtent()
                 inspectorExtent = PaneExtent()
                 appliedSidebarWidth = sidebarWidth
@@ -109,6 +135,11 @@ struct MainWindowPaneSizer: NSViewRepresentable {
             }
             let visible = screen.visibleFrame
             guard visible.width > 0 else { return }
+            if lastScreenFrame != visible {
+                lastTarget = nil
+                lastAdjustmentTime = 0
+                lastScreenFrame = visible
+            }
             let current = window.frame
             let fillsScreenHeight = abs(current.minY - visible.minY) < 8 && abs(current.height - visible.height) < 8
             let alignedToScreenEdge = abs(current.minX - visible.minX) < 8 || abs(current.maxX - visible.maxX) < 8
@@ -155,6 +186,7 @@ struct MainWindowPaneSizer: NSViewRepresentable {
                        to: inspectorWidth, toward: .right, in: visible, minimum: minimum, maximum: maximum)
                 appliedInspectorWidth = inspectorWidth
             }
+            target = PaneWindowGeometry.fitHorizontally(target, in: visible)
             guard target != current else { return }
             lastTarget = target
             lastAdjustmentTime = now
