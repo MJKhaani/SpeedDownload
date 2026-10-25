@@ -10,7 +10,6 @@ struct DashboardView: View {
     @AppStorage("showUnfinished") private var showUnfinished = true
     @AppStorage("showCompleted") private var showCompleted = true
     @AppStorage("showFailed") private var showFailed = true
-    @State private var editingQueueNames = false
     @State private var queueDraftNames: [String: String] = [:]
     @FocusState private var focusedQueueID: String?
     @State private var hoveredQueueID: String?
@@ -89,15 +88,6 @@ struct DashboardView: View {
                 HStack {
                     Button { Task { await addQueue() } } label: { Image(systemName: "plus") }
                         .help("Add queue")
-                    Button {
-                        if editingQueueNames {
-                            let drafts = queueDraftNames
-                            focusedQueueID = nil
-                            Task { await engine.renameQueues(drafts) }
-                        }
-                        editingQueueNames.toggle()
-                    } label: { Image(systemName: "pencil") }
-                        .help("Edit queue names")
                     Spacer()
                 }
                 .buttonStyle(.borderless)
@@ -201,12 +191,6 @@ struct DashboardView: View {
             }
             .navigationSubtitle("Manage and monitor your transfers")
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-                    } label: { Image(systemName: "sidebar.left") }
-                    .help("Show or hide sidebar")
-                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { Task { await engine.resumeQueue() } } label: { Label("Resume Queue", systemImage: "play.fill") }
                         .help("Resume paused downloads and start waiting downloads")
@@ -222,6 +206,7 @@ struct DashboardView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background(MainWindowPaneSizer(sidebarVisible: columnVisibility != .detailOnly, inspectorVisible: showingTaskInspector))
         .sheet(item: $settingsQueue) { queue in
             QueueSettingsView(queue: queue) { updated in
                 Task { await engine.updateQueue(updated) }
@@ -523,7 +508,7 @@ struct DashboardView: View {
     private func queueSidebarRow(_ queue: DownloadQueue) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "tray.full")
-            if (editingQueueNames || focusedQueueID == queue.id) && queue.id != "main" {
+            if focusedQueueID == queue.id && queue.id != "main" {
                 TextField("Queue name", text: Binding(
                     get: { queueDraftNames[queue.id] ?? queue.name },
                     set: { queueDraftNames[queue.id] = $0 }
@@ -533,6 +518,7 @@ struct DashboardView: View {
                 .onSubmit { saveQueueNames() }
             } else {
                 Text(queue.name).lineLimit(1)
+                    .onTapGesture(count: 2) { beginRenaming(queue) }
             }
             Spacer(minLength: 0)
             if hoveredQueueID == queue.id {
@@ -547,8 +533,8 @@ struct DashboardView: View {
             }
         }
         .overlay(alignment: .leading) {
-            if queue.id != "main" && !editingQueueNames && focusedQueueID != queue.id {
-                QueueDragSource(name: queue.name, select: { selection = "Queue:\(queue.id)" }, remove: { requestQueueRemoval(queue) })
+            if queue.id != "main" && focusedQueueID != queue.id {
+                QueueDragSource(name: queue.name, select: { selection = "Queue:\(queue.id)" }, remove: { requestQueueRemoval(queue) }, rename: { beginRenaming(queue) })
                     .frame(width: 135, height: 24)
                     .help("Drag outside the window to remove this queue")
             }
@@ -566,14 +552,21 @@ struct DashboardView: View {
         guard let queue = await engine.createQueue() else { return }
         queueDraftNames[queue.id] = queue.name
         selection = "Queue:\(queue.id)"
-        editingQueueNames = true
         focusedQueueID = queue.id
         columnVisibility = .all
     }
 
     private func saveQueueNames() {
         let drafts = queueDraftNames
+        focusedQueueID = nil
         Task { await engine.renameQueues(drafts) }
+    }
+
+    private func beginRenaming(_ queue: DownloadQueue) {
+        guard queue.id != "main" else { return }
+        queueDraftNames[queue.id] = queue.name
+        selection = "Queue:\(queue.id)"
+        focusedQueueID = queue.id
     }
 
     private func requestQueueRemoval(_ queue: DownloadQueue) {
@@ -1437,5 +1430,39 @@ private struct AddDownloadView: View {
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: destination, isDirectory: true)
         if panel.runModal() == .OK, let selectedURL = panel.url { destination = selectedURL.path }
+    }
+}
+
+private struct MainWindowPaneSizer: NSViewRepresentable {
+    let sidebarVisible: Bool
+    let inspectorVisible: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+    func updateNSView(_ view: NSView, context: Context) {
+        let sidebar = sidebarVisible
+        let inspector = inspectorVisible
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            context.coordinator.resize(window, sidebar: sidebar, inspector: inspector)
+        }
+    }
+
+    final class Coordinator {
+        private var previous: (sidebar: Bool, inspector: Bool)?
+        func resize(_ window: NSWindow, sidebar: Bool, inspector: Bool) {
+            guard let previous else {
+                previous = (sidebar, inspector)
+                return
+            }
+            let delta = (sidebar ? 220 : 0) - (previous.sidebar ? 220 : 0)
+                + (inspector ? 320 : 0) - (previous.inspector ? 320 : 0)
+            self.previous = (sidebar, inspector)
+            guard delta != 0 else { return }
+            var frame = window.frame
+            let maxWidth = window.screen?.visibleFrame.width ?? frame.width + CGFloat(delta)
+            frame.size.width = min(maxWidth, max(window.minSize.width, frame.width + CGFloat(delta)))
+            window.setFrame(frame, display: true, animate: true)
+        }
     }
 }

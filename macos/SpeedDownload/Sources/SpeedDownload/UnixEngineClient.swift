@@ -332,6 +332,7 @@ struct DownloadQueue: Codable, Sendable, Equatable, Identifiable {
     var scheduleSlots: [Bool]
     var finishAction: String
     var customApp: String?
+    var userCommand: String? = nil
 
     static let main = DownloadQueue(id: "main", name: "main", maxActive: 4,
                                     scheduleEnabled: false, scheduleSlots: Array(repeating: true, count: 168),
@@ -344,6 +345,7 @@ struct DownloadQueue: Codable, Sendable, Equatable, Identifiable {
         case scheduleSlots = "schedule_slots"
         case finishAction = "finish_action"
         case customApp = "custom_app"
+        case userCommand = "user_command"
     }
 }
 

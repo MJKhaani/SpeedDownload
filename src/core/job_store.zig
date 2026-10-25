@@ -19,13 +19,15 @@ pub const max_parallel_downloads_per_host = default_max_parallel_downloads_per_h
 pub const hours_per_week = 7 * 24;
 pub const BandwidthScheduleMode = enum { global_limit, limited };
 pub const MultipartMode = enum { off, auto, fixed };
-pub const QueueFinishAction = enum { none, quit_app, power_off, custom_app };
+pub const QueueFinishAction = enum { none, quit_app, power_off, custom_app, user_command };
 pub const QueueCompletion = struct {
     action: QueueFinishAction,
     custom_app: ?[]u8 = null,
+    user_command: ?[]u8 = null,
 
     pub fn deinit(self: QueueCompletion, allocator: std.mem.Allocator) void {
         if (self.custom_app) |path| allocator.free(path);
+        if (self.user_command) |command| allocator.free(command);
     }
 };
 pub const QueueConfig = struct {
@@ -36,6 +38,7 @@ pub const QueueConfig = struct {
     schedule_slots: [hours_per_week]bool = @splat(true),
     finish_action: QueueFinishAction = .none,
     custom_app: ?[]const u8 = null,
+    user_command: ?[]const u8 = null,
 };
 const default_queues = [_]QueueConfig{.{}};
 
@@ -461,6 +464,7 @@ pub const Store = struct {
                 self.allocator.free(queue.id);
                 self.allocator.free(queue.name);
                 if (queue.custom_app) |path| self.allocator.free(path);
+                if (queue.user_command) |command| self.allocator.free(command);
             }
             self.allocator.free(queues);
         }
@@ -473,6 +477,7 @@ pub const Store = struct {
                 .schedule_slots = queue.schedule_slots,
                 .finish_action = queue.finish_action,
                 .custom_app = if (queue.custom_app) |path| try self.allocator.dupe(u8, path) else null,
+                .user_command = if (queue.user_command) |command| try self.allocator.dupe(u8, command) else null,
             };
             copied += 1;
         }
@@ -506,6 +511,7 @@ pub const Store = struct {
             self.allocator.free(queue.id);
             self.allocator.free(queue.name);
             if (queue.custom_app) |path| self.allocator.free(path);
+            if (queue.user_command) |command| self.allocator.free(command);
         }
         self.allocator.free(value.queues);
         self.allocator.free(value.browser_grab_extensions);
@@ -1317,6 +1323,7 @@ pub const Store = struct {
         return .{
             .action = queue.finish_action,
             .custom_app = if (queue.custom_app) |path| try self.allocator.dupe(u8, path) else null,
+            .user_command = if (queue.user_command) |command| try self.allocator.dupe(u8, command) else null,
         };
     }
 
@@ -1946,6 +1953,7 @@ pub const Store = struct {
                 if (!std.mem.eql(u8, queue.name, "main")) return error.InvalidSettings;
             }
             if (queue.finish_action == .custom_app and (queue.custom_app == null or !std.fs.path.isAbsolute(queue.custom_app.?))) return error.InvalidSettings;
+            if (queue.finish_action == .user_command and (queue.user_command == null or queue.user_command.?.len == 0 or queue.user_command.?.len > 4096 or std.mem.indexOfScalar(u8, queue.user_command.?, 0) != null)) return error.InvalidSettings;
             for (value.queues[0..index]) |previous| {
                 if (std.mem.eql(u8, previous.id, queue.id) or std.ascii.eqlIgnoreCase(previous.name, queue.name)) return error.InvalidSettings;
             }

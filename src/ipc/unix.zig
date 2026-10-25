@@ -744,6 +744,19 @@ fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompl
             _ = child.wait(engine.io) catch {};
             return;
         },
+        .user_command => {
+            const command = completion.user_command orelse return;
+            var child = std.process.spawn(engine.io, .{ .argv = &.{ "/bin/sh", "-c", command }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch {
+                engine.jobs.logAction("queue.finish-action", "could not start user command");
+                return;
+            };
+            const term = child.wait(engine.io) catch {
+                engine.jobs.logAction("queue.finish-action", "user command failed");
+                return;
+            };
+            if (!term.success()) engine.jobs.logAction("queue.finish-action", "user command exited unsuccessfully");
+            return;
+        },
     };
     var child = std.process.spawn(engine.io, .{ .argv = &.{ "/usr/bin/osascript", "-e", script }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch {
         engine.jobs.logAction("queue.finish-action", "could not start system action");
