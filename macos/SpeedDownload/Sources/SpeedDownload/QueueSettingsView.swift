@@ -43,13 +43,18 @@ struct QueueSettingsView: View {
                     Toggle("Start and stop this queue on a schedule", isOn: $queue.scheduleEnabled)
                     HStack(spacing: 6) {
                         ForEach(0..<7, id: \.self) { day in
-                            Button(Self.names[day]) {
-                                if selectedDays.contains(day) { selectedDays.remove(day) }
-                                else { selectedDays.insert(day) }
+                            Toggle(isOn: Binding(
+                                get: { selectedDays.contains(day) },
+                                set: { enabled in
+                                    if enabled { selectedDays.insert(day) }
+                                    else { selectedDays.remove(day) }
+                                }
+                            )) {
+                                Text(Self.names[day]).frame(width: 32)
                             }
-                            .buttonStyle(.bordered)
-                            .tint(selectedDays.contains(day) ? .accentColor : .secondary)
-                            .accessibilityLabel("\(Self.names[day]), \(selectedDays.contains(day) ? "selected" : "not selected")")
+                            .toggleStyle(.button)
+                            .tint(.accentColor)
+                            .accessibilityLabel(Self.names[day])
                         }
                     }
                     .disabled(!queue.scheduleEnabled)
