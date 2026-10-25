@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 struct DashboardView: View {
     @EnvironmentObject private var engine: EngineModel
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
+    private let restoredSidebarVisible: Bool
+    private let restoredInspectorVisible: Bool
     @AppStorage("alwaysShowSidebar") private var alwaysShowSidebar = false
     @AppStorage("showAllDownloads") private var showAllDownloads = true
     @AppStorage("showUnfinished") private var showUnfinished = true
@@ -41,11 +43,23 @@ struct DashboardView: View {
     @State private var pendingDownloadURLs: [PendingDownload] = []
     @State private var handledRequests: [String] = []
     @State private var showingTaskInspector = false
+    @State private var sidebarWidth: CGFloat = 220
+    @State private var inspectorWidth: CGFloat = 320
     @State private var hoveredJobID: String?
     @State private var searchText = ""
     @AppStorage("transferSortOrder") private var sortOrderRaw = "queue"
 
     private let sections = ["All Downloads", "Unfinished", "Completed", "Failed"]
+
+    init() {
+        let defaults = UserDefaults.standard
+        let savedSidebar = defaults.object(forKey: "dashboardSidebarVisible") as? Bool ?? false
+        let savedInspector = defaults.object(forKey: "dashboardInspectorVisible") as? Bool ?? false
+        restoredSidebarVisible = savedSidebar
+        restoredInspectorVisible = savedInspector
+        _columnVisibility = State(initialValue: savedSidebar || defaults.bool(forKey: "alwaysShowSidebar") ? .all : .detailOnly)
+        _showingTaskInspector = State(initialValue: savedInspector)
+    }
     private enum SortOrder: String, CaseIterable {
         case queue, name, size, status
 
@@ -59,164 +73,180 @@ struct DashboardView: View {
         }
     }
 
-    var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(selection: $selection) {
-                Section("Library") {
-                    ForEach(sections, id: \.self) { section in
-                        if showSection(section) {
-                            Label(section, systemImage: icon(for: section))
-                                .badge(count(for: section))
-                                .tag(section)
-                                .overlay(alignment: .leading) {
-                                    QueueDragSource(name: section, select: { selection = section }, remove: { hideSection(section) })
-                                        .frame(width: 150, height: 24)
-                                        .help("Drag outside the window to hide this sidebar item")
-                                }
-                        }
-                    }
-                }
-                Section("Queues") {
-                    ForEach(engine.cachedSettings?.queues ?? [.main]) { queue in
-                        queueSidebarRow(queue)
-                            .tag("Queue:\(queue.id)")
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationTitle("Speed Download")
-            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
-            .safeAreaInset(edge: .bottom) {
-                HStack {
-                    Button { Task { await addQueue() } } label: { Image(systemName: "plus") }
-                        .help("Add queue")
-                    Spacer()
-                }
-                .buttonStyle(.borderless)
-                .padding(.horizontal, 16).padding(.vertical, 9)
-                .background(.bar)
-            }
-        } detail: {
-            VStack(spacing: 0) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(selectedSectionTitle).font(.title2.weight(.semibold))
-                        Text("\(filteredJobs.count) transfer\(filteredJobs.count == 1 ? "" : "s")")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Menu {
-                        ForEach(SortOrder.allCases, id: \.self) { order in
-                            Button {
-                                sortOrderRaw = order.rawValue
-                            } label: {
-                                if sortOrderRaw == order.rawValue {
-                                    Label(order.title, systemImage: "checkmark")
-                                } else {
-                                    Text(order.title)
-                                }
+    private var sidebarContent: some View {
+        List(selection: $selection) {
+            Section("Library") {
+                ForEach(sections, id: \.self) { section in
+                    if showSection(section) {
+                        Label(section, systemImage: icon(for: section))
+                            .badge(count(for: section))
+                            .tag(section)
+                            .overlay(alignment: .leading) {
+                                QueueDragSource(name: section, select: { selection = section }, remove: { hideSection(section) })
+                                    .frame(width: 150, height: 24)
+                                    .help("Drag outside the window to hide this sidebar item")
                             }
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.system(size: 11))
-                            .frame(width: 18, height: 18)
                     }
-                    .menuStyle(.borderlessButton)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .focusable(false)
-                    .help("Sort transfers")
-                    .accessibilityLabel("Sort transfers")
                 }
-                .padding(.horizontal, 20).padding(.vertical, 14)
-                if let error = engine.actionError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.red).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 10)
-                }
-                if filteredJobs.isEmpty {
-                    ContentUnavailableView(isConnected ? "No transfers" : "Engine unavailable",
-                        systemImage: isConnected ? "arrow.down.circle" : "bolt.horizontal.circle",
-                        description: Text(connectionError ?? (isConnected ? "Add a URL to place a download in your queue." : "The app starts the local engine when it is available.")))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(selection: $selectedJobID) {
-                        ForEach(filteredJobs) { job in
-                            transferRow(job)
-                                .tag(job.jobID)
-                                .contextMenu { actionMenu(for: job) }
-                        }
-                    }
-                    .listStyle(.plain)
-                }
-                HStack(spacing: 7) {
-                    Circle().fill(connectionError == nil ? (isConnected ? .green : .orange) : .red).frame(width: 7, height: 7)
-                    Text(connectionStatus).foregroundStyle(.secondary)
-                        .help(connectionError ?? connectionStatus)
-                    Spacer()
-                    Label(downloadRate(engine.totalDownloadBytesPerSecond), systemImage: "arrow.down")
-                        .monospacedDigit()
-                        .help("Total download speed across active transfers")
-                    Menu {
-                        ForEach(speedLimits, id: \.self) { limit in
-                            Button {
-                                Task { await engine.setGlobalSpeedLimit(limit) }
-                            } label: {
-                                if engine.cachedSettings?.bandwidthLimitBytesPerSecond == limit {
-                                    Label(speedLimitTitle(limit), systemImage: "checkmark")
-                                } else {
-                                    Text(speedLimitTitle(limit))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Limit: \(speedLimitTitle(engine.cachedSettings?.bandwidthLimitBytesPerSecond ?? 0))", systemImage: "speedometer")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(!isConnected || engine.cachedSettings == nil)
-                    .help("Global download speed limit")
-                    Divider().frame(height: 14)
-                    Text("\(engine.jobs.filter { $0.state == "downloading" }.count) active · \(engine.jobs.filter { $0.state == "queued" }.count) queued")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.caption).padding(.horizontal, 14).padding(.vertical, 9)
-                .background(.bar)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationSplitViewColumnWidth(min: 500, ideal: 900)
-            .inspector(isPresented: $showingTaskInspector) {
-                Group {
-                    if let job = selectedJob {
-                        transferDetails(job)
-                    } else {
-                        ContentUnavailableView("Select a transfer", systemImage: "arrow.down.doc", description: Text("Transfer details and actions appear here."))
-                    }
-                }
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
-            }
-            .navigationSubtitle("Manage and monitor your transfers")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await engine.resumeQueue() } } label: { Label("Resume Queue", systemImage: "play.fill") }
-                        .help("Resume paused downloads and start waiting downloads")
-                        .disabled(!isConnected || engine.isSubmitting)
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button { newDownload() } label: {
-                        Label("Add Download", systemImage: "plus").labelStyle(.iconOnly)
-                    }
-                    .help("Add Download")
-                    .disabled(!isConnected)
-                    .focused($addButtonFocused)
+            Section("Queues") {
+                ForEach(engine.cachedSettings?.queues ?? [.main]) { queue in
+                    queueSidebarRow(queue)
+                        .tag("Queue:\(queue.id)")
                 }
             }
         }
+        .listStyle(.sidebar)
+        .background(GeometryReader { geometry in
+            Color.clear.preference(key: SidebarWidthPreference.self, value: geometry.size.width)
+        })
+        .navigationTitle("Speed Download")
+        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Button { Task { await addQueue() } } label: { Image(systemName: "plus") }
+                    .help("Add queue")
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(.bar)
+        }
+    }
+
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selectedSectionTitle).font(.title2.weight(.semibold))
+                    Text("\(filteredJobs.count) transfer\(filteredJobs.count == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Menu {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        Button {
+                            sortOrderRaw = order.rawValue
+                        } label: {
+                            if sortOrderRaw == order.rawValue {
+                                Label(order.title, systemImage: "checkmark")
+                            } else {
+                                Text(order.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 11))
+                        .frame(width: 18, height: 18)
+                }
+                .menuStyle(.borderlessButton)
+                .controlSize(.mini)
+                .fixedSize()
+                .focusable(false)
+                .help("Sort transfers")
+                .accessibilityLabel("Sort transfers")
+            }
+            .padding(.horizontal, 20).padding(.vertical, 14)
+            if let error = engine.actionError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 10)
+            }
+            if filteredJobs.isEmpty {
+                ContentUnavailableView(isConnected ? "No transfers" : "Engine unavailable",
+                    systemImage: isConnected ? "arrow.down.circle" : "bolt.horizontal.circle",
+                    description: Text(connectionError ?? (isConnected ? "Add a URL to place a download in your queue." : "The app starts the local engine when it is available.")))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $selectedJobID) {
+                    ForEach(filteredJobs) { job in
+                        transferRow(job)
+                            .tag(job.jobID)
+                            .contextMenu { actionMenu(for: job) }
+                    }
+                }
+                .listStyle(.plain)
+            }
+            HStack(spacing: 7) {
+                Circle().fill(connectionError == nil ? (isConnected ? .green : .orange) : .red).frame(width: 7, height: 7)
+                Text(connectionStatus).foregroundStyle(.secondary)
+                    .help(connectionError ?? connectionStatus)
+                Spacer()
+                Label(downloadRate(engine.totalDownloadBytesPerSecond), systemImage: "arrow.down")
+                    .monospacedDigit()
+                    .help("Total download speed across active transfers")
+                Menu {
+                    ForEach(speedLimits, id: \.self) { limit in
+                        Button {
+                            Task { await engine.setGlobalSpeedLimit(limit) }
+                        } label: {
+                            if engine.cachedSettings?.bandwidthLimitBytesPerSecond == limit {
+                                Label(speedLimitTitle(limit), systemImage: "checkmark")
+                            } else {
+                                Text(speedLimitTitle(limit))
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Limit: \(speedLimitTitle(engine.cachedSettings?.bandwidthLimitBytesPerSecond ?? 0))", systemImage: "speedometer")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(!isConnected || engine.cachedSettings == nil)
+                .help("Global download speed limit")
+                Divider().frame(height: 14)
+                Text("\(engine.jobs.filter { $0.state == "downloading" }.count) active · \(engine.jobs.filter { $0.state == "queued" }.count) queued")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption).padding(.horizontal, 14).padding(.vertical, 9)
+            .background(.bar)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationSplitViewColumnWidth(min: 500, ideal: 900)
+        .inspector(isPresented: $showingTaskInspector) {
+            Group {
+                if let job = selectedJob {
+                    transferDetails(job)
+                } else {
+                    ContentUnavailableView("Select a transfer", systemImage: "arrow.down.doc", description: Text("Transfer details and actions appear here."))
+                }
+            }
+            .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: InspectorWidthPreference.self, value: geometry.size.width)
+            })
+        }
+        .navigationSubtitle("Manage and monitor your transfers")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { Task { await engine.resumeQueue() } } label: { Label("Resume Queue", systemImage: "play.fill") }
+                    .help("Resume paused downloads and start waiting downloads")
+                    .disabled(!isConnected || engine.isSubmitting)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { newDownload() } label: {
+                    Label("Add Download", systemImage: "plus").labelStyle(.iconOnly)
+                }
+                .help("Add Download")
+                .disabled(!isConnected)
+                .focused($addButtonFocused)
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebarContent
+        } detail: {
+            mainContent
+        }
         .navigationSplitViewStyle(.balanced)
-        .animation(nil, value: columnVisibility)
-        .animation(nil, value: showingTaskInspector)
-        .background(MainWindowPaneSizer(sidebarVisible: columnVisibility != .detailOnly, inspectorVisible: showingTaskInspector))
+        .modifier(PaneSizingModifier(columnVisibility: columnVisibility,
+                                     showingInspector: showingTaskInspector,
+                                     sidebarWidth: $sidebarWidth, inspectorWidth: $inspectorWidth,
+                                     restoredSidebarVisible: restoredSidebarVisible,
+                                     restoredInspectorVisible: restoredInspectorVisible))
         .sheet(item: $settingsQueue) { queue in
             QueueSettingsView(queue: queue) { updated in
                 Task { await engine.updateQueue(updated) }
@@ -271,7 +301,6 @@ struct DashboardView: View {
             }
         }
         .task {
-            if alwaysShowSidebar { columnVisibility = .all }
             DispatchQueue.main.async { addButtonFocused = true }
             reconcileSelection(with: filteredJobs)
             for token in BrowserHandoff.pendingTokens() { receiveBrowserHandoff(token, recovering: true) }
@@ -280,6 +309,12 @@ struct DashboardView: View {
         .onChange(of: selection) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: alwaysShowSidebar) { _, enabled in if enabled { columnVisibility = .all } }
+        .onChange(of: columnVisibility) { _, value in
+            UserDefaults.standard.set(value != .detailOnly, forKey: "dashboardSidebarVisible")
+        }
+        .onChange(of: showingTaskInspector) { _, value in
+            UserDefaults.standard.set(value, forKey: "dashboardInspectorVisible")
+        }
         .onChange(of: isConnected) { _, connected in
             if connected { DispatchQueue.main.async { addButtonFocused = true } }
         }
@@ -1450,35 +1485,5 @@ private struct AddDownloadView: View {
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: destination, isDirectory: true)
         if panel.runModal() == .OK, let selectedURL = panel.url { destination = selectedURL.path }
-    }
-}
-
-private struct MainWindowPaneSizer: NSViewRepresentable {
-    let sidebarVisible: Bool
-    let inspectorVisible: Bool
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
-    func updateNSView(_ view: NSView, context: Context) {
-        guard let window = view.window else { return }
-        context.coordinator.resize(window, sidebar: sidebarVisible, inspector: inspectorVisible)
-    }
-
-    final class Coordinator {
-        private var previous: (sidebar: Bool, inspector: Bool)?
-        func resize(_ window: NSWindow, sidebar: Bool, inspector: Bool) {
-            guard let previous else {
-                previous = (sidebar, inspector)
-                return
-            }
-            let delta = (sidebar ? 220 : 0) - (previous.sidebar ? 220 : 0)
-                + (inspector ? 320 : 0) - (previous.inspector ? 320 : 0)
-            self.previous = (sidebar, inspector)
-            guard delta != 0 else { return }
-            var frame = window.frame
-            let maxWidth = window.screen?.visibleFrame.width ?? frame.width + CGFloat(delta)
-            frame.size.width = min(maxWidth, max(window.minSize.width, frame.width + CGFloat(delta)))
-            window.setFrame(frame, display: true, animate: false)
-        }
     }
 }
