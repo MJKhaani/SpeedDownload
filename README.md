@@ -13,7 +13,7 @@ Speed Download is in active development, with macOS as the current focus.
 
 - **Parallel downloads:** multiple connections per HTTP(S) download, with automatic fallback when the server does not support byte ranges.
 - **Pause and resume:** persistent queues and download checkpoints, with checks to avoid resuming changed content.
-- **Queue controls:** priorities, concurrent download limits, and a weekly start/stop schedule.
+- **Named queues:** main is the default; create and rename other queues in the sidebar. Each queue has its own concurrent download limit, weekly start/stop schedule, and completion action.
 - **Bandwidth controls:** global and per-download limits, plus scheduled limits for times such as office hours.
 - **Transfer details:** total download speed, per-task progress, and an inspector showing individual worker progress.
 - **Torrent and magnet review:** choose files, edit trackers, and select a destination before queueing a BitTorrent v1 download.
@@ -55,8 +55,9 @@ open "dist/Speed Download.app"
 The bundle includes the engine and browser native-messaging helper. Add a download
 with **⌘N**, paste a link with **⇧⌘V**, or drop a link onto the window. Open a
 `.torrent` file or magnet link to review its files and trackers before downloading.
-Configure the download folder, connections, proxy, bandwidth, and schedules in
-**Speed Download → Settings…**.
+Configure the download folder, connections, proxy, bandwidth, browser grabbing,
+and sidebar in **Speed Download → Settings…**. Queue schedules and completion
+actions are under each queue's **⋮** menu in the sidebar.
 
 ### Engine and CLI
 
@@ -80,7 +81,8 @@ multiple links open a review dialog with checkboxes. Torrent links open the torr
 review dialog. Downloads start after confirmation in the client.
 
 The extension communicates with the **client**, which communicates with the engine.
-Automatic browser download interception is off by default.
+Automatic browser download interception is off by default. When enabled, it
+offers downloads whose file extensions match the list in Browser settings.
 
 ## Development
 

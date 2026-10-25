@@ -3,6 +3,7 @@ import SwiftUI
 
 struct BatchDownloadView: View {
     @EnvironmentObject private var engine: EngineModel
+    @AppStorage("lastQueueID") private var queueID = "main"
     @Environment(\.dismiss) private var dismiss
     let sources: [String]
     let referenceURL: String?
@@ -78,6 +79,11 @@ struct BatchDownloadView: View {
                 Picker("Queue Priority", selection: $priority) {
                     Text("Low").tag(-1); Text("Normal").tag(0); Text("High").tag(1)
                 }
+                Picker("Queue", selection: $queueID) {
+                    ForEach(engine.cachedSettings?.queues ?? [.main]) { queue in
+                        Text(queue.name).tag(queue.id)
+                    }
+                }
             }
             .disabled(isAdding)
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
@@ -99,8 +105,11 @@ struct BatchDownloadView: View {
         .task {
             selected = Set(uniqueSources)
             await engine.ensureConnected()
-            if let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
-               destination == "\(NSHomeDirectory())/Downloads" { destination = settings.defaultDownloadFolder }
+            if let settings = try? await engine.loadSettings() {
+                if !settings.queues.contains(where: { $0.id == queueID }) { queueID = "main" }
+                if !settings.defaultDownloadFolder.isEmpty,
+                   destination == "\(NSHomeDirectory())/Downloads" { destination = settings.defaultDownloadFolder }
+            }
             settingsLoaded = true
         }
     }
@@ -136,7 +145,8 @@ struct BatchDownloadView: View {
                 selected.remove(source)
                 continue
             }
-            let success = await engine.addJob(url: source, name: "", destination: destination, priority: priority, referenceURL: referenceURL)
+            let chosenQueue = (engine.cachedSettings?.queues ?? [.main]).contains(where: { $0.id == queueID }) ? queueID : "main"
+            let success = await engine.addJob(url: source, name: "", destination: destination, priority: priority, referenceURL: referenceURL, queueID: chosenQueue)
             if success {
                 completed.insert(source)
                 selected.remove(source)

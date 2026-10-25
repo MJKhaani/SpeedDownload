@@ -25,6 +25,7 @@ enum TorrentSource {
 
 struct TorrentAddView: View {
     @EnvironmentObject private var engine: EngineModel
+    @AppStorage("lastQueueID") private var queueID = "main"
     @Environment(\.dismiss) private var dismiss
     let source: String
     let initialDestination: String?
@@ -115,6 +116,11 @@ struct TorrentAddView: View {
                 Picker("Queue Priority", selection: $priority) {
                     Text("Low").tag(-1); Text("Normal").tag(0); Text("High").tag(1)
                 }
+                Picker("Queue", selection: $queueID) {
+                    ForEach(engine.cachedSettings?.queues ?? [.main]) { queue in
+                        Text(queue.name).tag(queue.id)
+                    }
+                }
             }
             if let error {
                 Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
@@ -134,6 +140,10 @@ struct TorrentAddView: View {
         .padding(20).frame(width: 640)
         .disabled(isSaving)
         .task(id: metadataAttempt) { await loadMetadata() }
+        .task {
+            if let settings = try? await engine.loadSettings(),
+               !settings.queues.contains(where: { $0.id == queueID }) { queueID = "main" }
+        }
     }
 
     private var fileList: some View {
@@ -252,7 +262,8 @@ struct TorrentAddView: View {
             let chosen = files.map(\.path).filter { selected.contains($0) }
             guard !chosen.isEmpty else { error = "Select at least one file."; return }
             let success = await engine.addJob(url: prepared.finalURL, name: name.trimmingCharacters(in: .whitespacesAndNewlines), destination: destination, priority: priority,
-                selectedTorrentFiles: chosen.count == files.count ? nil : chosen, torrentInfoHash: prepared.torrentInfoHash, referenceURL: referenceURL)
+                selectedTorrentFiles: chosen.count == files.count ? nil : chosen, torrentInfoHash: prepared.torrentInfoHash, referenceURL: referenceURL,
+                queueID: (engine.cachedSettings?.queues ?? [.main]).contains(where: { $0.id == queueID }) ? queueID : "main")
             if success { added() } else { error = engine.actionError ?? "Could not add the torrent." }
         } catch { self.error = error.localizedDescription }
     }

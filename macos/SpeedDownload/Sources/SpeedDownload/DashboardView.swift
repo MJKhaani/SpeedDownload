@@ -4,6 +4,18 @@ import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @EnvironmentObject private var engine: EngineModel
+    @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
+    @AppStorage("alwaysShowSidebar") private var alwaysShowSidebar = false
+    @AppStorage("showAllDownloads") private var showAllDownloads = true
+    @AppStorage("showUnfinished") private var showUnfinished = true
+    @AppStorage("showCompleted") private var showCompleted = true
+    @AppStorage("showFailed") private var showFailed = true
+    @State private var editingQueueNames = false
+    @State private var queueDraftNames: [String: String] = [:]
+    @FocusState private var focusedQueueID: String?
+    @State private var hoveredQueueID: String?
+    @State private var settingsQueue: DownloadQueue?
+    @State private var queuePendingRemoval: DownloadQueue?
     @State private var selection: String? = "All Downloads"
     @State private var selectedJobID: String?
     @State private var showingAddDownload = false
@@ -47,24 +59,44 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: $selection) {
                 Section("Library") {
                     ForEach(sections, id: \.self) { section in
-                        Label(section, systemImage: icon(for: section))
-                            .badge(count(for: section))
-                            .tag(section)
+                        if showSection(section) {
+                            Label(section, systemImage: icon(for: section))
+                                .badge(count(for: section))
+                                .tag(section)
+                        }
+                    }
+                }
+                Section("Queues") {
+                    ForEach(engine.cachedSettings?.queues ?? [.main]) { queue in
+                        queueSidebarRow(queue)
+                            .tag("Queue:\(queue.id)")
                     }
                 }
             }
             .listStyle(.sidebar)
             .navigationTitle("Speed Download")
             .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Button { Task { await addQueue() } } label: { Image(systemName: "plus") }
+                        .help("Add queue")
+                    Button { editingQueueNames.toggle() } label: { Image(systemName: "pencil") }
+                        .help("Edit queue names")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 16).padding(.vertical, 9)
+                .background(.bar)
+            }
         } detail: {
             VStack(spacing: 0) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(selection ?? "All Downloads").font(.title2.weight(.semibold))
+                        Text(selectedSectionTitle).font(.title2.weight(.semibold))
                         Text("\(filteredJobs.count) transfer\(filteredJobs.count == 1 ? "" : "s")")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -157,6 +189,12 @@ struct DashboardView: View {
             }
             .navigationSubtitle("Manage and monitor your transfers")
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                    } label: { Image(systemName: "sidebar.left") }
+                    .help("Show or hide sidebar")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { Task { await engine.resumeQueue() } } label: { Label("Resume Queue", systemImage: "play.fill") }
                         .help("Resume paused downloads and start waiting downloads")
@@ -172,6 +210,22 @@ struct DashboardView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(item: $settingsQueue) { queue in
+            QueueSettingsView(queue: queue) { updated in
+                Task { await engine.updateQueue(updated) }
+            }
+        }
+        .confirmationDialog("Remove \(queuePendingRemoval?.name ?? "queue")?", isPresented: Binding(
+            get: { queuePendingRemoval != nil }, set: { if !$0 { queuePendingRemoval = nil } }
+        )) {
+            Button("Move its downloads to main and remove queue", role: .destructive) {
+                guard let queue = queuePendingRemoval else { return }
+                Task { _ = await engine.deleteQueue(queue); queuePendingRemoval = nil }
+            }
+            Button("Cancel", role: .cancel) { queuePendingRemoval = nil }
+        } message: {
+            Text("Unfinished downloads will remain available in main.")
+        }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Filter transfers")
         .onDrop(of: [UTType.url.identifier, UTType.fileURL.identifier, UTType.plainText.identifier], isTargeted: nil, perform: handleDownloadDrop)
         .sheet(item: Binding(
@@ -196,13 +250,13 @@ struct DashboardView: View {
                         incomingDownloadURL = source
                         incomingIsTorrent = true
                     },
-                    submit: { url, name, destination, priority, checksum, selectedFiles, infoHash, referenceURL in
+                    submit: { url, name, destination, priority, checksum, selectedFiles, infoHash, referenceURL, queueID in
                         if let jobID = request.refreshJobID {
                             let replaced = await engine.replaceSource(jobID: jobID, url: url)
                             if replaced { showingAddDownload = false }
                             return replaced
                         }
-                        let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash, referenceURL: referenceURL)
+                        let added = await engine.addJob(url: url, name: name, destination: destination, priority: priority, expectedSHA256: checksum, selectedTorrentFiles: selectedFiles, torrentInfoHash: infoHash, referenceURL: referenceURL, queueID: queueID)
                         if added { showingAddDownload = false }
                         return added
                     }
@@ -210,12 +264,14 @@ struct DashboardView: View {
             }
         }
         .task {
+            if alwaysShowSidebar { columnVisibility = .all }
             reconcileSelection(with: filteredJobs)
             for token in BrowserHandoff.pendingTokens() { receiveBrowserHandoff(token, recovering: true) }
         }
         .onChange(of: engine.jobs) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: selection) { _, _ in reconcileSelection(with: filteredJobs) }
         .onChange(of: searchText) { _, _ in reconcileSelection(with: filteredJobs) }
+        .onChange(of: alwaysShowSidebar) { _, enabled in if enabled { columnVisibility = .all } }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadNewTransfer)) { _ in newDownload() }
         .onReceive(NotificationCenter.default.publisher(for: .speedDownloadClipboardTransfer)) { notification in
             guard let value = notification.object as? String, value.utf8.count <= 8192 else { return }
@@ -358,6 +414,8 @@ struct DashboardView: View {
         case "Unfinished": jobs = engine.jobs.filter { !["completed", "failed", "canceled"].contains($0.state) }
         case "Completed": jobs = engine.jobs.filter { $0.state == "completed" }
         case "Failed": jobs = engine.jobs.filter { $0.state == "failed" }
+        case let value? where value.hasPrefix("Queue:"):
+            jobs = engine.jobs.filter { $0.queueID == String(value.dropFirst("Queue:".count)) }
         default: jobs = engine.jobs
         }
         let matching = searchText.isEmpty ? jobs : jobs.filter {
@@ -387,6 +445,11 @@ struct DashboardView: View {
             }
             return comparison == .orderedSame ? left.offset < right.offset : comparison == .orderedAscending
         }.map { $0.element }
+    }
+    private var selectedSectionTitle: String {
+        guard let selection, selection.hasPrefix("Queue:") else { return selection ?? "All Downloads" }
+        let id = String(selection.dropFirst("Queue:".count))
+        return engine.cachedSettings?.queues.first(where: { $0.id == id })?.name ?? "Queue"
     }
 
     private func statusSortRank(_ state: String) -> Int {
@@ -425,6 +488,84 @@ struct DashboardView: View {
         default: engine.jobs.filter { $0.state == "failed" }.count
         }
     }
+    private func showSection(_ section: String) -> Bool {
+        switch section {
+        case "All Downloads": showAllDownloads
+        case "Unfinished": showUnfinished
+        case "Completed": showCompleted
+        default: showFailed
+        }
+    }
+
+    private func queueSidebarRow(_ queue: DownloadQueue) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "tray.full")
+            if (editingQueueNames || focusedQueueID == queue.id) && queue.id != "main" {
+                TextField("Queue name", text: Binding(
+                    get: { queueDraftNames[queue.id] ?? queue.name },
+                    set: { queueDraftNames[queue.id] = $0 }
+                ))
+                .textFieldStyle(.plain)
+                .focused($focusedQueueID, equals: queue.id)
+                .onSubmit { saveQueueName(queue) }
+                .onChange(of: focusedQueueID) { old, new in
+                    if old == queue.id && new != queue.id { saveQueueName(queue) }
+                }
+            } else {
+                Text(queue.name).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if hoveredQueueID == queue.id {
+                Button {
+                    settingsQueue = queue
+                } label: {
+                    Image(systemName: "ellipsis").rotationEffect(.degrees(90))
+                }
+                .buttonStyle(.borderless)
+                .help("Queue settings")
+                .accessibilityLabel("Settings for \(queue.name)")
+            }
+        }
+        .overlay(alignment: .leading) {
+            if queue.id != "main" && !editingQueueNames && focusedQueueID != queue.id {
+                QueueDragSource(name: queue.name, select: { selection = "Queue:\(queue.id)" }, remove: { requestQueueRemoval(queue) })
+                    .frame(width: 135, height: 24)
+                    .help("Drag outside the window to remove this queue")
+            }
+        }
+        .onHover { hoveredQueueID = $0 ? queue.id : (hoveredQueueID == queue.id ? nil : hoveredQueueID) }
+        .contextMenu {
+            Button("Queue Settings…") { settingsQueue = queue }
+            if queue.id != "main" {
+                Button("Remove Queue", role: .destructive) { requestQueueRemoval(queue) }
+            }
+        }
+    }
+
+    private func addQueue() async {
+        guard let queue = await engine.createQueue() else { return }
+        queueDraftNames[queue.id] = queue.name
+        selection = "Queue:\(queue.id)"
+        editingQueueNames = true
+        focusedQueueID = queue.id
+        columnVisibility = .all
+    }
+
+    private func saveQueueName(_ queue: DownloadQueue) {
+        let name = (queueDraftNames[queue.id] ?? queue.name).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != queue.name else { return }
+        var updated = queue
+        updated.name = name
+        Task { await engine.updateQueue(updated) }
+    }
+
+    private func requestQueueRemoval(_ queue: DownloadQueue) {
+        if engine.jobs.contains(where: { $0.queueID == queue.id && !["completed", "failed", "canceled"].contains($0.state) }) {
+            queuePendingRemoval = queue
+        } else {
+            Task { _ = await engine.deleteQueue(queue) }
+        }
+    }
     private func icon(for section: String) -> String {
         switch section { case "All Downloads": "tray.full"; case "Unfinished": "arrow.down.circle"; case "Completed": "checkmark.circle"; default: "exclamationmark.circle" }
     }
@@ -454,7 +595,9 @@ struct DashboardView: View {
     }
 
     private func stateTitle(for job: DownloadJob) -> String {
-        switch job.state {
+        if job.requestedControl == "pause" { return "Pausing…" }
+        if job.requestedControl == "cancel" { return "Canceling…" }
+        return switch job.state {
         case "downloading": job.torrentPeerCount == 0 ? "Finding peers…" : (job.receivedBytes == nil ? "Connecting" : "Downloading")
         case "queued": "Waiting"
         case "retry_wait": "Waiting to retry"
@@ -566,6 +709,7 @@ struct DashboardView: View {
     }
 
     private func rowControl(for job: DownloadJob) -> (title: String, symbol: String, action: String)? {
+        if job.requestedControl != nil { return nil }
         return switch job.state {
         case "downloading": ("Pause Transfer", "pause.fill", "pause")
         case "paused": ("Resume Transfer", "play.fill", "resume")
@@ -883,6 +1027,7 @@ private struct AddDownloadView: View {
     @State private var name = ""
     @State private var destination = "\(NSHomeDirectory())/Downloads"
     @State private var priority = 0
+    @AppStorage("lastQueueID") private var queueID = "main"
     @State private var expectedSHA256 = ""
     @State private var validationError: String?
     @State private var probeResult: DownloadProbe?
@@ -895,11 +1040,11 @@ private struct AddDownloadView: View {
     let isSubmitting: Bool
     let probeURL: (String) async throws -> DownloadProbe
     let onTorrentSource: (String) -> Void
-    let submit: (String, String, String, Int, String?, [String]?, String?, String?) async -> Bool
+    let submit: (String, String, String, Int, String?, [String]?, String?, String?, String) async -> Bool
 
     init(initialURL: String, initialReferenceURL: String? = nil, replacingJob: DownloadJob? = nil, isSubmitting: Bool, probeURL: @escaping (String) async throws -> DownloadProbe,
          onTorrentSource: @escaping (String) -> Void,
-         submit: @escaping (String, String, String, Int, String?, [String]?, String?, String?) async -> Bool) {
+         submit: @escaping (String, String, String, Int, String?, [String]?, String?, String?, String) async -> Bool) {
         self.initialURL = initialURL
         self.replacingJob = replacingJob
         if let job = replacingJob {
@@ -947,6 +1092,12 @@ private struct AddDownloadView: View {
                     Text("Low").tag(-1); Text("Normal").tag(0); Text("High").tag(1)
                 }
                 .disabled(replacingJob != nil)
+                Picker("Queue", selection: $queueID) {
+                    ForEach(engine.cachedSettings?.queues ?? [.main]) { queue in
+                        Text(queue.name).tag(queue.id)
+                    }
+                }
+                .disabled(replacingJob != nil)
                 Section("Verification") {
                     TextField("SHA-256 checksum (optional)", text: $expectedSHA256)
                         .textFieldStyle(.roundedBorder)
@@ -975,9 +1126,12 @@ private struct AddDownloadView: View {
         .task {
             if !initialURL.isEmpty && url.isEmpty { url = initialURL }
             await engine.ensureConnected()
-            if replacingJob == nil, let settings = try? await engine.loadSettings(), !settings.defaultDownloadFolder.isEmpty,
-               destination == "\(NSHomeDirectory())/Downloads" {
-                destination = settings.defaultDownloadFolder
+            if let settings = try? await engine.loadSettings() {
+                if !settings.queues.contains(where: { $0.id == queueID }) { queueID = "main" }
+                if replacingJob == nil, !settings.defaultDownloadFolder.isEmpty,
+                   destination == "\(NSHomeDirectory())/Downloads" {
+                    destination = settings.defaultDownloadFolder
+                }
             }
         }
         .task(id: trimmedURL) { await inspectURL(trimmedURL) }
@@ -1247,7 +1401,8 @@ private struct AddDownloadView: View {
             components.fragment = nil
             reference = components.url?.absoluteString
         }
-        let added = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles, probeResult?.torrentInfoHash, reference)
+        let validQueue = (engine.cachedSettings?.queues ?? [.main]).contains(where: { $0.id == queueID }) ? queueID : "main"
+        let added = await submit(trimmedURL, name.trimmingCharacters(in: .whitespacesAndNewlines), path, priority, checksum.isEmpty ? nil : checksum.lowercased(), selectedFiles, probeResult?.torrentInfoHash, reference, validQueue)
         if !added { validationError = engine.actionError ?? "Could not add this download." }
     }
     private func chooseDestination() {

@@ -33,11 +33,16 @@ pub fn main(init: std.process.Init) !void {
     const app = appPath(allocator, init.io) catch return reply(allocator, init.io, .{ .ok = false, .error_message = "The Speed Download client was not found" });
     defer allocator.free(app);
     if (request.status) return reply(allocator, init.io, .{ .ok = true, .client_available = true });
+    if (request.preferences) {
+        const extensions = readClientExtensions(allocator, init) catch null;
+        defer if (extensions) |owned| allocator.free(owned);
+        return reply(allocator, init.io, .{ .ok = true, .browser_grab_extensions = extensions orelse "zip,rar,7z,dmg,pkg,exe,msi,iso,pdf,mp4,mp3,torrent" });
+    }
     sendToClient(allocator, init, app, message, request.key.?) catch return reply(allocator, init.io, .{ .ok = false, .error_message = "Could not open the Speed Download client" });
     try reply(allocator, init.io, .{ .ok = true, .dialog_opened = true });
 }
 
-const Request = struct { parsed: std.json.Parsed(std.json.Value), status: bool = false, key: ?[]const u8 = null };
+const Request = struct { parsed: std.json.Parsed(std.json.Value), status: bool = false, preferences: bool = false, key: ?[]const u8 = null };
 fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, message, .{});
     errdefer parsed.deinit();
@@ -49,6 +54,10 @@ fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
     if (std.mem.eql(u8, action.string, "status")) {
         if (object.count() != 2) return error.InvalidRequest;
         return .{ .parsed = parsed, .status = true };
+    }
+    if (std.mem.eql(u8, action.string, "preferences")) {
+        if (object.count() != 2) return error.InvalidRequest;
+        return .{ .parsed = parsed, .preferences = true };
     }
     const reference = object.get("reference_url");
     if (object.count() != (if (reference != null) @as(usize, 5) else 4)) return error.InvalidRequest;
@@ -72,6 +81,17 @@ fn parseRequest(allocator: std.mem.Allocator, message: []const u8) !Request {
         if (url != .string or !validURL(url.string)) return error.InvalidRequest;
     } else return error.InvalidRequest;
     return .{ .parsed = parsed, .key = key.string };
+}
+
+fn readClientExtensions(allocator: std.mem.Allocator, init: std.process.Init) ![]u8 {
+    const home_directory = init.environ_map.get("HOME") orelse return error.HomeUnavailable;
+    const path = try std.fs.path.join(allocator, &.{ home_directory, "Library", "Application Support", "Speed Download", "browser-preferences.json" });
+    defer allocator.free(path);
+    const data = try std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(8192));
+    defer allocator.free(data);
+    const parsed = try std.json.parseFromSlice(struct { extensions: []const u8 }, allocator, data, .{});
+    defer parsed.deinit();
+    return allocator.dupe(u8, parsed.value.extensions);
 }
 
 fn validURL(url: []const u8) bool {
@@ -153,6 +173,7 @@ const Reply = struct {
     ok: bool,
     client_available: ?bool = null,
     dialog_opened: ?bool = null,
+    browser_grab_extensions: ?[]const u8 = null,
     error_message: ?[]const u8 = null,
 };
 fn reply(allocator: std.mem.Allocator, io: std.Io, value: Reply) !void {

@@ -357,6 +357,7 @@ pub fn dispatchMethod(
         defer parsed.deinit();
         const response = jobs.updateSettingsJson(id, parsed.value) catch |err| {
             if (err == error.InvalidSettings) return dispatchError(allocator, request_id, -32602, "Invalid settings");
+            if (err == error.QueueHasJobs) return dispatchError(allocator, request_id, -32013, "Move the queue's jobs before deleting it");
             return dispatchError(allocator, request_id, -32020, "Could not save settings");
         };
         jobs.logAction("settings.update", "saved");
@@ -562,6 +563,20 @@ pub fn dispatchMethod(
             return dispatchError(allocator, request_id, -32020, "Could not save the download request");
         };
     }
+    if (std.mem.eql(u8, method, "jobs.move-queue")) {
+        const value = params orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        if (value != .object) return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const job_id = stringField(value.object, "job_id") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const queue_id = stringField(value.object, "queue_id") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const revision_text = stringField(value.object, "expected_revision") orelse return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const revision = std.fmt.parseInt(u64, revision_text, 10) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
+        const id = request_id orelse return null;
+        return jobs.moveQueueJson(id, job_id, queue_id, revision) catch |err| {
+            if (err == error.QueueNotFound) return dispatchError(allocator, request_id, -32012, "Queue not found");
+            if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale");
+            return dispatchError(allocator, request_id, -32020, "Could not move the download");
+        };
+    }
     if (std.mem.eql(u8, method, "jobs.delete")) {
         const input = parseJobDelete(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
         const id = request_id orelse return null;
@@ -594,14 +609,14 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.replace-source", "jobs.resume-queue", "jobs.reorder", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.replace-source", "jobs.resume-queue", "jobs.reorder", "jobs.move-queue", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";
 }
 
 fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, control: JobControl, engine: *EngineContext) anyerror!?[]u8 {
-    if (!queueWindowOpen(engine))
+    if (!queueWindowOpen(engine, control.job_id))
         return dispatchError(allocator, request_id, -32019, "The queue is outside its scheduled hours");
     if (!reserveWorker(engine))
         return dispatchError(allocator, request_id, -32016, "Another download is already active");
@@ -708,6 +723,37 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     };
     engine.jobs.finishDownload(task.id, true, null) catch {};
     engine.jobs.logAction("transfer", "completed");
+    if (engine.jobs.completedQueueAction(task.id) catch null) |completion| {
+        defer completion.deinit(engine.allocator);
+        runQueueFinishAction(engine, completion);
+    }
+}
+
+fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompletion) void {
+    if (comptime @import("builtin").os.tag != .macos) return;
+    const script = switch (completion.action) {
+        .none => return,
+        .quit_app => "tell application id \"com.mjkhaani.SpeedDownload\" to quit",
+        .power_off => "tell application \"System Events\" to shut down",
+        .custom_app => {
+            const path = completion.custom_app orelse return;
+            var child = std.process.spawn(engine.io, .{ .argv = &.{ "/usr/bin/open", path }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch {
+                engine.jobs.logAction("queue.finish-action", "could not open custom app");
+                return;
+            };
+            _ = child.wait(engine.io) catch {};
+            return;
+        },
+    };
+    var child = std.process.spawn(engine.io, .{ .argv = &.{ "/usr/bin/osascript", "-e", script }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch {
+        engine.jobs.logAction("queue.finish-action", "could not start system action");
+        return;
+    };
+    const term = child.wait(engine.io) catch {
+        engine.jobs.logAction("queue.finish-action", "system action failed");
+        return;
+    };
+    if (!term.success()) engine.jobs.logAction("queue.finish-action", "system action was denied");
 }
 
 fn downloadStoredTorrent(engine: *EngineContext, task: job_store.Store.DownloadTask, destination: []const u8, progress: *DownloadProgressContext) !void {
@@ -732,14 +778,14 @@ fn checkTorrentControl(context: *anyopaque) @import("../protocols/torrent/metada
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
     if (progress.engine.jobs.requestedControl(progress.job_id)) |control|
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
-    if (!queueWindowOpen(progress.engine)) return error.TransferSchedulePaused;
+    if (!queueWindowOpen(progress.engine, progress.job_id)) return error.TransferSchedulePaused;
 }
 
 fn checkHttpControl(context: *anyopaque) anyerror!void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
     if (progress.engine.jobs.requestedControl(progress.job_id)) |control|
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
-    if (!queueWindowOpen(progress.engine)) return error.TransferSchedulePaused;
+    if (!queueWindowOpen(progress.engine, progress.job_id)) return error.TransferSchedulePaused;
 }
 
 fn updateTorrentStats(context: *anyopaque, peers: u32, counts: @import("../protocols/torrent/metadata.zig").TrackerCounts) void {
@@ -813,7 +859,7 @@ fn updateWorkerProgress(context: *anyopaque, worker_id: u32, start: u64, end: u6
     if (progress.engine.jobs.requestedControl(progress.job_id)) |control| {
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
     }
-    if (!queueWindowOpen(progress.engine)) return error.TransferSchedulePaused;
+    if (!queueWindowOpen(progress.engine, progress.job_id)) return error.TransferSchedulePaused;
     if (worker_id >= 1 and worker_id <= progress.worker_downloaded.len) {
         progress.progress_mutex.lockUncancelable(progress.engine.io);
         const index: usize = @intCast(worker_id - 1);
@@ -855,7 +901,6 @@ fn launchWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) !voi
 }
 
 fn scheduleQueued(engine: *EngineContext) void {
-    if (!queueWindowOpen(engine)) return;
     while (reserveWorker(engine)) {
         const task = engine.jobs.startNextQueued() catch {
             releaseWorker(engine);
@@ -908,7 +953,7 @@ fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64, dura
         if (durable) try progress.engine.jobs.updateProgress(progress.job_id, completed, total, true);
         return if (control == .pause) error.TransferPauseRequested else error.TransferCancelRequested;
     }
-    if (!queueWindowOpen(progress.engine)) {
+    if (!queueWindowOpen(progress.engine, progress.job_id)) {
         if (durable) try progress.engine.jobs.updateProgress(progress.job_id, completed, total, true);
         return error.TransferSchedulePaused;
     }
@@ -994,20 +1039,15 @@ fn localWeekSlot() ?usize {
     }
 }
 
-fn queueWindowOpen(engine: *EngineContext) bool {
-    const policy = engine.jobs.runtimePolicy();
-    if (!policy.queue_schedule_enabled) return true;
-    return policy.queueActive(localWeekSlot() orelse return false);
+fn queueWindowOpen(engine: *EngineContext, job_id: []const u8) bool {
+    return engine.jobs.queueActiveForJob(job_id, localWeekSlot() orelse return false);
 }
 
 fn scheduleTick(engine: *EngineContext) void {
     engine.jobs.promoteDueRetries() catch return;
-    const active = queueWindowOpen(engine);
-    const previous = engine.last_queue_window.swap(if (active) 1 else 0, .acq_rel);
-    if (previous != (if (active) @as(i8, 1) else 0))
-        engine.jobs.logAction("queue-window", if (active) "active" else "off");
-    engine.jobs.applyQueueWindow(active) catch return;
-    if (active) scheduleQueued(engine);
+    const slot = localWeekSlot() orelse return;
+    engine.jobs.applyQueueWindow(slot) catch return;
+    scheduleQueued(engine);
 }
 
 fn schedulerLoop(engine: *EngineContext) void {
@@ -1176,7 +1216,7 @@ fn parseAddInput(allocator: std.mem.Allocator, params: std.json.Value) !job_stor
         }
         break :blk paths;
     } else null;
-    return .{ .url = url, .reference_url = reference_url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected, .torrent_info_hash = torrent_info_hash };
+    return .{ .url = url, .queue_id = stringField(object, "queue_id") orelse "main", .reference_url = reference_url, .name = name, .destination = destination, .idempotency_key = key, .priority = priority, .expected_sha256 = expected_sha256, .bandwidth_limit_bytes_per_second = bandwidth, .selected_torrent_files = selected, .torrent_info_hash = torrent_info_hash };
 }
 
 fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {

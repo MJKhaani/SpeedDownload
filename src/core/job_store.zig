@@ -19,9 +19,28 @@ pub const max_parallel_downloads_per_host = default_max_parallel_downloads_per_h
 pub const hours_per_week = 7 * 24;
 pub const BandwidthScheduleMode = enum { global_limit, limited };
 pub const MultipartMode = enum { off, auto, fixed };
+pub const QueueFinishAction = enum { none, quit_app, power_off, custom_app };
+pub const QueueCompletion = struct {
+    action: QueueFinishAction,
+    custom_app: ?[]u8 = null,
+
+    pub fn deinit(self: QueueCompletion, allocator: std.mem.Allocator) void {
+        if (self.custom_app) |path| allocator.free(path);
+    }
+};
+pub const QueueConfig = struct {
+    id: []const u8 = "main",
+    name: []const u8 = "main",
+    max_active: u8 = default_max_parallel_downloads,
+    schedule_enabled: bool = false,
+    schedule_slots: [hours_per_week]bool = @splat(true),
+    finish_action: QueueFinishAction = .none,
+    custom_app: ?[]const u8 = null,
+};
+const default_queues = [_]QueueConfig{.{}};
 
 pub const Settings = struct {
-    schema_version: u32 = 2,
+    schema_version: u32 = 3,
     max_concurrent_tasks: u8 = default_max_parallel_downloads,
     default_connections_per_task: u8 = 4,
     multipart_mode: MultipartMode = .auto,
@@ -36,6 +55,10 @@ pub const Settings = struct {
     scheduled_bandwidth_limit_bytes_per_second: u64 = 0,
     bandwidth_schedule_slots: [hours_per_week]BandwidthScheduleMode = @splat(.global_limit),
     debug_log_enabled: bool = false,
+    queues: []const QueueConfig = &default_queues,
+    browser_grab_extensions: []const u8 = "zip,rar,7z,dmg,pkg,exe,msi,iso,pdf,mp4,mp3,torrent",
+    stop_seeding_after_minutes: u32 = 0,
+    language: []const u8 = "system",
 };
 
 pub const RuntimePolicy = struct {
@@ -69,6 +92,7 @@ pub const WorkerProgress = struct {
 
 pub const Job = struct {
     id: []const u8,
+    queue_id: []const u8 = "main",
     url: []const u8,
     reference_url: ?[]const u8 = null,
     name: ?[]const u8,
@@ -87,6 +111,7 @@ pub const Job = struct {
     live_received_bytes: ?u64 = null,
     live_total_bytes: ?u64 = null,
     requested_control: ?StopAction = null,
+    completion_trigger: bool = false,
     priority: i32 = 0,
     bandwidth_limit_bytes_per_second: u64 = 0,
     workers: [32]WorkerProgress = @splat(.{}),
@@ -100,6 +125,7 @@ pub const Job = struct {
 
 pub const AddInput = struct {
     url: []const u8,
+    queue_id: []const u8 = "main",
     reference_url: ?[]const u8 = null,
     name: ?[]const u8,
     destination: []const u8,
@@ -334,6 +360,21 @@ pub const Store = struct {
         };
     }
 
+    fn queueByID(self: *Store, id: []const u8) ?QueueConfig {
+        for (self.settings.queues) |queue| if (std.mem.eql(u8, queue.id, id)) return queue;
+        return null;
+    }
+
+    pub fn queueActiveForJob(self: *Store, job_id: []const u8, slot: usize) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |job| if (std.mem.eql(u8, job.id, job_id)) {
+            const queue = self.queueByID(job.queue_id) orelse return false;
+            return !queue.schedule_enabled or queue.schedule_slots[slot];
+        };
+        return false;
+    }
+
     pub const OwnedProxyPolicy = struct {
         mode: ProxyMode,
         url: ?[]u8,
@@ -357,12 +398,14 @@ pub const Store = struct {
     }
 
     /// Switches only queue-controlled jobs. User-paused jobs remain paused.
-    pub fn applyQueueWindow(self: *Store, active: bool) !void {
+    pub fn applyQueueWindow(self: *Store, slot: usize) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         var changed: std.ArrayList(usize) = .empty;
         defer changed.deinit(self.allocator);
         for (self.jobs.items, 0..) |job, index| {
+            const queue = self.queueByID(job.queue_id) orelse continue;
+            const active = !queue.schedule_enabled or queue.schedule_slots[slot];
             if ((active and job.state == .scheduled) or (!active and job.state == .queued)) {
                 if (job.revision == std.math.maxInt(u64)) return error.RevisionOverflow;
                 try changed.append(self.allocator, index);
@@ -370,11 +413,15 @@ pub const Store = struct {
         }
         if (changed.items.len == 0) return;
         for (changed.items) |index| {
+            const queue = self.queueByID(self.jobs.items[index].queue_id).?;
+            const active = !queue.schedule_enabled or queue.schedule_slots[slot];
             self.jobs.items[index].state = if (active) .queued else .scheduled;
             self.jobs.items[index].revision += 1;
         }
         self.persist() catch |err| {
             for (changed.items) |index| {
+                const queue = self.queueByID(self.jobs.items[index].queue_id).?;
+                const active = !queue.schedule_enabled or queue.schedule_slots[slot];
                 self.jobs.items[index].state = if (active) .scheduled else .queued;
                 self.jobs.items[index].revision -= 1;
             }
@@ -386,6 +433,14 @@ pub const Store = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         try validateSettings(value);
+        for (self.jobs.items) |job| {
+            var found = false;
+            for (value.queues) |queue| if (std.mem.eql(u8, job.queue_id, queue.id)) {
+                found = true;
+                break;
+            };
+            if (!found) return error.QueueHasJobs;
+        }
         const replacement = try self.duplicateSettings(value);
         const old = self.settings;
         self.settings = replacement;
@@ -399,8 +454,30 @@ pub const Store = struct {
     }
 
     fn duplicateSettings(self: *Store, value: Settings) !Settings {
+        const queues = try self.allocator.alloc(QueueConfig, value.queues.len);
+        var copied: usize = 0;
+        errdefer {
+            for (queues[0..copied]) |queue| {
+                self.allocator.free(queue.id);
+                self.allocator.free(queue.name);
+                if (queue.custom_app) |path| self.allocator.free(path);
+            }
+            self.allocator.free(queues);
+        }
+        for (value.queues, 0..) |queue, index| {
+            queues[index] = .{
+                .id = try self.allocator.dupe(u8, queue.id),
+                .name = try self.allocator.dupe(u8, queue.name),
+                .max_active = queue.max_active,
+                .schedule_enabled = queue.schedule_enabled,
+                .schedule_slots = queue.schedule_slots,
+                .finish_action = queue.finish_action,
+                .custom_app = if (queue.custom_app) |path| try self.allocator.dupe(u8, path) else null,
+            };
+            copied += 1;
+        }
         return .{
-            .schema_version = 2,
+            .schema_version = 3,
             .max_concurrent_tasks = value.max_concurrent_tasks,
             .default_connections_per_task = value.default_connections_per_task,
             .multipart_mode = value.multipart_mode,
@@ -415,12 +492,24 @@ pub const Store = struct {
             .scheduled_bandwidth_limit_bytes_per_second = value.scheduled_bandwidth_limit_bytes_per_second,
             .bandwidth_schedule_slots = value.bandwidth_schedule_slots,
             .debug_log_enabled = value.debug_log_enabled,
+            .queues = queues,
+            .browser_grab_extensions = try self.allocator.dupe(u8, value.browser_grab_extensions),
+            .stop_seeding_after_minutes = value.stop_seeding_after_minutes,
+            .language = try self.allocator.dupe(u8, value.language),
         };
     }
 
     fn freeSettings(self: *Store, value: Settings) void {
         self.allocator.free(value.default_download_folder);
         if (value.proxy_url) |url| self.allocator.free(url);
+        for (value.queues) |queue| {
+            self.allocator.free(queue.id);
+            self.allocator.free(queue.name);
+            if (queue.custom_app) |path| self.allocator.free(path);
+        }
+        self.allocator.free(value.queues);
+        self.allocator.free(value.browser_grab_extensions);
+        self.allocator.free(value.language);
     }
 
     fn addUnlocked(self: *Store, input: AddInput) !AddResult {
@@ -430,6 +519,7 @@ pub const Store = struct {
             return error.IdempotencyConflict;
         }
         try validateInput(self.allocator, self.io, input);
+        if (self.queueByID(input.queue_id) == null) return error.QueueNotFound;
 
         const job = try self.duplicateJob(input);
         const occupied = self.destinationOccupied(job, false) catch |err| {
@@ -833,6 +923,37 @@ pub const Store = struct {
         } }, .{});
     }
 
+    pub fn moveQueueJson(self: *Store, request_id: std.json.Value, job_id: []const u8, queue_id: []const u8, expected_revision: u64) ![]u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.queueByID(queue_id) == null) return error.QueueNotFound;
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            if (job.revision != expected_revision) return error.StaleJobRevision;
+            const new_id = try self.allocator.dupe(u8, queue_id);
+            const old_id = job.queue_id;
+            job.queue_id = new_id;
+            job.revision = std.math.add(u64, job.revision, 1) catch {
+                job.queue_id = old_id;
+                self.allocator.free(new_id);
+                return error.RevisionOverflow;
+            };
+            self.persist() catch |err| {
+                job.queue_id = old_id;
+                job.revision -= 1;
+                self.allocator.free(new_id);
+                return err;
+            };
+            self.allocator.free(old_id);
+            const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
+            defer self.allocator.free(revision);
+            return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
+                .job_id = job.id, .queue_id = job.queue_id, .revision = revision,
+            } }, .{});
+        }
+        return error.JobNotFound;
+    }
+
     pub fn deleteJson(self: *Store, request_id: std.json.Value, job_id: []const u8, expected_revision: u64, delete_partial: bool) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -1001,12 +1122,17 @@ pub const Store = struct {
         var refs: std.ArrayList(queue_policy.JobRef) = .empty;
         defer refs.deinit(self.allocator);
         for (self.jobs.items, 0..) |job, index| {
+            const queue = self.queueByID(job.queue_id) orelse continue;
+            var active_in_queue: usize = 0;
+            for (self.jobs.items) |candidate| if (candidate.state == .downloading and std.mem.eql(u8, candidate.queue_id, queue.id)) {
+                active_in_queue += 1;
+            };
             try refs.append(self.allocator, .{
                 .id = @intCast(index),
                 .host = sourceHost(job.url),
                 .priority = job.priority,
                 .sequence = @intCast(index),
-                .state = std.meta.stringToEnum(CoreState, @tagName(job.state)).?,
+                .state = if (job.state == .queued and active_in_queue >= queue.max_active) .paused else std.meta.stringToEnum(CoreState, @tagName(job.state)).?,
             });
         }
         const limits: queue_policy.Limits = .{
@@ -1143,6 +1269,18 @@ pub const Store = struct {
             job.retry_at_unix_ms = null;
             job.live_received_bytes = null;
             job.live_total_bytes = null;
+            if (succeeded) {
+                const queue = self.queueByID(job.queue_id);
+                if (queue != null and queue.?.finish_action != .none) {
+                    job.completion_trigger = true;
+                    for (self.jobs.items) |other| {
+                        if (std.mem.eql(u8, other.queue_id, job.queue_id) and other.state != .completed) {
+                            job.completion_trigger = false;
+                            break;
+                        }
+                    }
+                }
+            }
             self.persist() catch |err| {
                 job.state = old_state;
                 job.revision = old_revision;
@@ -1151,6 +1289,7 @@ pub const Store = struct {
                 job.worker_count = old_worker_count;
                 job.retry_attempts = old_retry_attempts;
                 job.retry_at_unix_ms = old_retry_at;
+                job.completion_trigger = false;
                 if (owned_error) |value| self.allocator.free(value);
                 return err;
             };
@@ -1158,6 +1297,27 @@ pub const Store = struct {
             return;
         }
         return error.JobNotFound;
+    }
+
+    /// Called only after a successful transition to completed. It does not
+    /// persist an action flag: the transition is the one-shot trigger.
+    pub fn completedQueueAction(self: *Store, job_id: []const u8) !?QueueCompletion {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const completed = for (self.jobs.items) |*job| {
+            if (std.mem.eql(u8, job.id, job_id)) break job;
+        } else return null;
+        if (completed.state != .completed or !completed.completion_trigger) return null;
+        completed.completion_trigger = false;
+        const queue = self.queueByID(completed.queue_id) orelse return null;
+        if (queue.finish_action == .none) return null;
+        for (self.jobs.items) |job| {
+            if (std.mem.eql(u8, job.queue_id, queue.id) and job.state != .completed) return null;
+        }
+        return .{
+            .action = queue.finish_action,
+            .custom_app = if (queue.custom_app) |path| try self.allocator.dupe(u8, path) else null,
+        };
     }
 
     /// Persist a bounded retry before releasing the worker slot. A later
@@ -1474,12 +1634,15 @@ pub const Store = struct {
         errdefer self.allocator.free(destination);
         const idempotency_key = try self.allocator.dupe(u8, input.idempotency_key);
         errdefer self.allocator.free(idempotency_key);
+        const queue_id = try self.allocator.dupe(u8, input.queue_id);
+        errdefer self.allocator.free(queue_id);
         const expected_sha256 = if (input.expected_sha256) |digest| try self.allocator.dupe(u8, digest) else null;
         errdefer if (expected_sha256) |digest| self.allocator.free(digest);
         const selected_torrent_files = try duplicateSelectedFiles(self.allocator, input.selected_torrent_files);
         errdefer freeSelectedFiles(self.allocator, selected_torrent_files);
         return .{
             .id = id,
+            .queue_id = queue_id,
             .url = url,
             .reference_url = reference_url,
             .name = name,
@@ -1494,6 +1657,7 @@ pub const Store = struct {
 
     fn freeJob(self: *Store, job: Job) void {
         self.allocator.free(job.id);
+        self.allocator.free(job.queue_id);
         self.allocator.free(job.url);
         if (job.reference_url) |value| self.allocator.free(value);
         if (job.name) |name| self.allocator.free(name);
@@ -1562,6 +1726,7 @@ pub const Store = struct {
         if (value != .object) return error.InvalidJobStore;
         const object = value.object;
         const id = try getString(object, "id");
+        const queue_id = if (object.get("queue_id")) |field| if (field == .string) field.string else return error.InvalidJobStore else "main";
         const url = try getString(object, "url");
         const reference_value = object.get("reference_url") orelse .null;
         if (reference_value != .null and reference_value != .string) return error.InvalidJobStore;
@@ -1629,6 +1794,7 @@ pub const Store = struct {
         if (adaptive_value != .null and (adaptive_value != .integer or adaptive_value.integer < 1 or adaptive_value.integer > 32)) return error.InvalidJobStore;
         try self.jobs.append(self.allocator, .{
             .id = try self.allocator.dupe(u8, id),
+            .queue_id = try self.allocator.dupe(u8, queue_id),
             .url = try self.allocator.dupe(u8, url),
             .reference_url = if (reference_url) |reference| try self.allocator.dupe(u8, reference) else null,
             .name = name,
@@ -1655,6 +1821,7 @@ pub const Store = struct {
         defer persisted_jobs.deinit(self.allocator);
         for (self.jobs.items) |job| try persisted_jobs.append(self.allocator, .{
             .id = job.id,
+            .queue_id = job.queue_id,
             .url = job.url,
             .reference_url = job.reference_url,
             .name = job.name,
@@ -1721,10 +1888,25 @@ pub const Store = struct {
         var migrated = parsed.value;
         const needs_migration = switch (migrated.schema_version) {
             1 => true,
-            2 => false,
+            2 => true,
+            3 => false,
             else => return error.UnsupportedSettingsVersion,
         };
-        migrated.schema_version = 2;
+        if (migrated.schema_version < 3) {
+            var main_queue = default_queues;
+            main_queue[0].schedule_enabled = migrated.queue_schedule_enabled;
+            main_queue[0].schedule_slots = migrated.queue_schedule_slots;
+            main_queue[0].max_active = migrated.max_concurrent_tasks;
+            migrated.queues = &main_queue;
+            migrated.schema_version = 3;
+            try validateSettings(migrated);
+            self.settings = try self.duplicateSettings(migrated);
+            self.settings_owned = true;
+            file.close(self.io);
+            file_open = false;
+            try self.persistSettings();
+            return;
+        }
         try validateSettings(migrated);
         self.settings = try self.duplicateSettings(migrated);
         self.settings_owned = true;
@@ -1749,9 +1931,26 @@ pub const Store = struct {
     }
 
     fn validateSettings(value: Settings) !void {
-        if (value.schema_version != 2 or value.max_concurrent_tasks == 0 or value.max_concurrent_tasks > 32 or
+        if (value.schema_version != 3 or value.max_concurrent_tasks == 0 or value.max_concurrent_tasks > 32 or
             value.default_connections_per_task == 0 or value.default_connections_per_task > 32 or
             value.default_download_folder.len > 4096) return error.InvalidSettings;
+        if (value.queues.len == 0 or value.queues.len > 64 or
+            value.browser_grab_extensions.len > 4096 or value.language.len == 0 or value.language.len > 64 or
+            value.stop_seeding_after_minutes > 525_600) return error.InvalidSettings;
+        var found_main = false;
+        for (value.queues, 0..) |queue, index| {
+            if (queue.id.len == 0 or queue.id.len > 64 or queue.name.len == 0 or queue.name.len > 80 or
+                queue.max_active == 0 or queue.max_active > 32 or !std.unicode.utf8ValidateSlice(queue.name)) return error.InvalidSettings;
+            if (std.mem.eql(u8, queue.id, "main")) {
+                found_main = true;
+                if (!std.mem.eql(u8, queue.name, "main")) return error.InvalidSettings;
+            }
+            if (queue.finish_action == .custom_app and (queue.custom_app == null or !std.fs.path.isAbsolute(queue.custom_app.?))) return error.InvalidSettings;
+            for (value.queues[0..index]) |previous| {
+                if (std.mem.eql(u8, previous.id, queue.id) or std.ascii.eqlIgnoreCase(previous.name, queue.name)) return error.InvalidSettings;
+            }
+        }
+        if (!found_main) return error.InvalidSettings;
         if (value.proxy_mode == .custom) {
             const endpoint = value.proxy_url orelse return error.InvalidSettings;
             if (endpoint.len == 0 or endpoint.len > 2048) return error.InvalidSettings;
@@ -1870,6 +2069,7 @@ pub const Store = struct {
 
 const Summary = struct {
     job_id: []const u8,
+    queue_id: []const u8,
     url: []const u8,
     reference_url: ?[]const u8 = null,
     name: ?[]const u8,
@@ -1906,6 +2106,7 @@ fn makeSummary(allocator: std.mem.Allocator, job: *const Job) !Summary {
     errdefer if (total) |value| allocator.free(value);
     return .{
         .job_id = job.id,
+        .queue_id = job.queue_id,
         .url = redactUrl(job.url),
         .reference_url = job.reference_url,
         .name = job.name,
@@ -1940,6 +2141,7 @@ fn freeSummary(allocator: std.mem.Allocator, summary: Summary) void {
 
 const PersistedJob = struct {
     id: []const u8,
+    queue_id: []const u8,
     url: []const u8,
     reference_url: ?[]const u8 = null,
     name: ?[]const u8,
@@ -2098,6 +2300,7 @@ fn sameInput(job: *const Job, input: AddInput) bool {
         break :blk true;
     } else input.selected_torrent_files == null;
     return same_digest and same_selected and std.mem.eql(u8, job.url, input.url) and same_name and
+        std.mem.eql(u8, job.queue_id, input.queue_id) and
         std.mem.eql(u8, job.destination, input.destination) and job.priority == input.priority and
         job.bandwidth_limit_bytes_per_second == input.bandwidth_limit_bytes_per_second;
 }

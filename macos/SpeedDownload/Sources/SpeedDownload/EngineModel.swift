@@ -237,9 +237,19 @@ final class EngineModel: ObservableObject {
     }
 
     private func applyJobs(_ refreshed: [DownloadJob]) {
+        // A list request may finish after a newer subscription event. Never
+        // let that older snapshot roll a transfer back on screen.
+        let currentByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.jobID, $0) })
+        let ordered = refreshed.map { incoming in
+            guard let current = currentByID[incoming.jobID],
+                  let oldRevision = UInt64(current.revision),
+                  let newRevision = UInt64(incoming.revision),
+                  oldRevision > newRevision else { return incoming }
+            return current
+        }
         if hasLoadedSnapshot {
             let oldStates = Dictionary(uniqueKeysWithValues: jobs.map { ($0.jobID, $0.state) })
-            for job in refreshed where oldStates[job.jobID] != nil && oldStates[job.jobID] != job.state {
+            for job in ordered where oldStates[job.jobID] != nil && oldStates[job.jobID] != job.state {
                 let isComplete = job.state == "completed" && UserDefaults.standard.bool(forKey: "notifyOnCompletion")
                 let isFailed = job.state == "failed" && UserDefaults.standard.bool(forKey: "notifyOnFailure")
                 guard isComplete || isFailed else { continue }
@@ -260,7 +270,7 @@ final class EngineModel: ObservableObject {
         var nextSamples: [String: (bytes: UInt64, workers: [UInt32: UInt64], time: Date)] = [:]
         var nextJobRates: [String: UInt64] = [:]
         var nextWorkerRates: [String: [UInt32: UInt64]] = [:]
-        for job in refreshed where job.state == "downloading" {
+        for job in ordered where job.state == "downloading" {
             let bytes = UInt64(job.receivedBytes ?? job.completedBytes ?? "0") ?? 0
             let workers = Dictionary(uniqueKeysWithValues: (job.workers ?? []).map { ($0.workerID, $0.downloaded) })
             if let previous = previousSamples[job.jobID] {
@@ -280,7 +290,7 @@ final class EngineModel: ObservableObject {
         previousSamples = nextSamples
         jobBytesPerSecond = nextJobRates
         workerBytesPerSecond = nextWorkerRates
-        jobs = refreshed
+        jobs = ordered
     }
 
     private func rate(from old: UInt64, to new: UInt64, elapsed: TimeInterval) -> UInt64 {
@@ -322,6 +332,7 @@ final class EngineModel: ObservableObject {
         if let cachedSettings { return cachedSettings }
         let loaded = try await Task.detached(priority: .utility) { try UnixEngineClient().getSettings() }.value
         cachedSettings = loaded
+        Self.exportBrowserPreferences(loaded)
         return loaded
     }
 
@@ -335,7 +346,90 @@ final class EngineModel: ObservableObject {
     func saveSettings(_ settings: EngineSettings) async throws -> EngineSettings {
         let saved = try await Task.detached(priority: .userInitiated) { try UnixEngineClient().updateSettings(settings) }.value
         cachedSettings = saved
+        Self.exportBrowserPreferences(saved)
         return saved
+    }
+
+    private static func exportBrowserPreferences(_ settings: EngineSettings) {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Speed Download", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: ["extensions": settings.browserGrabExtensions])
+            try data.write(to: directory.appendingPathComponent("browser-preferences.json"), options: .atomic)
+        } catch {
+            NSLog("Could not update browser download preferences: %@", error.localizedDescription)
+        }
+    }
+
+    func createQueue() async -> DownloadQueue? {
+        do {
+            var settings = try await loadSettings()
+            var number = 1
+            while settings.queues.contains(where: { $0.name.localizedCaseInsensitiveCompare("queue #\(number)") == .orderedSame }) {
+                number += 1
+            }
+            var queue = DownloadQueue.main
+            queue.id = UUID().uuidString.lowercased()
+            queue.name = "queue #\(number)"
+            settings.queues.append(queue)
+            _ = try await saveSettings(settings)
+            actionError = nil
+            return queue
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func updateQueue(_ queue: DownloadQueue) async {
+        do {
+            var settings = try await loadSettings()
+            guard let index = settings.queues.firstIndex(where: { $0.id == queue.id }) else { return }
+            settings.queues[index] = queue
+            _ = try await saveSettings(settings)
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func moveJob(_ job: DownloadJob, to queueID: String) async -> Bool {
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try UnixEngineClient().moveJob(jobID: job.jobID, expectedRevision: job.revision, queueID: queueID)
+            }.value
+            await refreshJobs()
+            return true
+        } catch {
+            actionError = error.localizedDescription
+            await refreshJobs()
+            return false
+        }
+    }
+
+    func deleteQueue(_ queue: DownloadQueue) async -> Bool {
+        guard queue.id != "main" else { return false }
+        let ids = jobs.filter { $0.queueID == queue.id }.map(\.jobID)
+        for id in ids {
+            var moved = false
+            for _ in 0..<3 {
+                guard let latest = jobs.first(where: { $0.jobID == id && $0.queueID == queue.id }) else {
+                    moved = true
+                    break
+                }
+                if await moveJob(latest, to: "main") { moved = true; break }
+            }
+            guard moved else { return false }
+        }
+        do {
+            var settings = try await loadSettings()
+            settings.queues.removeAll { $0.id == queue.id }
+            _ = try await saveSettings(settings)
+            actionError = nil
+            return true
+        } catch {
+            actionError = error.localizedDescription
+            return false
+        }
     }
 
     func maintainConnection() async {
@@ -389,7 +483,7 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    func addJob(url: String, name: String, destination: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil, referenceURL: String? = nil) async -> Bool {
+    func addJob(url: String, name: String, destination: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil, referenceURL: String? = nil, queueID: String = "main") async -> Bool {
         guard !isSubmitting else { return false }
         isSubmitting = true
         actionError = nil
@@ -407,7 +501,8 @@ final class EngineModel: ObservableObject {
                     expectedSHA256: expectedSHA256,
                     selectedTorrentFiles: selectedTorrentFiles,
                     torrentInfoHash: torrentInfoHash,
-                    referenceURL: referenceURL
+                    referenceURL: referenceURL,
+                    queueID: queueID
                 )
             }.value
             do {

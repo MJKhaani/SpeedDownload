@@ -146,6 +146,21 @@ async function downloadReference(item) {
   return pageReference(item.referrer);
 }
 
+async function shouldGrabDownload(item) {
+  const names = [item.filename || "", new URL(item.finalUrl || item.url).pathname];
+  const suffixes = names.map((name) => {
+    const basename = name.split(/[\\/]/).pop() || "";
+    return basename.includes(".") ? basename.split(".").pop().toLowerCase() : "";
+  }).filter(Boolean);
+  if (!suffixes.length) return false;
+  try {
+    const response = await browser.runtime.sendNativeMessage(HOST, { version: 1, action: "preferences" });
+    if (!response?.ok || typeof response.browser_grab_extensions !== "string") return false;
+    const allowed = response.browser_grab_extensions.split(",").map((part) => part.trim().replace(/^\./, "").toLowerCase());
+    return suffixes.some((suffix) => allowed.includes(suffix));
+  } catch { return false; }
+}
+
 browser.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     if (info.menuItemId === LINK_MENU) {
@@ -187,6 +202,7 @@ browser.downloads.onCreated.addListener(async (item) => {
       !supportedURL(item.url) || !/^https?:/i.test(item.url)) return;
   const { automaticGrab = false } = await browser.storage.local.get("automaticGrab");
   if (!automaticGrab) return;
+  if (!(await shouldGrabDownload(item))) return;
   try {
     // Keep the original transfer available until the client accepts the handoff.
     await browser.downloads.pause(item.id);

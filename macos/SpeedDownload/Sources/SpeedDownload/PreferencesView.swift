@@ -10,7 +10,10 @@ private enum PreferencesPane: String, CaseIterable, Identifiable {
     case connections = "Connections"
     case proxy = "Proxy"
     case bandwidth = "Bandwidth"
-    case schedule = "Scheduler"
+    case browser = "Browser"
+    case sidebar = "Sidebar"
+    case torrents = "Torrents"
+    case language = "Language"
 
     var id: Self { self }
     var symbol: String {
@@ -20,7 +23,10 @@ private enum PreferencesPane: String, CaseIterable, Identifiable {
         case .connections: "point.3.connected.trianglepath.dotted"
         case .proxy: "network"
         case .bandwidth: "speedometer"
-        case .schedule: "calendar"
+        case .browser: "globe"
+        case .sidebar: "sidebar.left"
+        case .torrents: "point.3.connected.trianglepath.dotted"
+        case .language: "character.bubble"
         }
     }
 }
@@ -29,6 +35,11 @@ struct PreferencesView: View {
     @EnvironmentObject private var engine: EngineModel
     @AppStorage("notifyOnCompletion") private var notifyOnCompletion = false
     @AppStorage("notifyOnFailure") private var notifyOnFailure = false
+    @AppStorage("alwaysShowSidebar") private var alwaysShowSidebar = false
+    @AppStorage("showAllDownloads") private var showAllDownloads = true
+    @AppStorage("showUnfinished") private var showUnfinished = true
+    @AppStorage("showCompleted") private var showCompleted = true
+    @AppStorage("showFailed") private var showFailed = true
     @State private var launchAtLogin = false
     @State private var selectedPane: PreferencesPane? = .general
     @State private var settings = EngineSettings()
@@ -149,7 +160,10 @@ struct PreferencesView: View {
         case .connections: connectionsPane
         case .proxy: proxyPane
         case .bandwidth: bandwidthPane
-        case .schedule: schedulerPane
+        case .browser: browserPane
+        case .sidebar: sidebarPane
+        case .torrents: torrentsPane
+        case .language: languagePane
         }
     }
 
@@ -322,29 +336,64 @@ struct PreferencesView: View {
         .preferencesPanePadding()
     }
 
-    private var schedulerPane: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            GroupBox("Queue schedule") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Schedule queue activity", isOn: $settings.queueScheduleEnabled)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Choose the hours when the queue can run. Each cell represents one hour.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        QueueScheduleGrid(slots: $settings.queueScheduleSlots)
-                        HStack(spacing: 16) {
-                            ScheduleLegend(color: .accentColor, title: "Active")
-                            ScheduleLegend(color: Color(nsColor: .quaternaryLabelColor), title: "Off")
-                            Spacer()
-                            Text("Mac time zone").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(!settings.queueScheduleEnabled)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var browserPane: some View {
+        GroupBox("Download grabbing") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("File extensions", text: $settings.browserGrabExtensions)
+                Text("Comma-separated extensions, without dots. The browser extension offers matching downloads to Speed Download for review.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
         }
         .preferencesPanePadding()
+    }
+
+    private var sidebarPane: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            GroupBox("Sidebar") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Always show sidebar", isOn: $alwaysShowSidebar)
+                    Text("New windows open with the sidebar hidden unless this is enabled.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
+            }
+            GroupBox("Library items") {
+                VStack(alignment: .leading, spacing: 7) {
+                    Toggle("All Downloads", isOn: $showAllDownloads)
+                    Toggle("Unfinished", isOn: $showUnfinished)
+                    Toggle("Completed", isOn: $showCompleted)
+                    Toggle("Failed", isOn: $showFailed)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
+            }
+        }.preferencesPanePadding()
+    }
+
+    private var torrentsPane: some View {
+        GroupBox("Seeding") {
+            VStack(alignment: .leading, spacing: 7) {
+                Stepper(value: $settings.stopSeedingAfterMinutes, in: 0...525600, step: 15) {
+                    LabeledContent("Stop seeding after", value: settings.stopSeedingAfterMinutes == 0 ? "Never" : "\(settings.stopSeedingAfterMinutes) minutes")
+                }
+                Text("Torrent uploads are not available yet; this preference will apply when seeding is added.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(6)
+        }.preferencesPanePadding()
+    }
+
+    private var languagePane: some View {
+        GroupBox("Language") {
+            VStack(alignment: .leading, spacing: 7) {
+                Picker("Use language", selection: $settings.language) {
+                    Text("System default").tag("system")
+                    Text("English").tag("en")
+                }
+                Text("English is the only translation currently included.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(6)
+        }.preferencesPanePadding()
     }
 
     private func load() async {
@@ -412,7 +461,10 @@ struct PreferencesView: View {
         case .connections: 345
         case .proxy: settings.proxyMode == "custom" ? (proxyUsesAuthentication ? 515 : 445) : (settings.proxyMode == "system" ? 330 : 280)
         case .bandwidth: 670
-        case .schedule: 560
+        case .browser: 280
+        case .sidebar: 365
+        case .torrents: 260
+        case .language: 260
         }
     }
 
@@ -490,7 +542,7 @@ private extension View {
     }
 }
 
-private struct QueueScheduleGrid: View {
+struct QueueScheduleGrid: View {
     @Binding var slots: [Bool]
 
     var body: some View {

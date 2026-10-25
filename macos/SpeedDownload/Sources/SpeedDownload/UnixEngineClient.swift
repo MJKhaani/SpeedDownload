@@ -10,6 +10,7 @@ struct HelloResult: Sendable {
 
 struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let jobID: String
+    let queueID: String
     let url: String
     let name: String?
     let destination: String
@@ -36,6 +37,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case jobID = "job_id"
+        case queueID = "queue_id"
         case url, name, destination, state, revision
         case referenceURL = "reference_url"
         case errorMessage = "error_message"
@@ -227,7 +229,7 @@ private struct DeleteJobResult: Decodable, Sendable {
 }
 
 struct EngineSettings: Codable, Sendable, Equatable {
-    var schemaVersion = 2
+    var schemaVersion = 3
     var maxConcurrentTasks = 4
     var defaultConnectionsPerTask = 4
     var multipartMode: String? = nil
@@ -242,12 +244,16 @@ struct EngineSettings: Codable, Sendable, Equatable {
     var scheduledBandwidthLimitBytesPerSecond: UInt64 = 0
     var bandwidthScheduleSlots: [BandwidthScheduleMode] = Array(repeating: .globalLimit, count: 168)
     var debugLogEnabled = false
+    var queues: [DownloadQueue] = [.main]
+    var browserGrabExtensions = "zip,rar,7z,dmg,pkg,exe,msi,iso,pdf,mp4,mp3,torrent"
+    var stopSeedingAfterMinutes: UInt32 = 0
+    var language = "system"
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try fields.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 2
+        schemaVersion = try fields.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 3
         maxConcurrentTasks = try fields.decodeIfPresent(Int.self, forKey: .maxConcurrentTasks) ?? 4
         defaultConnectionsPerTask = try fields.decodeIfPresent(Int.self, forKey: .defaultConnectionsPerTask) ?? 4
         multipartMode = try fields.decodeIfPresent(String.self, forKey: .multipartMode)
@@ -262,6 +268,10 @@ struct EngineSettings: Codable, Sendable, Equatable {
         scheduledBandwidthLimitBytesPerSecond = try fields.decodeIfPresent(UInt64.self, forKey: .scheduledBandwidthLimitBytesPerSecond) ?? 0
         bandwidthScheduleSlots = try fields.decodeIfPresent([BandwidthScheduleMode].self, forKey: .bandwidthScheduleSlots) ?? Array(repeating: .globalLimit, count: 168)
         debugLogEnabled = try fields.decodeIfPresent(Bool.self, forKey: .debugLogEnabled) ?? false
+        queues = try fields.decodeIfPresent([DownloadQueue].self, forKey: .queues) ?? [.main]
+        browserGrabExtensions = try fields.decodeIfPresent(String.self, forKey: .browserGrabExtensions) ?? browserGrabExtensions
+        stopSeedingAfterMinutes = try fields.decodeIfPresent(UInt32.self, forKey: .stopSeedingAfterMinutes) ?? 0
+        language = try fields.decodeIfPresent(String.self, forKey: .language) ?? "system"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -280,6 +290,33 @@ struct EngineSettings: Codable, Sendable, Equatable {
         case scheduledBandwidthLimitBytesPerSecond = "scheduled_bandwidth_limit_bytes_per_second"
         case bandwidthScheduleSlots = "bandwidth_schedule_slots"
         case debugLogEnabled = "debug_log_enabled"
+        case queues
+        case browserGrabExtensions = "browser_grab_extensions"
+        case stopSeedingAfterMinutes = "stop_seeding_after_minutes"
+        case language
+    }
+}
+
+struct DownloadQueue: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var maxActive: Int
+    var scheduleEnabled: Bool
+    var scheduleSlots: [Bool]
+    var finishAction: String
+    var customApp: String?
+
+    static let main = DownloadQueue(id: "main", name: "main", maxActive: 4,
+                                    scheduleEnabled: false, scheduleSlots: Array(repeating: true, count: 168),
+                                    finishAction: "none", customApp: nil)
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case maxActive = "max_active"
+        case scheduleEnabled = "schedule_enabled"
+        case scheduleSlots = "schedule_slots"
+        case finishAction = "finish_action"
+        case customApp = "custom_app"
     }
 }
 
@@ -299,6 +336,7 @@ struct UnixEngineClient: Sendable {
         "settings.weekly-schedules", "torrents.magnet-v1-single-file",
         "torrents.local-file-v1-single-file",
         "torrents.prepare-v1", "jobs.reference-page-v1", "jobs.source-refresh-v1", "jobs.queue-resume-v1",
+        "settings.named-queues-v1", "jobs.move-queue-v1",
     ]
     private static let requestedFeatures = requiredFeatures + [
         "jobs.change-stream-v1", "torrents.file-selection-v1",
@@ -378,7 +416,7 @@ struct UnixEngineClient: Sendable {
         }
     }
 
-    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil, referenceURL: String? = nil) throws -> AddJobResult {
+    func addJob(url: String, name: String?, destination: String, idempotencyKey: String, priority: Int = 0, expectedSHA256: String? = nil, selectedTorrentFiles: [String]? = nil, torrentInfoHash: String? = nil, referenceURL: String? = nil, queueID: String = "main") throws -> AddJobResult {
         let fd = try openConnection()
         defer { Darwin.close(fd) }
         let hello = try negotiate(fd: fd)
@@ -390,6 +428,7 @@ struct UnixEngineClient: Sendable {
             "destination": destination,
             "idempotency_key": idempotencyKey,
             "priority": priority,
+            "queue_id": queueID,
         ]
         if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             params["name"] = name
@@ -486,6 +525,17 @@ struct UnixEngineClient: Sendable {
             id: "jobs-reorder-\(UUID().uuidString)",
             method: "jobs.reorder",
             params: ["job_id": jobID, "expected_revision": expectedRevision, "position": position]
+        )
+        guard envelope.result?.jobID == jobID else { throw ClientError.invalidResponse }
+    }
+
+    func moveJob(jobID: String, expectedRevision: String, queueID: String) throws {
+        let fd = try openConnection()
+        defer { Darwin.close(fd) }
+        _ = try negotiate(fd: fd)
+        let envelope: RPCEnvelope<ReorderJobResult> = try request(
+            fd: fd, id: "jobs-move-\(UUID().uuidString)", method: "jobs.move-queue",
+            params: ["job_id": jobID, "expected_revision": expectedRevision, "queue_id": queueID]
         )
         guard envelope.result?.jobID == jobID else { throw ClientError.invalidResponse }
     }
