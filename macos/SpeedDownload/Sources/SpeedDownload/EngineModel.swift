@@ -392,6 +392,20 @@ final class EngineModel: ObservableObject {
         } catch { actionError = error.localizedDescription }
     }
 
+    func renameQueues(_ drafts: [String: String]) async {
+        do {
+            var settings = try await loadSettings()
+            for index in settings.queues.indices where settings.queues[index].id != "main" {
+                let id = settings.queues[index].id
+                guard let draft = drafts[id] else { continue }
+                let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { settings.queues[index].name = name }
+            }
+            _ = try await saveSettings(settings)
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
     func moveJob(_ job: DownloadJob, to queueID: String) async -> Bool {
         do {
             try await Task.detached(priority: .userInitiated) {

@@ -67,6 +67,11 @@ struct DashboardView: View {
                             Label(section, systemImage: icon(for: section))
                                 .badge(count(for: section))
                                 .tag(section)
+                                .overlay(alignment: .leading) {
+                                    QueueDragSource(name: section, select: { selection = section }, remove: { hideSection(section) })
+                                        .frame(width: 150, height: 24)
+                                        .help("Drag outside the window to hide this sidebar item")
+                                }
                         }
                     }
                 }
@@ -84,7 +89,14 @@ struct DashboardView: View {
                 HStack {
                     Button { Task { await addQueue() } } label: { Image(systemName: "plus") }
                         .help("Add queue")
-                    Button { editingQueueNames.toggle() } label: { Image(systemName: "pencil") }
+                    Button {
+                        if editingQueueNames {
+                            let drafts = queueDraftNames
+                            focusedQueueID = nil
+                            Task { await engine.renameQueues(drafts) }
+                        }
+                        editingQueueNames.toggle()
+                    } label: { Image(systemName: "pencil") }
                         .help("Edit queue names")
                     Spacer()
                 }
@@ -220,7 +232,7 @@ struct DashboardView: View {
         )) {
             Button("Move its downloads to main and remove queue", role: .destructive) {
                 guard let queue = queuePendingRemoval else { return }
-                Task { _ = await engine.deleteQueue(queue); queuePendingRemoval = nil }
+                removeQueue(queue)
             }
             Button("Cancel", role: .cancel) { queuePendingRemoval = nil }
         } message: {
@@ -497,6 +509,17 @@ struct DashboardView: View {
         }
     }
 
+    private func hideSection(_ section: String) {
+        switch section {
+        case "All Downloads": showAllDownloads = false
+        case "Unfinished": showUnfinished = false
+        case "Completed": showCompleted = false
+        case "Failed": showFailed = false
+        default: break
+        }
+        if selection == section { selection = "Queue:main" }
+    }
+
     private func queueSidebarRow(_ queue: DownloadQueue) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "tray.full")
@@ -507,10 +530,7 @@ struct DashboardView: View {
                 ))
                 .textFieldStyle(.plain)
                 .focused($focusedQueueID, equals: queue.id)
-                .onSubmit { saveQueueName(queue) }
-                .onChange(of: focusedQueueID) { old, new in
-                    if old == queue.id && new != queue.id { saveQueueName(queue) }
-                }
+                .onSubmit { saveQueueNames() }
             } else {
                 Text(queue.name).lineLimit(1)
             }
@@ -551,19 +571,26 @@ struct DashboardView: View {
         columnVisibility = .all
     }
 
-    private func saveQueueName(_ queue: DownloadQueue) {
-        let name = (queueDraftNames[queue.id] ?? queue.name).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != queue.name else { return }
-        var updated = queue
-        updated.name = name
-        Task { await engine.updateQueue(updated) }
+    private func saveQueueNames() {
+        let drafts = queueDraftNames
+        Task { await engine.renameQueues(drafts) }
     }
 
     private func requestQueueRemoval(_ queue: DownloadQueue) {
         if engine.jobs.contains(where: { $0.queueID == queue.id && !["completed", "failed", "canceled"].contains($0.state) }) {
             queuePendingRemoval = queue
         } else {
-            Task { _ = await engine.deleteQueue(queue) }
+            removeQueue(queue)
+        }
+    }
+
+    private func removeQueue(_ queue: DownloadQueue) {
+        Task {
+            if await engine.deleteQueue(queue) {
+                if selection == "Queue:\(queue.id)" { selection = "Queue:main" }
+                queueDraftNames.removeValue(forKey: queue.id)
+            }
+            queuePendingRemoval = nil
         }
     }
     private func icon(for section: String) -> String {
