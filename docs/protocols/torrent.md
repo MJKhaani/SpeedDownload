@@ -151,7 +151,12 @@ and persists selected paths when the user queues it.
 
 A piece crossing into an unselected file is still fetched and verified in full,
 and progress includes its bytes. Tracker announces still report bytes remaining
-against the full torrent size. The engine does not upload or seed; peer encryption,
+against the full torrent size. During an active TCP peer session, the engine
+advertises only selected pieces whose hashes have been verified and may answer
+16 KiB block requests for those pieces. It sends HAVE after each newly verified
+piece. It does not listen for incoming peers or seed after completion. There is
+no upload accounting or configurable upload limit yet, so upload throughput is
+currently limited only by the connected peer and transport. Peer encryption,
 uTP, and BitTorrent v2 are unsupported. Live swarm interoperability remains unverified.
 
 The parser accepts at most 8 MiB of metainfo, 100,000 bencoded values,
@@ -174,7 +179,7 @@ report its case or Unicode normalization behavior. The transfer publisher
 checks for those collisions while constructing its private staging tree.
 
 Persistent DHT participation, DHT metadata discovery, broader tracker discovery, selection in larger torrents and magnets,
-seeding, upload accounting, and swarm interoperability remain incomplete.
+post-completion seeding, upload accounting and limits, and swarm interoperability remain incomplete.
 
 The macOS torrent review loads paged file lists from the frozen metadata source.
 Every page must retain the same info hash, file count, and total size; offsets
@@ -228,7 +233,8 @@ it does not manufacture peers or make an unavailable swarm downloadable.
 DHT bootstrap uses all resolved addresses for three bootstrap hosts and sends
 the BEP 43 read-only flag. Lookup contact/query bounds still apply. The macOS
 torrent inspector separates tracker-reported swarm counts, the actual connected
-download peer and its current rate, progress, and unsupported uploading. Peer
+download peer and its current rate and progress. Upload traffic during that
+session is not yet reported by the inspector. Peer
 addresses exist only in local IPC snapshots, not persistent state or logs.
 
 The Arch torrent reported `NoTorrentPeers` with 7 MiB verified; its info hash

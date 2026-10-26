@@ -375,7 +375,8 @@ struct PreferencesView: View {
                 Stepper(value: $settings.stopSeedingAfterMinutes, in: 0...525600, step: 15) {
                     LabeledContent("Stop seeding after", value: settings.stopSeedingAfterMinutes == 0 ? "Never" : "\(settings.stopSeedingAfterMinutes) minutes")
                 }
-                Text("Torrent uploads are not available yet; this preference will apply when seeding is added.")
+                .disabled(true)
+                Text("Post-download seeding is not available yet. Verified pieces may be shared with the connected peer while downloading.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(6)

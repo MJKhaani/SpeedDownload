@@ -28,7 +28,7 @@ The macOS client registers v1 `.torrent` documents and opens a dedicated torrent
 for that queue. Pieces are verified and rehashed independently on resume,
 but neither source path has been exercised against a live swarm. Multi-file
 payloads compile, and the Add dialog permits a file subset when its bounded
-dialog has loaded the full paged map. Trackers can be edited before queueing, while the verified info hash is preserved. A bounded read-only DHT lookup for public torrent payload peers now compiles; the desktop metadata preparation path can also use it to resolve public magnets, but it does not seed. Native swarm behavior remains unverified.
+dialog has loaded the full paged map. Trackers can be edited before queueing, while the verified info hash is preserved. A bounded read-only DHT lookup for public torrent payload peers now compiles; the desktop metadata preparation path can also use it to resolve public magnets. During an active TCP download session the engine can offer verified selected pieces to that peer; it does not listen for peers or seed after completion, and upload accounting and limits are pending. Native swarm behavior remains unverified.
 See [BitTorrent status](protocols/torrent.md).
 
 The macOS bundle includes an experimental Firefox native-messaging host and

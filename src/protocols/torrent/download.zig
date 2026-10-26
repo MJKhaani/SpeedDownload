@@ -329,7 +329,7 @@ fn transferValidated(
         var last_error: anyerror = error.NoPeerHasPieces;
         if (first_peer) |peer| {
             try checkControl(control, control_context);
-            transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
+            transferFromPeer(io, peer, info, file, piece_buffer, verified, needed, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
                 if (!canTryAnotherPeer(err)) return err;
                 last_error = err;
             };
@@ -345,7 +345,7 @@ fn transferValidated(
             for (peers) |peer| {
                 try checkControl(control, control_context);
                 if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
-                transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
+                transferFromPeer(io, peer, info, file, piece_buffer, verified, needed, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
                     if (!canTryAnotherPeer(err)) return err;
                     last_error = err;
                     continue;
@@ -370,7 +370,7 @@ fn transferValidated(
                 if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.len), .{});
                 for (peers) |peer| {
                     try checkControl(control, control_context);
-                    transferFromPeer(io, peer, info, file, piece_buffer, verified, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
+                    transferFromPeer(io, peer, info, file, piece_buffer, verified, needed, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
                         if (!canTryAnotherPeer(err)) return err;
                         last_error = err;
                         continue;
@@ -560,6 +560,7 @@ fn transferFromPeer(
     file: Io.File,
     piece_buffer: []u8,
     verified: []bool,
+    needed: []const bool,
     remaining: *usize,
     verified_bytes: *u64,
     needed_bytes: u64,
@@ -602,13 +603,25 @@ fn transferFromPeer(
         if (session.peer_observer_context) |ctx|
             report(ctx, 0, .{ .peer_event = true });
     };
+    var local_bitfield: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
+    const bitfield_len = std.math.divCeil(usize, verified.len, 8) catch return error.InvalidTorrentPieces;
+    for (verified, needed, 0..) |valid, required, index| {
+        if (valid and required) local_bitfield[index / 8] |= @as(u8, 0x80) >> @as(u3, @intCast(index % 8));
+    }
+    var bitfield_header: [5]u8 = undefined;
+    std.mem.writeInt(u32, bitfield_header[0..4], @intCast(bitfield_len + 1), .big);
+    bitfield_header[4] = 5;
+    try socket_writer.interface.writeAll(&bitfield_header);
+    try socket_writer.interface.writeAll(local_bitfield[0..bitfield_len]);
     try socket_writer.interface.writeAll(&.{ 0, 0, 0, 1, 2 }); // interested
+    try socket_writer.interface.writeAll(&.{ 0, 0, 0, 1, 1 }); // unchoke
     try socket_writer.interface.flush();
 
     var choked = true;
     var frame_buffer: [128 * 1024]u8 = undefined;
     var availability: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
     var bitfield_known = false;
+    var peer_interested = false;
     piece_loop: while (remaining.* != 0) {
         try checkControl(control, control_context);
         const piece_index = nextAvailablePiece(verified, &availability, bitfield_known) orelse return error.PeerMissingPieces;
@@ -620,7 +633,7 @@ fn transferFromPeer(
             try checkControl(control, control_context);
             unchoke_messages += 1;
             if (unchoke_messages > 128) return error.PeerChoked;
-            const frame = try readFrame(io, stream, &frame_buffer);
+            const frame = try readPeerFrame(io, stream, &frame_buffer, &socket_writer.interface, file, info, verified, needed, &peer_interested, control, control_context);
             try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
             if (has_piece == false) continue :piece_loop;
             if (frame.len == 1 and frame[0] == 1) choked = false;
@@ -645,7 +658,7 @@ fn transferFromPeer(
                 requested_blocks += 1;
             }
             try socket_writer.interface.flush();
-            const frame = try readFrame(io, stream, &frame_buffer);
+            const frame = try readPeerFrame(io, stream, &frame_buffer, &socket_writer.interface, file, info, verified, needed, &peer_interested, control, control_context);
             try checkControl(control, control_context);
             if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
             try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
@@ -681,9 +694,42 @@ fn transferFromPeer(
         try file.writePositionalAll(io, piece_buffer[0..size], try pieceOffset(info, piece_index));
         try file.sync(io);
         verified[@intCast(piece_index)] = true;
+        var have: [9]u8 = .{ 0, 0, 0, 5, 4, 0, 0, 0, 0 };
+        std.mem.writeInt(u32, have[5..9], @intCast(piece_index), .big);
+        try socket_writer.interface.writeAll(&have);
+        try socket_writer.interface.flush();
         verified_bytes.* += size;
         remaining.* -= 1;
         if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.*, needed_bytes, true);
+    }
+}
+
+// Only verified, selected pieces are offered. A request cannot read a partial
+// piece or a deselected file from the spool.
+fn readPeerFrame(io: Io, stream: Io.net.Stream, buffer: []u8, writer: *Io.Writer, file: Io.File, info: metainfo.Result, verified: []const bool, needed: []const bool, peer_interested: *bool, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque) ![]u8 {
+    while (true) {
+        try checkControl(control, control_context);
+        const frame = try readFrame(io, stream, buffer);
+        if (frame.len == 1 and frame[0] == 2) { peer_interested.* = true; continue; }
+        if (frame.len == 1 and frame[0] == 3) { peer_interested.* = false; continue; }
+        if (frame.len != 13 or frame[0] != 6) return frame;
+        if (!peer_interested.*) continue;
+        const index = std.mem.readInt(u32, frame[1..5], .big);
+        const begin = std.mem.readInt(u32, frame[5..9], .big);
+        const amount = std.mem.readInt(u32, frame[9..13], .big);
+        if (index >= verified.len or !verified[index] or !needed[index] or amount == 0 or amount > block_size) continue;
+        const size = try pieceBytes(info, index);
+        if (begin > size or amount > size - begin) continue;
+        var payload: [block_size]u8 = undefined;
+        if (try file.readPositionalAll(io, payload[0..amount], (try pieceOffset(info, index)) + begin) != amount) return error.ShortPartialFileRead;
+        var header: [13]u8 = undefined;
+        std.mem.writeInt(u32, header[0..4], amount + 9, .big);
+        header[4] = 7;
+        std.mem.writeInt(u32, header[5..9], index, .big);
+        std.mem.writeInt(u32, header[9..13], begin, .big);
+        try writer.writeAll(&header);
+        try writer.writeAll(payload[0..amount]);
+        try writer.flush();
     }
 }
 
