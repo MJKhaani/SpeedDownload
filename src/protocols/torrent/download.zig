@@ -11,10 +11,136 @@ const metainfo = @import("metainfo.zig");
 const http_download = @import("../http/download.zig");
 
 pub const ProgressCallback = *const fn (*anyopaque, u64, ?u64, bool) anyerror!void;
-const timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(15_000), .clock = .awake } };
+const read_poll_timeout: Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(1_000), .clock = .awake } };
 const block_size: usize = 16 * 1024;
 const max_in_flight_blocks: usize = 8;
 const max_piece_blocks: usize = 64 * 1024 * 1024 / block_size;
+const max_parallel_peers: usize = 4;
+const peer_buffer_budget: usize = 64 * 1024 * 1024;
+
+const PeerTransfer = struct {
+    io: Io,
+    info: metainfo.Result,
+    file: Io.File,
+    verified: []bool,
+    needed: []const bool,
+    claimed: []bool,
+    remaining: usize,
+    verified_bytes: u64,
+    needed_bytes: u64,
+    callback: ?ProgressCallback,
+    context: ?*anyopaque,
+    in_flight: [max_parallel_peers]u64 = @splat(0),
+    mutex: Io.Mutex = .init,
+
+    fn complete(self: *PeerTransfer) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.remaining == 0;
+    }
+
+    fn claim(self: *PeerTransfer, availability: []const u8, known: bool) ?u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.verified, self.claimed, 0..) |done, busy, index| {
+            if (done or busy or (known and !pieceInBitfield(availability, @intCast(index)))) continue;
+            self.claimed[index] = true;
+            return @intCast(index);
+        }
+        return null;
+    }
+
+    fn release(self: *PeerTransfer, index: u64, slot: usize) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.claimed[@intCast(index)] = false;
+        self.in_flight[slot] = 0;
+    }
+
+    fn progress(self: *PeerTransfer, slot: usize, received: usize) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.in_flight[slot] = received;
+        var total = self.verified_bytes;
+        for (self.in_flight) |value| total += value;
+        if (self.callback) |report| if (self.context) |ctx| try report(ctx, total, self.needed_bytes, false);
+    }
+
+    fn commit(self: *PeerTransfer, index: u64, slot: usize, size: usize) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.verified[@intCast(index)] = true;
+        self.claimed[@intCast(index)] = false;
+        self.in_flight[slot] = 0;
+        self.verified_bytes += size;
+        self.remaining -= 1;
+        if (self.callback) |report| if (self.context) |ctx| try report(ctx, self.verified_bytes, self.needed_bytes, true);
+    }
+
+    fn copyBitfield(self: *PeerTransfer, output: []u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.verified, self.needed, 0..) |valid, required, index| {
+            if (valid and required) output[index / 8] |= @as(u8, 0x80) >> @as(u3, @intCast(index % 8));
+        }
+    }
+
+    fn mayUpload(self: *PeerTransfer, index: u32) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return index < self.verified.len and self.verified[index] and self.needed[index];
+    }
+};
+
+const PeerWorker = struct {
+    transfer: *PeerTransfer,
+    address: []const u8,
+    slot: usize,
+    session: *const metadata.Session,
+    control: ?metadata.CheckpointCallback,
+    control_context: ?*anyopaque,
+    result: ?anyerror = null,
+};
+
+fn runPeerWorker(worker: *PeerWorker) void {
+    const transfer = worker.transfer;
+    const piece_size: usize = @intCast(transfer.info.piece_length);
+    const buffer = std.heap.page_allocator.alloc(u8, piece_size) catch {
+        worker.result = error.OutOfMemory;
+        return;
+    };
+    defer std.heap.page_allocator.free(buffer);
+    transferFromPeer(transfer.io, worker.address, transfer, buffer, worker.slot, worker.session, worker.control, worker.control_context) catch |err| {
+        worker.result = err;
+    };
+}
+
+fn runPeerAddresses(addresses: anytype, transfer: *PeerTransfer, session: *const metadata.Session, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque, last_error: *anyerror) !void {
+    var offset: usize = 0;
+    while (offset < addresses.len and !transfer.complete()) {
+        try checkControl(control, control_context);
+        const piece_size: usize = @intCast(transfer.info.piece_length);
+        const memory_limited_peers = @max(@as(usize, 1), peer_buffer_budget / piece_size);
+        const batch_size = @min(@min(max_parallel_peers, memory_limited_peers), addresses.len - offset);
+        var workers: [max_parallel_peers]PeerWorker = undefined;
+        var threads: [max_parallel_peers]std.Thread = undefined;
+        var launched: usize = 0;
+        while (launched < batch_size) : (launched += 1) {
+            workers[launched] = .{ .transfer = transfer, .address = addresses[offset + launched], .slot = launched,
+                .session = session, .control = control, .control_context = control_context };
+            threads[launched] = std.Thread.spawn(.{}, runPeerWorker, .{&workers[launched]}) catch {
+                for (threads[0..launched]) |thread| thread.join();
+                return error.PeerWorkerSpawnFailed;
+            };
+        }
+        for (threads[0..launched]) |thread| thread.join();
+        for (workers[0..launched]) |worker| if (worker.result) |err| {
+            if (!canTryAnotherPeer(err)) return err;
+            last_error.* = err;
+        };
+        offset += batch_size;
+    }
+}
 
 pub fn download(
     allocator: Allocator,
@@ -326,34 +452,37 @@ fn transferValidated(
     }
 
     if (remaining != 0) {
+        const claimed = try allocator.alloc(bool, count);
+        defer allocator.free(claimed);
+        @memset(claimed, false);
+        var shared: PeerTransfer = .{ .io = io, .info = info, .file = file, .verified = verified,
+            .needed = needed, .claimed = claimed, .remaining = remaining, .verified_bytes = verified_bytes,
+            .needed_bytes = needed_bytes, .callback = callback, .context = context };
         var last_error: anyerror = error.NoPeerHasPieces;
-        if (first_peer) |peer| {
-            try checkControl(control, control_context);
-            transferFromPeer(io, peer, info, file, piece_buffer, verified, needed, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
-                if (!canTryAnotherPeer(err)) return err;
-                last_error = err;
-            };
-        }
-        if (remaining != 0) {
-            // Tracker `left` describes the full torrent, even when the user
-            // selected only some files. Progress still uses needed_bytes.
-            const peers = try metadata.collectPeersWithStats(allocator, io, link, verified_bytes, info.total_bytes, session, control, control_context, stats, stats_context);
-            defer {
-                for (peers) |peer| allocator.free(peer);
-                allocator.free(peers);
-            }
-            for (peers) |peer| {
-                try checkControl(control, control_context);
+        // Tracker `left` describes the full torrent, even when the user
+        // selected only some files. Progress still uses needed_bytes.
+        const peers: ?[][]u8 = metadata.collectPeersWithStats(allocator, io, link, verified_bytes, info.total_bytes, session, control, control_context, stats, stats_context) catch |err| blk: {
+            if (first_peer == null) return err;
+            break :blk null;
+        };
+        defer if (peers) |addresses| {
+            for (addresses) |peer| allocator.free(peer);
+            allocator.free(addresses);
+        };
+        if (peers) |addresses| {
+            var ordered: std.ArrayList([]const u8) = .empty;
+            defer ordered.deinit(allocator);
+            if (first_peer) |first| try ordered.append(allocator, first);
+            for (addresses) |peer| {
                 if (first_peer) |first| if (std.mem.eql(u8, peer, first)) continue;
-                transferFromPeer(io, peer, info, file, piece_buffer, verified, needed, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
-                    if (!canTryAnotherPeer(err)) return err;
-                    last_error = err;
-                    continue;
-                };
-                if (remaining == 0) break;
+                try ordered.append(allocator, peer);
             }
+            try runPeerAddresses(ordered.items, &shared, session, control, control_context, &last_error);
+        } else if (first_peer) |first| {
+            const single = [_][]const u8{first};
+            try runPeerAddresses(single[0..], &shared, session, control, control_context, &last_error);
         }
-        if (remaining != 0 and link.allow_dht and !link.is_private and !session.dht_attempted) {
+        if (!shared.complete() and link.allow_dht and !link.is_private and !session.dht_attempted) {
             // A nonempty tracker response does not prove any returned peer is
             // reachable. Try public DHT before entering tracker retry wait.
             try checkControl(control, control_context);
@@ -362,24 +491,18 @@ fn transferValidated(
                 if (!canTryAnotherPeer(err) and err != error.DhtBootstrapUnavailable) return err;
                 break :blk null;
             };
-            if (discovered) |peers| {
+            if (discovered) |dht_peers| {
                 defer {
-                    for (peers) |peer| allocator.free(peer);
-                    allocator.free(peers);
+                    for (dht_peers) |peer| allocator.free(peer);
+                    allocator.free(dht_peers);
                 }
-                if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.len), .{});
-                for (peers) |peer| {
-                    try checkControl(control, control_context);
-                    transferFromPeer(io, peer, info, file, piece_buffer, verified, needed, &remaining, &verified_bytes, needed_bytes, callback, context, session, control, control_context) catch |err| {
-                        if (!canTryAnotherPeer(err)) return err;
-                        last_error = err;
-                        continue;
-                    };
-                    if (remaining == 0) break;
-                }
+                if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(dht_peers.len), .{});
+                try runPeerAddresses(dht_peers, &shared, session, control, control_context, &last_error);
             }
         }
-        if (remaining != 0) return last_error;
+        if (!shared.complete()) return last_error;
+        remaining = shared.remaining;
+        verified_bytes = shared.verified_bytes;
     }
     try file.sync(io);
     if (callback) |report| if (context) |ctx| try report(ctx, needed_bytes, needed_bytes, true);
@@ -404,6 +527,7 @@ fn canTryAnotherPeer(err: anyerror) bool {
         error.InvalidPeerAddress,
         error.PeerHandshakeMismatch,
         error.PeerClosed,
+        error.PeerTransferComplete,
         error.PeerChoked,
         error.PeerMissingPieces,
         error.PeerPieceUnavailable,
@@ -556,21 +680,16 @@ fn scanVerified(io: Io, file: Io.File, info: metainfo.Result, buffer: []u8, veri
 fn transferFromPeer(
     io: Io,
     address: []const u8,
-    info: metainfo.Result,
-    file: Io.File,
+    transfer: *PeerTransfer,
     piece_buffer: []u8,
-    verified: []bool,
-    needed: []const bool,
-    remaining: *usize,
-    verified_bytes: *u64,
-    needed_bytes: u64,
-    callback: ?ProgressCallback,
-    context: ?*anyopaque,
+    slot: usize,
     session: *const metadata.Session,
     control: ?metadata.CheckpointCallback,
     control_context: ?*anyopaque,
 ) !void {
     try checkControl(control, control_context);
+    const info = transfer.info;
+    const file = transfer.file;
     const separator = std.mem.lastIndexOfScalar(u8, address, ':') orelse return error.InvalidPeerAddress;
     const port = std.fmt.parseInt(u16, address[separator + 1 ..], 10) catch return error.InvalidPeerAddress;
     const host = address[0..separator];
@@ -593,7 +712,7 @@ fn transferFromPeer(
     try socket_writer.interface.writeAll(&hello);
     try socket_writer.interface.flush();
     var response: [68]u8 = undefined;
-    try readExact(io, stream, &response);
+    try readExact(io, stream, &response, transfer);
     try checkControl(control, control_context);
     if (response[0] != 19 or !std.mem.eql(u8, response[1..20], "BitTorrent protocol") or
         !std.mem.eql(u8, response[28..48], &info.info_hash)) return error.PeerHandshakeMismatch;
@@ -604,10 +723,8 @@ fn transferFromPeer(
             report(ctx, 0, .{ .peer_event = true });
     };
     var local_bitfield: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
-    const bitfield_len = std.math.divCeil(usize, verified.len, 8) catch return error.InvalidTorrentPieces;
-    for (verified, needed, 0..) |valid, required, index| {
-        if (valid and required) local_bitfield[index / 8] |= @as(u8, 0x80) >> @as(u3, @intCast(index % 8));
-    }
+    const bitfield_len = std.math.divCeil(usize, transfer.verified.len, 8) catch return error.InvalidTorrentPieces;
+    transfer.copyBitfield(local_bitfield[0..bitfield_len]);
     var bitfield_header: [5]u8 = undefined;
     std.mem.writeInt(u32, bitfield_header[0..4], @intCast(bitfield_len + 1), .big);
     bitfield_header[4] = 5;
@@ -622,9 +739,11 @@ fn transferFromPeer(
     var availability: [metainfo.max_metainfo_bytes / 20 / 8 + 1]u8 = @splat(0);
     var bitfield_known = false;
     var peer_interested = false;
-    piece_loop: while (remaining.* != 0) {
+    piece_loop: while (!transfer.complete()) {
         try checkControl(control, control_context);
-        const piece_index = nextAvailablePiece(verified, &availability, bitfield_known) orelse return error.PeerMissingPieces;
+        const piece_index = transfer.claim(&availability, bitfield_known) orelse return error.PeerMissingPieces;
+        var committed = false;
+        defer if (!committed) transfer.release(piece_index, slot);
         const size = try pieceBytes(info, piece_index);
         var unchoke_messages: usize = 0;
         var has_piece: ?bool = if (pieceInBitfield(&availability, piece_index)) true else if (bitfield_known) false else null;
@@ -633,7 +752,7 @@ fn transferFromPeer(
             try checkControl(control, control_context);
             unchoke_messages += 1;
             if (unchoke_messages > 128) return error.PeerChoked;
-            const frame = try readPeerFrame(io, stream, &frame_buffer, &socket_writer.interface, file, info, verified, needed, &peer_interested, control, control_context);
+            const frame = try readPeerFrame(io, stream, &frame_buffer, &socket_writer.interface, transfer, &peer_interested, control, control_context);
             try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
             if (has_piece == false) continue :piece_loop;
             if (frame.len == 1 and frame[0] == 1) choked = false;
@@ -658,7 +777,7 @@ fn transferFromPeer(
                 requested_blocks += 1;
             }
             try socket_writer.interface.flush();
-            const frame = try readPeerFrame(io, stream, &frame_buffer, &socket_writer.interface, file, info, verified, needed, &peer_interested, control, control_context);
+            const frame = try readPeerFrame(io, stream, &frame_buffer, &socket_writer.interface, transfer, &peer_interested, control, control_context);
             try checkControl(control, control_context);
             if (frame.len == 1 and frame[0] == 0) return error.PeerChoked;
             try updateAvailability(frame, piece_index, info.piece_count, &availability, &bitfield_known, &has_piece);
@@ -685,7 +804,7 @@ fn transferFromPeer(
             received_blocks += 1;
             received_bytes += amount;
             idle_messages = 0;
-            if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.* + received_bytes, needed_bytes, false);
+            try transfer.progress(slot, received_bytes);
         }
         var digest: [20]u8 = undefined;
         std.crypto.hash.Sha1.hash(piece_buffer[0..size], &digest, .{});
@@ -693,23 +812,21 @@ fn transferFromPeer(
         if (!std.mem.eql(u8, &digest, expected)) return error.TorrentPieceHashMismatch;
         try file.writePositionalAll(io, piece_buffer[0..size], try pieceOffset(info, piece_index));
         try file.sync(io);
-        verified[@intCast(piece_index)] = true;
+        try transfer.commit(piece_index, slot, size);
+        committed = true;
         var have: [9]u8 = .{ 0, 0, 0, 5, 4, 0, 0, 0, 0 };
         std.mem.writeInt(u32, have[5..9], @intCast(piece_index), .big);
         try socket_writer.interface.writeAll(&have);
         try socket_writer.interface.flush();
-        verified_bytes.* += size;
-        remaining.* -= 1;
-        if (callback) |report| if (context) |ctx| try report(ctx, verified_bytes.*, needed_bytes, true);
     }
 }
 
 // Only verified, selected pieces are offered. A request cannot read a partial
 // piece or a deselected file from the spool.
-fn readPeerFrame(io: Io, stream: Io.net.Stream, buffer: []u8, writer: *Io.Writer, file: Io.File, info: metainfo.Result, verified: []const bool, needed: []const bool, peer_interested: *bool, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque) ![]u8 {
+fn readPeerFrame(io: Io, stream: Io.net.Stream, buffer: []u8, writer: *Io.Writer, transfer: *PeerTransfer, peer_interested: *bool, control: ?metadata.CheckpointCallback, control_context: ?*anyopaque) ![]u8 {
     while (true) {
         try checkControl(control, control_context);
-        const frame = try readFrame(io, stream, buffer);
+        const frame = try readFrame(io, stream, buffer, transfer);
         if (frame.len == 1 and frame[0] == 2) { peer_interested.* = true; continue; }
         if (frame.len == 1 and frame[0] == 3) { peer_interested.* = false; continue; }
         if (frame.len != 13 or frame[0] != 6) return frame;
@@ -717,11 +834,11 @@ fn readPeerFrame(io: Io, stream: Io.net.Stream, buffer: []u8, writer: *Io.Writer
         const index = std.mem.readInt(u32, frame[1..5], .big);
         const begin = std.mem.readInt(u32, frame[5..9], .big);
         const amount = std.mem.readInt(u32, frame[9..13], .big);
-        if (index >= verified.len or !verified[index] or !needed[index] or amount == 0 or amount > block_size) continue;
-        const size = try pieceBytes(info, index);
+        if (!transfer.mayUpload(index) or amount == 0 or amount > block_size) continue;
+        const size = try pieceBytes(transfer.info, index);
         if (begin > size or amount > size - begin) continue;
         var payload: [block_size]u8 = undefined;
-        if (try file.readPositionalAll(io, payload[0..amount], (try pieceOffset(info, index)) + begin) != amount) return error.ShortPartialFileRead;
+        if (try transfer.file.readPositionalAll(io, payload[0..amount], (try pieceOffset(transfer.info, index)) + begin) != amount) return error.ShortPartialFileRead;
         var header: [13]u8 = undefined;
         std.mem.writeInt(u32, header[0..4], amount + 9, .big);
         header[4] = 7;
@@ -731,15 +848,6 @@ fn readPeerFrame(io: Io, stream: Io.net.Stream, buffer: []u8, writer: *Io.Writer
         try writer.writeAll(payload[0..amount]);
         try writer.flush();
     }
-}
-
-fn nextAvailablePiece(verified: []const bool, availability: []const u8, bitfield_known: bool) ?u64 {
-    for (verified, 0..) |done, index| {
-        if (done) continue;
-        if (bitfield_known and !pieceInBitfield(availability, index)) continue;
-        return @intCast(index);
-    }
-    return null;
 }
 
 // A missing bitfield leaves availability unknown; a received bitfield is
@@ -773,22 +881,27 @@ fn pieceInBitfield(bitfield: []const u8, piece_index: u64) bool {
     return bitfield[index] & (@as(u8, 0x80) >> bit) != 0;
 }
 
-fn readExact(io: Io, stream: Io.net.Stream, output: []u8) !void {
+fn readExact(io: Io, stream: Io.net.Stream, output: []u8, transfer: *PeerTransfer) !void {
     var offset: usize = 0;
+    const deadline = Io.Clock.now(.awake, io).nanoseconds + 15 * std.time.ns_per_s;
     while (offset < output.len) {
+        if (transfer.complete()) return error.PeerTransferComplete;
         var buffers: [1][]u8 = .{output[offset..]};
-        const result = try io.operateTimeout(.{ .net_read = .{ .socket_handle = stream.socket.handle, .data = &buffers } }, timeout);
+        const result = io.operateTimeout(.{ .net_read = .{ .socket_handle = stream.socket.handle, .data = &buffers } }, read_poll_timeout) catch |err| {
+            if (err == error.Timeout and Io.Clock.now(.awake, io).nanoseconds < deadline) continue;
+            return err;
+        };
         const amount = (try result.net_read).data_len;
         if (amount == 0) return error.PeerClosed;
         offset += amount;
     }
 }
 
-fn readFrame(io: Io, stream: Io.net.Stream, buffer: []u8) ![]u8 {
+fn readFrame(io: Io, stream: Io.net.Stream, buffer: []u8, transfer: *PeerTransfer) ![]u8 {
     var prefix: [4]u8 = undefined;
-    try readExact(io, stream, &prefix);
+    try readExact(io, stream, &prefix, transfer);
     const length = std.mem.readInt(u32, &prefix, .big);
     if (length > buffer.len) return error.PeerMessageTooLarge;
-    try readExact(io, stream, buffer[0..length]);
+    try readExact(io, stream, buffer[0..length], transfer);
     return buffer[0..length];
 }

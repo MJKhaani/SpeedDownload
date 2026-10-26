@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import QuartzCore
 
 struct SidebarWidthPreference: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -101,7 +100,6 @@ struct MainWindowPaneSizer: NSViewRepresentable {
 
         func reconcile() {
             guard let window else { return }
-            let initialTransition = previous == nil
             if previous == nil {
                 previous = (restoredSidebarVisible, restoredInspectorVisible)
                 // The restored frame already includes panels that were visible
@@ -190,15 +188,10 @@ struct MainWindowPaneSizer: NSViewRepresentable {
             guard target != current else { return }
             lastTarget = target
             lastAdjustmentTime = now
-            if initialTransition || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                window.setFrame(target, display: true, animate: false)
-            } else {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.2
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    window.animator().setFrame(target, display: true)
-                }
-            }
+            // The split view and window have independent animation clocks.
+            // Applying both transitions together otherwise makes the detail
+            // column visibly shrink before the frame catches up.
+            window.setFrame(target, display: true, animate: false)
         }
 
         private func adjust(_ frame: inout CGRect, extent: inout PaneExtent, from oldWidth: CGFloat,
@@ -226,7 +219,6 @@ struct MainWindowPaneSizer: NSViewRepresentable {
 }
 
 struct PaneSizingModifier: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let columnVisibility: NavigationSplitViewVisibility
     let showingInspector: Bool
     @Binding var sidebarWidth: CGFloat
@@ -236,8 +228,6 @@ struct PaneSizingModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: columnVisibility)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showingInspector)
             .background(MainWindowPaneSizer(sidebarVisible: columnVisibility != .detailOnly,
                                             inspectorVisible: showingInspector,
                                             sidebarWidth: sidebarWidth, inspectorWidth: inspectorWidth,

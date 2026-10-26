@@ -125,12 +125,15 @@ tracker's reported values, not a global swarm census or active connection
 count. Missing values remain unknown. The macOS inspector displays them only
 for an active torrent.
 For each TCP peer, BITFIELD and HAVE messages record which pieces it reports;
-the engine chooses any unverified piece available from that peer. A peer that
+the engine chooses an unverified, unclaimed piece available from that peer. A peer that
 sends no bitfield leaves availability unknown until a piece request succeeds
 or fails. It keeps up to eight 16 KiB requests in flight for one piece and
 accepts out-of-order responses only for requested block offsets and lengths.
-Completed pieces are SHA-1 verified before they enter the partial file. Pieces
-and peers are still handled sequentially rather than concurrently.
+Completed pieces are SHA-1 verified before they enter the partial file. Up to
+four TCP peers request distinct pieces concurrently. A shared claim table keeps
+peers from fetching the same piece, and each peer has its own piece buffer.
+Progress and verified-piece publication are serialized; the spool is synced
+before a piece becomes available for resume or upload.
 If one peer disconnects, lacks needed pieces, or sends a bad piece, the engine
 tries other discovered peers. Storage, allocation, and progress callback
 failures stop the attempt immediately. If the available peers lack needed
@@ -233,8 +236,8 @@ it does not manufacture peers or make an unavailable swarm downloadable.
 DHT bootstrap uses all resolved addresses for three bootstrap hosts and sends
 the BEP 43 read-only flag. Lookup contact/query bounds still apply. The macOS
 torrent inspector separates tracker-reported swarm counts, the actual connected
-download peer and its current rate and progress. Upload traffic during that
-session is not yet reported by the inspector. Peer
+connected source count and aggregate download rate and progress. Upload traffic
+during those sessions is not yet reported by the inspector. Peer
 addresses exist only in local IPC snapshots, not persistent state or logs.
 
 The Arch torrent reported `NoTorrentPeers` with 7 MiB verified; its info hash

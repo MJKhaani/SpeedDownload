@@ -29,6 +29,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
     let expectedSHA256: String?
     let workers: [DownloadWorker]?
     let torrentActivePeer: String?
+    let torrentActivePeerCount: UInt32
     let torrentPeerCount: UInt32?
     let torrentSeederCount: UInt32?
     let torrentLeecherCount: UInt32?
@@ -52,6 +53,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         case expectedSHA256 = "expected_sha256"
         case workers
         case torrentActivePeer = "torrent_active_peer"
+        case torrentActivePeerCount = "torrent_active_peer_count"
         case torrentPeerCount = "torrent_peer_count"
         case torrentSeederCount = "torrent_seeder_count"
         case torrentLeecherCount = "torrent_leecher_count"
@@ -79,6 +81,7 @@ struct DownloadJob: Decodable, Identifiable, Sendable, Equatable {
         expectedSHA256 = try fields.decodeIfPresent(String.self, forKey: .expectedSHA256)
         workers = try fields.decodeIfPresent([DownloadWorker].self, forKey: .workers)
         torrentActivePeer = try fields.decodeIfPresent(String.self, forKey: .torrentActivePeer)
+        torrentActivePeerCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentActivePeerCount) ?? 0
         torrentPeerCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentPeerCount)
         torrentSeederCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentSeederCount)
         torrentLeecherCount = try fields.decodeIfPresent(UInt32.self, forKey: .torrentLeecherCount)

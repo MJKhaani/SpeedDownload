@@ -677,7 +677,7 @@ struct DashboardView: View {
         if job.requestedControl == "pause" { return "Pausing…" }
         if job.requestedControl == "cancel" { return "Canceling…" }
         return switch job.state {
-        case "downloading": job.torrentPeerCount == 0 ? "Finding peers…" : (job.receivedBytes == nil ? "Connecting" : "Downloading")
+        case "downloading": job.torrentActivePeerCount > 0 ? "Downloading" : (job.torrentPeerCount == 0 ? "Finding peers…" : "Connecting")
         case "queued": "Waiting"
         case "retry_wait": "Waiting to retry"
         default: job.state.capitalized
@@ -882,23 +882,25 @@ struct DashboardView: View {
                             .font(.caption2).foregroundStyle(.secondary)
                         Divider()
                         Text("Downloading from").font(.caption.weight(.semibold))
-                        if let peer = job.torrentActivePeer, job.state == "downloading" {
+                        if job.torrentActivePeerCount > 0, job.state == "downloading" {
                             HStack {
                                 Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
-                                Text(peer).monospaced().textSelection(.enabled)
+                                Text("\(job.torrentActivePeerCount) connected source\(job.torrentActivePeerCount == 1 ? "" : "s")")
                                 Spacer()
                                 Text(downloadRate(engine.jobBytesPerSecond[job.jobID] ?? 0)).monospacedDigit()
                             }
                             .font(.caption2)
-                            Text("Connected peer · pieces are verified before saving")
-                                .font(.caption2).foregroundStyle(.secondary)
+                            if let peer = job.torrentActivePeer {
+                                Text(peer).monospaced().textSelection(.enabled)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                         } else {
                             Text(job.state == "downloading" ? "Discovering or connecting to peers…" : "No connected peers")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Divider()
                         Text("Uploading to").font(.caption.weight(.semibold))
-                        Text("Not supported by the current engine. No peers receive uploads from this app.")
+                        Text("Verified pieces may be shared with connected peers while downloading. Upload speed is not measured yet.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     .font(.caption)

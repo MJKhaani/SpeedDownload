@@ -288,13 +288,15 @@ partial progress, and wakes normal scheduling. It neither retries failed jobs
 nor bypasses global concurrency, host limits, or queue schedules. Existing queued
 jobs are also considered by that scheduler wakeup.
 
-### Connected torrent peer
+### Connected torrent peers
 
-Job snapshots additionally expose optional `torrent_active_peer` (address and
-port) while a torrent payload peer is connected. It is transient, copied under
-the job-store lock, cleared on disconnect, and never written to job state or
-debug logs. The present payload engine uses one peer at a time. This field is
-not a seeder count: a connected peer may hold only some pieces. Tracker swarm
-counts remain separate from actual connections. Uploading, incoming peers and
-post-completion seeding are not implemented; clients must not invent upload
-counts, rates or ratios.
+Job snapshots expose `torrent_active_peer_count` for active TCP peer or web
+seed connections and optional `torrent_active_peer` (address and port) when
+exactly one source is connected. These fields are transient, copied under the
+job-store lock, cleared on disconnect, and never written to persistent job
+state or debug logs. Up to four TCP peers can transfer distinct pieces at once.
+Neither field is a seeder count: a connected peer may hold only some pieces.
+Tracker swarm counts remain separate from actual connections. Verified pieces
+may be uploaded during an active TCP download, but upload counts, rates and
+ratios are not reported yet. Incoming peers and post-completion seeding are
+not implemented.
