@@ -8,7 +8,7 @@ if [[ "$APP_PATH" != /* ]]; then APP_PATH="$ROOT/$APP_PATH"; fi
 
 mkdir -p "$ROOT/zig-out/bin"
 zig build-exe "$ROOT/src/main.zig" "$ROOT/src/core/posix_stat_macos.c" -O ReleaseSafe -lc -framework Security -femit-bin="$ROOT/zig-out/bin/speed-download"
-zig build-exe "$ROOT/src/browser_host.zig" -O ReleaseSafe -lc -femit-bin="$ROOT/zig-out/bin/speed-download-browser-host"
+zig build-exe "$ROOT/src/browser_host.zig" "$ROOT/src/core/posix_stat_macos.c" -O ReleaseSafe -lc -femit-bin="$ROOT/zig-out/bin/speed-download-browser-host"
 SWIFT_BUILD_ARGS=(--configuration release)
 if [[ -n "${SPEED_DOWNLOAD_SWIFT_SDK:-}" ]]; then
   SWIFT_BUILD_ARGS+=(--sdk "$SPEED_DOWNLOAD_SWIFT_SDK")
