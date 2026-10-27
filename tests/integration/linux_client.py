@@ -114,11 +114,15 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-gtk-") as root:
             "idempotency_key": str(uuid.uuid4()), "priority": 0,
         })
         job_id = added["job_id"]
+        observed_ui_states = []
 
         def progress_visible():
             if not report.exists():
                 return False
-            for line in report.read_text().splitlines()[1:]:
+            current_report = report.read_text()
+            if not observed_ui_states or current_report != observed_ui_states[-1]:
+                observed_ui_states.append(current_report)
+            for line in current_report.splitlines()[1:]:
                 fields = line.split("\t")
                 if len(fields) == 3 and fields[0] == job_id and 0 < int(fields[2]) < Handler.size:
                     return True
@@ -128,6 +132,7 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-gtk-") as root:
             until(progress_visible, timeout=40)
         except TimeoutError:
             print("GTK report:", report.read_text() if report.exists() else "<missing>", flush=True)
+            print("GTK state history:", observed_ui_states, flush=True)
             print("Engine jobs:", rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})[1], flush=True)
             print("GTK exit status:", client.poll(), flush=True)
             raise

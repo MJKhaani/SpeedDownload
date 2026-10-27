@@ -93,6 +93,13 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
 
         def connected():
             if client.poll() is not None:
+                events = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001} "
+                     "-MaxEvents 4 | Select-Object TimeCreated,ProviderName,Message | Format-List"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                print("Recent Windows application events:", events.stdout or events.stderr, flush=True)
                 raise RuntimeError(f"WinUI exited with {client.returncode}: {client_log.read_text(errors='replace')}")
             return report.exists() and report.read_text().startswith("Engine connected")
 
