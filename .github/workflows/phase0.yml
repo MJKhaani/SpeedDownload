@@ -62,8 +62,9 @@ jobs:
 
       - name: Install GTK build dependencies
         if: runner.os == 'Linux'
-        timeout-minutes: 6
+        timeout-minutes: 10
         run: |
+          sudo apt-get update -o Acquire::Retries=3
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev xvfb dbus-x11
 
       - name: Build native GTK client
