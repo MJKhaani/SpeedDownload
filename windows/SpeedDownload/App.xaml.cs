@@ -15,11 +15,22 @@ public partial class App : Microsoft.UI.Xaml.Application
 
     public App()
     {
+        TracePhase0Startup("App constructor");
         InitializeComponent();
+        TracePhase0Startup("App initialized");
+    }
+
+    internal static void TracePhase0Startup(string stage)
+    {
+        var path = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE");
+        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) return;
+        try { File.AppendAllText(path, stage + Environment.NewLine); }
+        catch (IOException) { }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        TracePhase0Startup("App launched");
         _instanceMutex = new Mutex(initiallyOwned: true, InstanceKey, out var isFirstInstance);
         if (!isFirstInstance)
         {
@@ -36,6 +47,8 @@ public partial class App : Microsoft.UI.Xaml.Application
             return;
         }
         _window = new MainWindow();
+        TracePhase0Startup("Main window constructed");
         _window.Activate();
+        TracePhase0Startup("Main window activated");
     }
 }

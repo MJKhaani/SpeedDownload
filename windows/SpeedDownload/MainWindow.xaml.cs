@@ -18,7 +18,9 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        App.TracePhase0Startup("Main window constructor");
         InitializeComponent();
+        App.TracePhase0Startup("Main window XAML initialized");
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Open Speed Download", null, (_, _) => Activate());
         trayMenu.Items.Add("Quit", null, (_, _) => Environment.Exit(0));
@@ -29,6 +31,7 @@ public sealed partial class MainWindow : Window
             ContextMenuStrip = trayMenu,
             Visible = true,
         };
+        App.TracePhase0Startup("Tray icon initialized");
         _trayIcon.DoubleClick += (_, _) => Activate();
         Closed += (_, _) => _trayIcon.Dispose();
         _refreshTimer = DispatcherQueue.CreateTimer();
