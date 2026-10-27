@@ -13,12 +13,13 @@ public sealed class DownloadJob
     [JsonPropertyName("revision")] public string Revision { get; init; } = "0";
     [JsonPropertyName("error_message")] public string? ErrorMessage { get; init; }
     [JsonPropertyName("completed_bytes")] public string? CompletedBytes { get; init; }
+    [JsonPropertyName("received_bytes")] public string? ReceivedBytes { get; init; }
     [JsonPropertyName("total_bytes")] public string? TotalBytes { get; init; }
     [JsonPropertyName("requested_control")] public string? RequestedControl { get; init; }
     [JsonPropertyName("priority")] public int Priority { get; init; }
 
     [JsonIgnore] public string Title => string.IsNullOrWhiteSpace(Name) ? Url : Name;
-    [JsonIgnore] public ulong Completed => ulong.TryParse(CompletedBytes, out var value) ? value : 0;
+    [JsonIgnore] public ulong Completed => ulong.TryParse(ReceivedBytes ?? CompletedBytes, out var value) ? value : 0;
     [JsonIgnore] public ulong Total => ulong.TryParse(TotalBytes, out var value) ? value : 0;
     [JsonIgnore] public double Progress => Total == 0 ? 0 : Math.Min(100d, Completed * 100d / Total);
     [JsonIgnore] public Visibility ProgressVisibility => State == "downloading" && Total > 0 ? Visibility.Visible : Visibility.Collapsed;

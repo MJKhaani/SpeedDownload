@@ -448,7 +448,8 @@ static DownloadJob *parse_job(JsonNode *node) {
     job->state = json_string_copy(object, "state");
     job->revision = json_string_copy(object, "revision");
     job->error_message = json_string_copy(object, "error_message");
-    job->completed_bytes = json_string_copy(object, "completed_bytes");
+    job->completed_bytes = json_string_copy(object, "received_bytes");
+    if (job->completed_bytes == NULL) job->completed_bytes = json_string_copy(object, "completed_bytes");
     job->total_bytes = json_string_copy(object, "total_bytes");
     job->requested_control = json_string_copy(object, "requested_control");
     if (json_object_has_member(object, "priority")) job->priority = (gint)json_object_get_int_member(object, "priority");

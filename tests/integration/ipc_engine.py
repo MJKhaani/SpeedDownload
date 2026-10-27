@@ -240,8 +240,9 @@ def main():
             while time.monotonic() < deadline:
                 listing = one_connection(endpoint)
                 job = listing["jobs"][0]
-                completed = int(job["completed_bytes"] or "0")
-                saw_progress |= completed > 0
+                completed = int(job.get("received_bytes") or job["completed_bytes"] or "0")
+                total = int(job.get("total_bytes") or "0")
+                saw_progress |= job["state"] == "downloading" and 0 < completed < total
                 if job["state"] == "completed":
                     break
                 if job["state"] == "failed":
