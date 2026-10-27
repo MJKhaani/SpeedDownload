@@ -715,7 +715,7 @@ static void add_navigation_item(AppState *app, const gchar *title, const gchar *
 
 static void replace_jobs(AppState *app, GPtrArray *jobs) {
     if (app->jobs != NULL) g_ptr_array_unref(app->jobs);
-    app->jobs = jobs;
+    app->jobs = g_ptr_array_ref(jobs);
     render_jobs(app);
 }
 
@@ -723,7 +723,7 @@ static JsonNode *build_list_params(guint offset) {
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "offset"); json_builder_add_int_value(builder, offset);
-    json_builder_set_member_name(builder, "limit"); json_builder_add_int_value(builder, 100);
+    json_builder_set_member_name(builder, "limit"); json_builder_add_int_value(builder, 50);
     json_builder_end_object(builder);
     JsonNode *node = json_builder_get_root(builder);
     g_object_unref(builder);
@@ -783,6 +783,24 @@ static void rpc_worker(GTask *task, gpointer source_object, gpointer task_data, 
     else g_task_return_pointer(task, result, (GDestroyNotify)json_node_unref);
 }
 
+static void report_phase0_ui_state(AppState *app) {
+    const gchar *path = g_getenv("SPEED_DOWNLOAD_PHASE0_REPORT");
+    if (path == NULL || path[0] != '/') return;
+    GString *report = g_string_new(gtk_label_get_text(app->connection_status));
+    g_string_append_c(report, '\n');
+    if (app->jobs != NULL) {
+        for (guint index = 0; index < app->jobs->len; index++) {
+            DownloadJob *job = g_ptr_array_index(app->jobs, index);
+            g_string_append_printf(report, "%s\t%s\t%s\n",
+                job->job_id != NULL ? job->job_id : "",
+                job->state != NULL ? job->state : "",
+                job->completed_bytes != NULL ? job->completed_bytes : "0");
+        }
+    }
+    g_file_set_contents(path, report->str, (gssize)report->len, NULL);
+    g_string_free(report, TRUE);
+}
+
 static void rpc_finished(GObject *source_object, GAsyncResult *result, gpointer user_data) {
     (void)source_object;
     AppState *app = user_data;
@@ -793,6 +811,7 @@ static void rpc_finished(GObject *source_object, GAsyncResult *result, gpointer 
     if (request->refresh) app->refresh_in_flight = FALSE;
     if (error != NULL) {
         gtk_label_set_text(app->connection_status, "Engine disconnected");
+        report_phase0_ui_state(app);
         set_message(app, error->message, TRUE);
         g_clear_error(&error);
         if (request->refresh) ensure_engine_running(app);
@@ -803,6 +822,7 @@ static void rpc_finished(GObject *source_object, GAsyncResult *result, gpointer 
     if (request->refresh) {
         GPtrArray *jobs = response;
         replace_jobs(app, jobs);
+        report_phase0_ui_state(app);
         g_ptr_array_unref(jobs);
         set_message(app, "", FALSE);
     } else {

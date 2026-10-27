@@ -30,9 +30,11 @@ Swift compiler. An ad-hoc-signed copy of the packaged app with a separate
 bundle ID and isolated state/runtime directories also launched a visible
 window, connected to its engine, and returned to `Engine connected` after
 that engine was terminated and replaced by a new PID. Its URL and document
-registrations were removed for the smoke run. This local check did not
-exercise visible transfer progress or a formal accessibility audit, and is
-not a native CI result.
+registrations were removed for the smoke run. A second isolated packaged-app
+check used a local 32 MiB HTTP fixture: the window's accessibility tree showed
+an in-progress row at 2.4 MiB of 33.6 MiB and 434 KB/s, and the transfer
+subsequently completed. This remains a local Intel macOS check, not a formal
+accessibility audit or native CI result.
 
 The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
 inspection. It also has source for BEP 9 metadata retrieval from explicit
@@ -54,10 +56,10 @@ See [Firefox link handoff](browser-firefox.md).
 | OS | CPU | Engine/CLI | Native GUI | IPC/runtime package | Status / next evidence |
 |---|---|---:|---:|---:|---|
 | Windows | x86 (32-bit) | Not validated | Not implemented | Not implemented | Blocked for Phase 0; assess 32-bit support separately. |
-| Windows | x86_64 | Engine cross-compiles; native smoke pending | WinUI source; native build pending | Named-pipe source; native smoke pending | Experimental until Windows CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
+| Windows | x86_64 | Native Zig build and isolated IPC/transfer/restart smoke pass on `windows-latest` | WinUI x64 self-contained publish passes on `windows-latest`; GUI runtime pending | Named-pipe engine smoke passes; native GUI connection/reconnect pending | Experimental pending a visible WinUI runtime check. [CI run 40530273462](https://github.com/MJKhaani/SpeedDownload/actions/runs/40530273462). |
 | Windows | ARM64 | Not validated | WinUI source; not built | Named-pipe source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
 | Linux | x86 (32-bit) | Not validated | Not implemented | Not implemented | Blocked for Phase 0; assess GTK4/GLib and large-file support separately. |
-| Linux | x86_64 | Native smoke pending | GTK 4 source; native build pending | AF_UNIX source; native smoke pending | Experimental until Linux CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
+| Linux | x86_64 | Native Zig build and isolated IPC/transfer/restart smoke pass on `ubuntu-latest` | GTK 4 native build passes on `ubuntu-latest`; GUI runtime pending | AF_UNIX engine smoke passes; native GUI connection/reconnect pending | Experimental pending a visible GTK runtime check. [CI run 40530273462](https://github.com/MJKhaani/SpeedDownload/actions/runs/40530273462). |
 | Linux | ARM64 | Not validated | GTK source; not built | AF_UNIX source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
 | Linux | ARM32 | Not validated | Not implemented | Not implemented | Stretch target; assess ABI, OS dependencies and runner/hardware separately. |
 | macOS | x86_64 | Engine compiles; isolated IPC transfer/restart smoke passed locally | SwiftUI bundle builds; isolated packaged window reconnect check passed locally | AF_UNIX and standalone Swift client restart/reconnect smoke passed locally | Experimental until macOS CI, visible transfer progress, and accessibility checks pass. |
@@ -100,7 +102,7 @@ Local macOS x86_64 evidence on 2026-10-27: `python3 tests/integration/ipc_engine
 - [x] Pin Zig 0.17.0; implement OS-specific engine IPC endpoints and secure per-user permissions.
 - [x] Implement IPC v1 framing, handshake, `jobs.list`, job controls, and polling-based reconnect; publish a shared request schema.
 - [x] Add native platform CI jobs for the engine, matching GUI build, and local transfer/progress/reconnect/restart smoke.
-- [ ] Get all three native CI jobs green on the current revision; the workflow has not run yet.
+- [ ] Get all three native CI jobs green on the current revision. Windows and Linux passed on [run 40530273462](https://github.com/MJKhaani/SpeedDownload/actions/runs/40530273462); macOS passed engine and IPC smoke but failed packaging because the browser helper omitted the macOS stat shim. The shim is included on the next revision and awaits CI.
 - [ ] Launch each native GUI against its runner's engine and confirm connected status, visible progress, disconnect/reconnect, and engine restart.
 - [ ] Mark only those tested GUI/OS targets experimental or verified with recorded runner versions; x86/ARM64 targets remain blocked pending their own native evidence.
 - Record results in [`adr/0001-native-guis-local-ipc.md`](adr/0001-native-guis-local-ipc.md) and keep target statuses evidence-based.

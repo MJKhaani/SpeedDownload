@@ -64,13 +64,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev
+          sudo apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev xvfb dbus-x11
 
       - name: Build native GTK client
         if: runner.os == 'Linux'
         run: |
           cmake -S linux/SpeedDownload -B linux/SpeedDownload/build -DCMAKE_BUILD_TYPE=Release
           cmake --build linux/SpeedDownload/build --parallel
+
+      - name: Smoke GTK client connection, progress, and engine restart
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- python tests/integration/linux_client.py zig-out/bin/speed-download linux/SpeedDownload/build/speed-download-gtk
 
       - name: Set up .NET for WinUI
         if: runner.os == 'Windows'
