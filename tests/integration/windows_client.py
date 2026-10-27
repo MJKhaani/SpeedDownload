@@ -72,10 +72,12 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
     downloads.mkdir()
     report = root / "ui-state.txt"
     startup_trace = root / "startup.txt"
+    host_trace = root / "dotnet-host.txt"
     env = os.environ.copy()
     env.update(SPEED_DOWNLOAD_STATE_DIR=str(state), SPEED_DOWNLOAD_ENGINE_PATH=ENGINE,
                SPEED_DOWNLOAD_PHASE0_REPORT=str(report),
-               SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE=str(startup_trace))
+               SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE=str(startup_trace),
+               DOTNET_HOST_TRACE="1", DOTNET_HOST_TRACEFILE=str(host_trace))
     endpoint = ipc.windows_pipe_identity()
     engine = subprocess.Popen([ENGINE, "engine"], env=env, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL)
@@ -106,6 +108,8 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
                 )
                 print("Recent Windows application events:", events.stdout or events.stderr, flush=True)
                 print("WinUI startup trace:", startup_trace.read_text() if startup_trace.exists() else "<missing>", flush=True)
+                if host_trace.exists():
+                    print(".NET host tail:", "\n".join(host_trace.read_text(errors="replace").splitlines()[-25:]), flush=True)
                 raise RuntimeError(f"WinUI exited with {client.returncode}: {client_log.read_text(errors='replace')}")
             return report.exists() and report.read_text().startswith("Engine connected")
 
