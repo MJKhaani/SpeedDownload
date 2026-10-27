@@ -38,7 +38,8 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download.exe
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            zig build-exe src/main.zig -lc -framework Security -femit-bin=zig-out/bin/speed-download
+            SDK="$(xcrun --sdk macosx --show-sdk-path)"
+            zig build-exe src/main.zig -lc -framework Security -L "$SDK/usr/lib/system" -lsystem_kernel -femit-bin=zig-out/bin/speed-download
           else
             zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download
           fi
