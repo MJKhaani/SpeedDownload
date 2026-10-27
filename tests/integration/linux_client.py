@@ -124,7 +124,13 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-gtk-") as root:
                     return True
             return False
 
-        until(progress_visible, timeout=40)
+        try:
+            until(progress_visible, timeout=40)
+        except TimeoutError:
+            print("GTK report:", report.read_text() if report.exists() else "<missing>", flush=True)
+            print("Engine jobs:", rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})[1], flush=True)
+            print("GTK exit status:", client.poll(), flush=True)
+            raise
         engine.terminate()
         engine.wait(timeout=10)
         until(lambda: report.exists() and report.read_text().startswith("Engine disconnected"))

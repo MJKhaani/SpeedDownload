@@ -79,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
                               stderr=subprocess.DEVNULL)
     client = None
     server = None
+    client_log = root / "client.log"
     try:
         def engine_ready():
             try:
@@ -87,9 +88,21 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
                 return False
 
         until(engine_ready)
-        client = subprocess.Popen([CLIENT], env=env, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL)
-        until(lambda: report.exists() and report.read_text().startswith("Engine connected"))
+        with client_log.open("wb") as output:
+            client = subprocess.Popen([CLIENT], env=env, stdout=output, stderr=subprocess.STDOUT)
+
+        def connected():
+            if client.poll() is not None:
+                raise RuntimeError(f"WinUI exited with {client.returncode}: {client_log.read_text(errors='replace')}")
+            return report.exists() and report.read_text().startswith("Engine connected")
+
+        try:
+            until(connected)
+        except TimeoutError:
+            print("WinUI report:", report.read_text() if report.exists() else "<missing>", flush=True)
+            print("WinUI exit:", client.poll(), flush=True)
+            print("WinUI output:", client_log.read_text(errors="replace"), flush=True)
+            raise
         first_instance, _ = rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
