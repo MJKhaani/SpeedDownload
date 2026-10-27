@@ -98,6 +98,14 @@ jobs:
             dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
           }
 
+      - name: Upload Windows client and engine
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpeedDownload-WinUI-${{ runner.arch }}
+          path: windows/SpeedDownload/publish/
+          if-no-files-found: error
+
       - name: Smoke WinUI client connection, progress, and engine restart
         if: runner.os == 'Windows' && inputs.verify_windows_gui == true
         shell: pwsh
