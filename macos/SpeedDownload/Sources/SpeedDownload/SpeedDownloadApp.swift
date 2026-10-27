@@ -68,7 +68,16 @@ private final class SpeedDownloadAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard let identifier = Bundle.main.bundleIdentifier else { return }
-        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/Speed Download")
+        let directory: URL
+        if let stateDirectory = ProcessInfo.processInfo.environment["SPEED_DOWNLOAD_STATE_DIR"],
+           !stateDirectory.isEmpty {
+            // A packaged smoke client must lock its isolated engine state,
+            // without contending with the user's running production app.
+            directory = URL(fileURLWithPath: stateDirectory, isDirectory: true)
+        } else {
+            directory = URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Application Support/Speed Download")
+        }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             instanceLock = Darwin.open(directory.appendingPathComponent("client.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)

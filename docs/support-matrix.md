@@ -26,8 +26,13 @@ transfer, and completed-job recovery after engine restart. The standalone
 Swift client fixture also passed connection, reconnection to a newly restarted
 engine instance, and single-loop checks against an isolated engine. The Swift fixture used the installed
 macOS 14.5 SDK because this host's default 15.2 SDK is incompatible with its
-Swift compiler. These are local test results, not native CI or a packaged
-GUI restart test.
+Swift compiler. An ad-hoc-signed copy of the packaged app with a separate
+bundle ID and isolated state/runtime directories also launched a visible
+window, connected to its engine, and returned to `Engine connected` after
+that engine was terminated and replaced by a new PID. Its URL and document
+registrations were removed for the smoke run. This local check did not
+exercise visible transfer progress or a formal accessibility audit, and is
+not a native CI result.
 
 The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
 inspection. It also has source for BEP 9 metadata retrieval from explicit
@@ -55,7 +60,7 @@ See [Firefox link handoff](browser-firefox.md).
 | Linux | x86_64 | Native smoke pending | GTK 4 source; native build pending | AF_UNIX source; native smoke pending | Experimental until Linux CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
 | Linux | ARM64 | Not validated | GTK source; not built | AF_UNIX source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
 | Linux | ARM32 | Not validated | Not implemented | Not implemented | Stretch target; assess ABI, OS dependencies and runner/hardware separately. |
-| macOS | x86_64 | Engine compiles; isolated IPC transfer/restart smoke passed locally | SwiftUI bundle builds; user interactive use recorded | AF_UNIX and standalone Swift client restart/reconnect smoke passed locally | Experimental until macOS CI and packaged GUI restart/accessibility checks pass. |
+| macOS | x86_64 | Engine compiles; isolated IPC transfer/restart smoke passed locally | SwiftUI bundle builds; isolated packaged window reconnect check passed locally | AF_UNIX and standalone Swift client restart/reconnect smoke passed locally | Experimental until macOS CI, visible transfer progress, and accessibility checks pass. |
 | macOS | ARM64 | Engine compiles; native smoke pending | SwiftUI source; native build pending | AF_UNIX source; local bind blocked by sandbox | Experimental until Apple Silicon native build/runtime and GUI connection/reconnect checks pass. |
 
 ## Core module check
@@ -84,7 +89,7 @@ canceled read before closing its response. Backends without concurrent I/O
 fall back to the ordinary read. Stalled-read cancellation and throughput still
 need native runtime validation.
 
-On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. No other OS/CPU target, HTTPS certificate behavior, GUI, IPC service, or package is validated. The active native GUI/IPC decision and proof gate are recorded in [ADR 0001](adr/0001-native-guis-local-ipc.md).
+On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three queue selector tests, three HTTP parser tests, and local HTTP integration checks on macOS 14.8.4 x86_64. Fixtures verify redirects, binary transfer, overwrite protection including concurrent destination creation, error cleanup, interrupted resume, changed-validator rejection, and matching/mismatching checksum verification. Those checks did not validate another OS/CPU target, HTTPS certificate behavior, the GUI, IPC service, or a package; later macOS evidence is recorded above. The active native GUI/IPC decision and proof gate are recorded in [ADR 0001](adr/0001-native-guis-local-ipc.md).
 
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.
 
