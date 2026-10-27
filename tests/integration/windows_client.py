@@ -3,6 +3,7 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import ctypes
 import os
 import subprocess
 import sys
@@ -36,6 +37,23 @@ def rpc(endpoint, method, params):
             "client": {"kind": "phase0-winui", "version": "0.1.0"}, "features": [],
         })
         return hello["engine_instance_id"], ipc.rpc(stream, method, params)
+    finally:
+        stream.close()
+
+
+def pipe_server_pid(endpoint):
+    try:
+        stream = ipc.connect_pipe(endpoint, time.monotonic() + 0.5)
+    except TimeoutError:
+        return None
+    try:
+        pid = ctypes.c_uint32()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetNamedPipeServerProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.GetNamedPipeServerProcessId.restype = ctypes.c_int
+        if kernel32.GetNamedPipeServerProcessId(stream.handle, ctypes.byref(pid)):
+            return pid.value
+        return None
     finally:
         stream.close()
 
@@ -79,6 +97,8 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
                SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE=str(startup_trace),
                DOTNET_HOST_TRACE="1", DOTNET_HOST_TRACEFILE=str(host_trace))
     endpoint = ipc.windows_pipe_identity()
+    if pipe_server_pid(endpoint) is not None:
+        raise RuntimeError("A Speed Download engine is already running. Quit the app and engine before this isolated smoke test.")
     engine = subprocess.Popen([ENGINE, "engine"], env=env, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL)
     client = None
@@ -169,3 +189,7 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
         if engine.poll() is None:
             engine.terminate()
             engine.wait(timeout=10)
+        restarted_pid = pipe_server_pid(endpoint)
+        if restarted_pid is not None and restarted_pid != engine.pid:
+            subprocess.run(["taskkill", "/PID", str(restarted_pid), "/F"],
+                           capture_output=True, timeout=10)

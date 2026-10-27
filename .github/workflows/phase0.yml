@@ -103,7 +103,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SpeedDownload-WinUI-${{ runner.arch }}
-          path: windows/SpeedDownload/publish/
+          path: |
+            windows/SpeedDownload/publish/
+            tests/integration/ipc_engine.py
+            tests/integration/windows_client.py
           if-no-files-found: error
 
       - name: Smoke WinUI client connection, progress, and engine restart
