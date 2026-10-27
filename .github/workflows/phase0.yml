@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2022, ubuntu-latest]
+        os: [macos-15, windows-2022, windows-11-arm, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out source
@@ -86,7 +86,12 @@ jobs:
       - name: Build native WinUI client
         if: runner.os == 'Windows'
         shell: pwsh
-        run: dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
+        run: |
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-arm64 -p:Platform=ARM64 --self-contained true -o windows/SpeedDownload/publish
+          } else {
+            dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
+          }
 
       - name: Smoke WinUI client connection, progress, and engine restart
         if: runner.os == 'Windows'
