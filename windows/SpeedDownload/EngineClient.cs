@@ -59,7 +59,7 @@ internal sealed class EngineClient
         var offset = 0;
         while (true)
         {
-            using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new { offset, limit = 100 }));
+            using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new { offset, limit = 50 }));
             using var result = await CallAsync("jobs.list", parameters.RootElement, cancellationToken);
             var page = JsonSerializer.Deserialize<JobListResult>(result.RootElement.GetRawText(), JsonOptions)
                        ?? throw new InvalidDataException("The engine returned an invalid job list.");

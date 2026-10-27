@@ -86,3 +86,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
+
+      - name: Smoke WinUI client connection, progress, and engine restart
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python tests/integration/windows_client.py zig-out/bin/speed-download.exe windows/SpeedDownload/publish/SpeedDownload.exe

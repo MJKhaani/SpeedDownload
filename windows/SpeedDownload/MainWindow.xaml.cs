@@ -51,11 +51,13 @@ public sealed partial class MainWindow : Window
             UpdateSummary();
             ConnectionStatus.Text = "Engine connected";
             MessageBar.IsOpen = false;
+            ReportPhase0UiState();
         }
         catch (Exception error)
         {
             ConnectionStatus.Text = "Engine disconnected";
             ShowMessage(error.Message, InfoBarSeverity.Error);
+            ReportPhase0UiState();
         }
         finally
         {
@@ -64,6 +66,18 @@ public sealed partial class MainWindow : Window
     }
 
     private async void OnRefresh(object sender, RoutedEventArgs e) => await RefreshAsync();
+
+    private void ReportPhase0UiState()
+    {
+        var path = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_PHASE0_REPORT");
+        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) return;
+        try
+        {
+            var rows = _allJobs.Select(job => $"{job.JobId}\t{job.State}\t{job.Completed}");
+            File.WriteAllLines(path, [ConnectionStatus.Text, .. rows]);
+        }
+        catch (IOException) { }
+    }
 
     private void OnNavigationItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
     {
