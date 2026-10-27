@@ -1,6 +1,6 @@
 # ADR 0001 — Separate Native GUIs and Local Engine IPC
 
-- **Status:** Accepted as project architecture (implementation pending)
+- **Status:** Accepted architecture; Phase 0 runtime gate partly blocked
 - **Date:** 2026-10-12
 - **Supersedes:** Proposed Zig + Capy UI requirement in PROJECT.md v0.1
 
@@ -50,5 +50,11 @@ The UI needs request/response operations (add, pause, preferences), live progres
 ## Verification gate
 
 A phase-0 proof of concept must show each native GUI opening a window, connecting to its local Zig daemon, completing `engine.hello`, calling `jobs.list`, receiving subscription events, restarting the GUI without terminating the engine, and recovering after daemon restart. Test unauthorized clients and malformed frames. Verify Windows packaged/unpackaged deployment models with a bundled native daemon and macOS notarized-app helper execution.
+
+## Phase 0 evidence on 2026-10-27
+
+- [CI run 40540737944](https://github.com/MJKhaani/SpeedDownload/actions/runs/40540737944) built the Zig engine and native GUI on macOS 15, Ubuntu, Windows Server 2022 x64, and Windows 11 ARM64; isolated IPC/transfer/restart smokes passed on each runner.
+- The GTK 4 window on Xvfb showed connected status and intermediate transfer progress, then disconnected and reconnected after an engine restart. A packaged SwiftUI app on Intel macOS 14 showed intermediate progress and reconnected after a separate engine restart; CI also passed its Swift client restart fixture.
+- Published WinUI x64 and ARM64 binaries exit with `0xC0000409` before the managed `App` constructor on three GitHub-hosted Windows runner images. The Windows GUI runtime, installation, subscription-event behavior, accessibility, unauthorized-client cases, and macOS notarized-helper execution remain outside the verified Phase 0 evidence. Windows GUI runtime is blocked pending an interactive Windows desktop or a native startup diagnosis; the build and named-pipe engine checks are not blocked.
 
 **Related:** [PROJECT.md](../../PROJECT.md), [IPC v1](../protocols/ipc-v1.md).
