@@ -7,6 +7,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -168,6 +169,17 @@ def one_connection(endpoint):
         stream.close()
 
 
+def new_connection(endpoint):
+    return connect_pipe(endpoint, time.monotonic() + 10) if os.name == "nt" else connect_unix(endpoint, time.monotonic() + 10)
+
+
+def read_frame(stream):
+    size = int.from_bytes(read_exact(stream, 4), "little")
+    if not 0 < size <= MAX_FRAME:
+        raise ValueError("Engine returned an invalid event frame size")
+    return json.loads(read_exact(stream, size))
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
     if not binary.is_file():
@@ -218,6 +230,34 @@ def main():
             if one_connection(endpoint)["total"] != "0":
                 raise RuntimeError("Engine reconnect smoke check failed")
 
+            if os.name != "nt":
+                for path in (Path(endpoint).parent, Path(endpoint)):
+                    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+                        raise RuntimeError(f"IPC endpoint is accessible to other users: {path}")
+
+            invalid = new_connection(endpoint)
+            try:
+                write_all(invalid, (MAX_FRAME + 1).to_bytes(4, "little"))
+                try:
+                    if read_exact(invalid, 1):
+                        raise RuntimeError("Engine accepted an oversized IPC frame")
+                except (OSError, ConnectionError):
+                    pass
+            finally:
+                invalid.close()
+            if one_connection(endpoint)["total"] != "0":
+                raise RuntimeError("Engine failed after an oversized IPC frame")
+
+            subscription_stream = new_connection(endpoint)
+            rpc(subscription_stream, "engine.hello", {
+                "protocol": {"major": 1, "minor": 0},
+                "client": {"kind": "phase0-subscription-smoke", "version": "0.1.0"},
+                "features": ["jobs.change-stream-v1"],
+            })
+            subscription = rpc(subscription_stream, "jobs.subscribe", {"max_updates_per_second": 5})
+            if subscription["snapshot"]["total"] != "0":
+                raise RuntimeError("Subscription did not start with an empty snapshot")
+
             add_stream = connect_pipe(endpoint, time.monotonic() + 10) if os.name == "nt" else connect_unix(endpoint, time.monotonic() + 10)
             try:
                 rpc(add_stream, "engine.hello", {
@@ -234,6 +274,16 @@ def main():
                 })
             finally:
                 add_stream.close()
+
+            event_result = []
+            event_reader = threading.Thread(target=lambda: event_result.append(read_frame(subscription_stream)), daemon=True)
+            event_reader.start()
+            event_reader.join(timeout=10)
+            subscription_stream.close()
+            if not event_result or event_result[0].get("method") != "events.changed":
+                raise RuntimeError("Subscription did not receive a job-change event")
+            if event_result[0].get("params", {}).get("subscription_id") != subscription["subscription_id"]:
+                raise RuntimeError("Subscription event ID did not match")
 
             deadline = time.monotonic() + 30
             saw_progress = False
@@ -262,7 +312,7 @@ def main():
             recovered = one_connection(endpoint)
             if recovered["total"] != "1" or recovered["jobs"][0]["state"] != "completed":
                 raise RuntimeError("Engine restart did not recover the completed job")
-            print("Phase 0 IPC smoke passed: hello, list, reconnect, live progress, transfer, restart persistence")
+            print("Phase 0 IPC smoke passed: hello, list, reconnect, malformed-frame recovery, change subscription, live progress, transfer, restart persistence")
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()
