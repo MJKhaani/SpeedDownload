@@ -173,7 +173,10 @@ def main():
     if not binary.is_file():
         raise FileNotFoundError(binary)
 
-    with tempfile.TemporaryDirectory(prefix="speed-download-phase0-") as temp:
+    # Darwin's sockaddr_un path is short; the default per-user temp path can
+    # already consume most of it before our runtime/socket suffix is added.
+    temp_parent = "/private/tmp" if sys.platform == "darwin" else None
+    with tempfile.TemporaryDirectory(prefix="sd-p0-", dir=temp_parent) as temp:
         root = Path(temp)
         state = root / "state"
         destination = root / "downloads"
@@ -222,15 +225,12 @@ def main():
                     "client": {"kind": "phase0-smoke", "version": "0.1.0"},
                     "features": [],
                 })
-                added = rpc(add_stream, "jobs.add", {
+                rpc(add_stream, "jobs.add", {
                     "url": f"http://127.0.0.1:{fixture.server_port}/phase0.bin",
                     "name": "phase0.bin",
                     "destination": str(destination),
                     "idempotency_key": str(uuid.uuid4()),
                     "priority": 0,
-                })
-                rpc(add_stream, "jobs.control", {
-                    "job_id": added["job_id"], "action": "start", "expected_revision": "1"
                 })
             finally:
                 add_stream.close()

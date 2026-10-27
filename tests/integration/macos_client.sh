@@ -13,7 +13,14 @@ cleanup() {
   rm -rf "$TASK_DIRECTORY"
 }
 trap cleanup EXIT
-swiftc "$ROOT/macos/SpeedDownload/Sources/SpeedDownload/UnixEngineClient.swift" \
+mkdir -p "$TASK_DIRECTORY/clang-cache" "$TASK_DIRECTORY/swift-cache"
+SWIFT_SDK_ARGS=()
+if [[ -n "${SPEED_DOWNLOAD_SWIFT_SDK:-}" ]]; then
+  SWIFT_SDK_ARGS=(-sdk "$SPEED_DOWNLOAD_SWIFT_SDK")
+fi
+CLANG_MODULE_CACHE_PATH="$TASK_DIRECTORY/clang-cache" \
+  SWIFT_MODULECACHE_PATH="$TASK_DIRECTORY/swift-cache" \
+  swiftc "${SWIFT_SDK_ARGS[@]}" "$ROOT/macos/SpeedDownload/Sources/SpeedDownload/UnixEngineClient.swift" \
   "$ROOT/macos/SpeedDownload/Sources/SpeedDownload/EngineModel.swift" \
   "$ROOT/tests/integration/macos_client.swift" -o "$TASK_DIRECTORY/client"
 TMPDIR="$TASK_DIRECTORY/" SPEED_DOWNLOAD_STATE_DIR="$TASK_DIRECTORY/state" \

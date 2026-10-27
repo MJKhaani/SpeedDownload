@@ -1,6 +1,6 @@
 # Platform Support and Feasibility Matrix
 
-**Status date:** 2026-10-21
+**Status date:** 2026-10-27
 **Current project phase:** macOS engine/client implementation alongside Phase 1–3 work; Phase 0 native CI results remain unavailable
 **Meaning:** “Not validated” means no native build/runtime evidence is available. Cross-compilation alone cannot change a target to supported.
 
@@ -18,6 +18,16 @@ and resume after a process restart are not yet
 validated. New FTP journals carry a SHA-256 integrity checksum; older
 unchecked partial journals remain in place but cannot be resumed automatically.
 See [FTP source status](protocols/ftp.md) for its limits.
+
+On 2026-10-27, the x86_64 macOS 14.8.4 host passed the isolated Phase 0
+engine IPC fixture using the current local `zig-out/bin/speed-download`:
+handshake, listing, reconnect, live progress, a byte-verified local HTTP
+transfer, and completed-job recovery after engine restart. The standalone
+Swift client fixture also passed connection, reconnection, and single-loop
+checks against an isolated engine. The Swift fixture used the installed
+macOS 14.5 SDK because this host's default 15.2 SDK is incompatible with its
+Swift compiler. These are local test results, not native CI or a packaged
+GUI restart test.
 
 The CLI now builds with bounded BitTorrent v1 metainfo and magnet URI
 inspection. It also has source for BEP 9 metadata retrieval from explicit
@@ -45,7 +55,7 @@ See [Firefox link handoff](browser-firefox.md).
 | Linux | x86_64 | Native smoke pending | GTK 4 source; native build pending | AF_UNIX source; native smoke pending | Experimental until Linux CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
 | Linux | ARM64 | Not validated | GTK source; not built | AF_UNIX source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
 | Linux | ARM32 | Not validated | Not implemented | Not implemented | Stretch target; assess ABI, OS dependencies and runner/hardware separately. |
-| macOS | x86_64 | Engine compiles; native smoke pending | SwiftUI bundle builds; user interactive use recorded | AF_UNIX connects in packaged app; automated smoke pending | Experimental until macOS CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
+| macOS | x86_64 | Engine compiles; isolated IPC transfer/restart smoke passed locally | SwiftUI bundle builds; user interactive use recorded | AF_UNIX and standalone Swift client connect/reconnect smoke passed locally | Experimental until macOS CI and packaged GUI restart/accessibility checks pass. |
 | macOS | ARM64 | Engine compiles; native smoke pending | SwiftUI source; native build pending | AF_UNIX source; local bind blocked by sandbox | Experimental until Apple Silicon native build/runtime and GUI connection/reconnect checks pass. |
 
 ## Core module check
@@ -79,6 +89,8 @@ On 2026-10-12, Zig 0.17.0 compiled the CLI and passed six state tests, three que
 No target is currently supported or release-certified. For each target, record exact compiler/dependency revisions, OS version, CPU, backend, commands, native smoke-test results, accessibility checks, and packaging results before changing its status.
 
 ## Phase 0 exit work
+
+Local macOS x86_64 evidence on 2026-10-27: `python3 tests/integration/ipc_engine.py zig-out/bin/speed-download` passed the isolated IPC/transfer/restart fixture, and `SPEED_DOWNLOAD_SWIFT_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk bash tests/integration/macos_client.sh` passed the standalone Swift client connection fixture. Neither command launches the packaged GUI or substitutes for native CI on the other targets.
 
 - [x] Pin Zig 0.17.0; implement OS-specific engine IPC endpoints and secure per-user permissions.
 - [x] Implement IPC v1 framing, handshake, `jobs.list`, job controls, and polling-based reconnect; publish a shared request schema.
