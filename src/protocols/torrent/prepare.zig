@@ -83,7 +83,8 @@ pub fn prepare(allocator: std.mem.Allocator, io: std.Io, directory: []const u8, 
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     const filename = try std.fmt.allocPrint(allocator, "preview-{s}.torrent", .{std.fmt.bytesToHex(digest, .lower)});
     const path = try std.fs.path.join(allocator, &.{ directory, filename });
-    var atomic = try std.Io.Dir.createFileAtomic(.cwd(), io, path, .{ .permissions = .fromMode(0o600) });
+    const permissions: std.Io.File.Permissions = if (@import("builtin").os.tag == .windows) .default_file else .fromMode(0o600);
+    var atomic = try std.Io.Dir.createFileAtomic(.cwd(), io, path, .{ .permissions = permissions });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, bytes);
     try atomic.file.sync(io);
