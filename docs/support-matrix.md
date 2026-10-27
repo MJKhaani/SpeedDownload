@@ -23,8 +23,8 @@ On 2026-10-27, the x86_64 macOS 14.8.4 host passed the isolated Phase 0
 engine IPC fixture using the current local `zig-out/bin/speed-download`:
 handshake, listing, reconnect, live progress, a byte-verified local HTTP
 transfer, and completed-job recovery after engine restart. The standalone
-Swift client fixture also passed connection, reconnection, and single-loop
-checks against an isolated engine. The Swift fixture used the installed
+Swift client fixture also passed connection, reconnection to a newly restarted
+engine instance, and single-loop checks against an isolated engine. The Swift fixture used the installed
 macOS 14.5 SDK because this host's default 15.2 SDK is incompatible with its
 Swift compiler. These are local test results, not native CI or a packaged
 GUI restart test.
@@ -55,7 +55,7 @@ See [Firefox link handoff](browser-firefox.md).
 | Linux | x86_64 | Native smoke pending | GTK 4 source; native build pending | AF_UNIX source; native smoke pending | Experimental until Linux CI build, transfer/restart smoke, and GUI connection/reconnect check pass. |
 | Linux | ARM64 | Not validated | GTK source; not built | AF_UNIX source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
 | Linux | ARM32 | Not validated | Not implemented | Not implemented | Stretch target; assess ABI, OS dependencies and runner/hardware separately. |
-| macOS | x86_64 | Engine compiles; isolated IPC transfer/restart smoke passed locally | SwiftUI bundle builds; user interactive use recorded | AF_UNIX and standalone Swift client connect/reconnect smoke passed locally | Experimental until macOS CI and packaged GUI restart/accessibility checks pass. |
+| macOS | x86_64 | Engine compiles; isolated IPC transfer/restart smoke passed locally | SwiftUI bundle builds; user interactive use recorded | AF_UNIX and standalone Swift client restart/reconnect smoke passed locally | Experimental until macOS CI and packaged GUI restart/accessibility checks pass. |
 | macOS | ARM64 | Engine compiles; native smoke pending | SwiftUI source; native build pending | AF_UNIX source; local bind blocked by sandbox | Experimental until Apple Silicon native build/runtime and GUI connection/reconnect checks pass. |
 
 ## Core module check
@@ -90,7 +90,7 @@ No target is currently supported or release-certified. For each target, record e
 
 ## Phase 0 exit work
 
-Local macOS x86_64 evidence on 2026-10-27: `python3 tests/integration/ipc_engine.py zig-out/bin/speed-download` passed the isolated IPC/transfer/restart fixture, and `SPEED_DOWNLOAD_SWIFT_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk bash tests/integration/macos_client.sh` passed the standalone Swift client connection fixture. Neither command launches the packaged GUI or substitutes for native CI on the other targets.
+Local macOS x86_64 evidence on 2026-10-27: `python3 tests/integration/ipc_engine.py zig-out/bin/speed-download` passed the isolated IPC/transfer/restart fixture, and `SPEED_DOWNLOAD_SWIFT_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk bash tests/integration/macos_client.sh` passed the standalone Swift client restart/reconnection fixture. Neither command launches the packaged GUI or substitutes for native CI on the other targets.
 
 - [x] Pin Zig 0.17.0; implement OS-specific engine IPC endpoints and secure per-user permissions.
 - [x] Implement IPC v1 framing, handshake, `jobs.list`, job controls, and polling-based reconnect; publish a shared request schema.
