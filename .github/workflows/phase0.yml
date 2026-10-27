@@ -38,8 +38,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             zig build-exe src/main.zig -femit-bin=zig-out/bin/speed-download.exe
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            SDK="$(xcrun --sdk macosx --show-sdk-path)"
-            zig build-exe src/main.zig -lc -framework Security -L "$SDK/usr/lib/system" -lsystem_kernel -femit-bin=zig-out/bin/speed-download
+            zig build-exe src/main.zig src/core/posix_stat_macos.c -lc -framework Security -femit-bin=zig-out/bin/speed-download
           else
             zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download
           fi
@@ -55,7 +54,11 @@ jobs:
 
       - name: Build native SwiftUI client
         if: runner.os == 'macOS'
-        run: bash macos/SpeedDownload/package-app.sh "dist/Speed Download.app"
+        run: SPEED_DOWNLOAD_SKIP_REGISTER=1 bash macos/SpeedDownload/package-app.sh "dist/Speed Download.app"
+
+      - name: Smoke Swift client connection and engine restart
+        if: runner.os == 'macOS'
+        run: bash tests/integration/macos_client.sh zig-out/bin/speed-download
 
       - name: Install GTK build dependencies
         if: runner.os == 'Linux'

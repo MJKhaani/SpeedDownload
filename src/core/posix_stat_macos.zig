@@ -1,7 +1,11 @@
-//! macOS libc stat entry points; Linux uses the statx syscall instead.
+//! The tiny C adapter uses the selected Darwin SDK's stat alias and layout.
+//! Zig's hardcoded x86_64 `stat$INODE64` alias is absent from some SDK stubs.
 
-const std = @import("std");
-const c = std.c;
-
-pub const stat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{ .name = "stat$INODE64" });
-pub const lstat = @extern(*const fn ([*:0]const u8, *c.Stat) callconv(.c) c_int, .{ .name = "lstat$INODE64" });
+pub extern "c" fn speed_download_macos_stat(
+    path: [*:0]const u8,
+    follow_symlinks: c_int,
+    uid: *u32,
+    mode: *u32,
+    device: *u64,
+    inode: *u64,
+) c_int;

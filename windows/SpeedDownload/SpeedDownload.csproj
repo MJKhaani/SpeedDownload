@@ -4,9 +4,6 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <UseWinUI>true</UseWinUI>
-    <UseWindowsForms>true</UseWindowsForms>
-    <EnableDefaultPageItems>false</EnableDefaultPageItems>
-    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
@@ -16,6 +13,7 @@
     <Platforms>x64;ARM64</Platforms>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
     <Content Include="..\..\Resources\SpeedDownload.ico">
       <Link>SpeedDownload.ico</Link>

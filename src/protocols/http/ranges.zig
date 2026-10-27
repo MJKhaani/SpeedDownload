@@ -268,6 +268,7 @@ test "extent map rejects cursor regression and excessive subdivision" {
     try map.advance(0, 512);
     try std.testing.expectError(RangeError.InvalidInterval, map.advance(0, 256));
     _ = try map.splitLargest(256);
-    try std.testing.expectError(RangeError.SplitTooSmall, map.splitLargest(512));
+    // The map filters undersized candidates before calling splitTail.
+    try std.testing.expectError(RangeError.NoSplittableInterval, map.splitLargest(512));
     try map.validate();
 }

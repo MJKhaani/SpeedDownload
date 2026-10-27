@@ -7,11 +7,14 @@ APP_PATH="${1:-$ROOT/dist/Speed Download.app}"
 if [[ "$APP_PATH" != /* ]]; then APP_PATH="$ROOT/$APP_PATH"; fi
 
 mkdir -p "$ROOT/zig-out/bin"
-SDK="$(xcrun --sdk macosx --show-sdk-path)"
-zig build-exe "$ROOT/src/main.zig" -O ReleaseSafe -lc -framework Security -L "$SDK/usr/lib/system" -lsystem_kernel -femit-bin="$ROOT/zig-out/bin/speed-download"
+zig build-exe "$ROOT/src/main.zig" "$ROOT/src/core/posix_stat_macos.c" -O ReleaseSafe -lc -framework Security -femit-bin="$ROOT/zig-out/bin/speed-download"
 zig build-exe "$ROOT/src/browser_host.zig" -O ReleaseSafe -lc -femit-bin="$ROOT/zig-out/bin/speed-download-browser-host"
-(cd "$PACKAGE_DIR" && swift build --configuration release)
-SWIFT_BIN_DIR="$(cd "$PACKAGE_DIR" && swift build --configuration release --show-bin-path)"
+SWIFT_BUILD_ARGS=(--configuration release)
+if [[ -n "${SPEED_DOWNLOAD_SWIFT_SDK:-}" ]]; then
+  SWIFT_BUILD_ARGS+=(--sdk "$SPEED_DOWNLOAD_SWIFT_SDK")
+fi
+(cd "$PACKAGE_DIR" && swift build "${SWIFT_BUILD_ARGS[@]}")
+SWIFT_BIN_DIR="$(cd "$PACKAGE_DIR" && swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 
 rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Helpers" "$APP_PATH/Contents/Resources"
@@ -63,5 +66,5 @@ cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [[ -x "$LSREGISTER" ]]; then "$LSREGISTER" -f "$APP_PATH"; fi
+if [[ "${SPEED_DOWNLOAD_SKIP_REGISTER:-0}" != "1" && -x "$LSREGISTER" ]]; then "$LSREGISTER" -f "$APP_PATH"; fi
 echo "Created $APP_PATH"

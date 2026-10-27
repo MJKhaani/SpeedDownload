@@ -12,7 +12,7 @@ public sealed partial class MainWindow : Window
     private readonly EngineClient _engine = new();
     private readonly DispatcherQueueTimer _refreshTimer;
     private bool _refreshInFlight;
-    private List<DownloadJob> _allJobs = [];
+    private IReadOnlyList<DownloadJob> _allJobs = [];
     private string _category = "Active Transfers";
     private readonly NotifyIcon _trayIcon;
 
