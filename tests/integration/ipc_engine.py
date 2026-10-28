@@ -147,6 +147,16 @@ def rpc(stream, method, params):
     return response["result"]
 
 
+def rpc_error_code(stream, method, params):
+    request_id = str(uuid.uuid4())
+    payload = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}, separators=(",", ":")).encode()
+    write_all(stream, len(payload).to_bytes(4, "little") + payload)
+    response = read_frame(stream)
+    if response.get("id") != request_id or "error" not in response:
+        raise RuntimeError(f"Expected an error for {method}, got {response}")
+    return response["error"]["code"]
+
+
 def one_connection(endpoint):
     if os.name == "nt":
         stream = connect_pipe(endpoint, time.monotonic() + 10)
@@ -230,6 +240,54 @@ def main():
             if one_connection(endpoint)["total"] != "0":
                 raise RuntimeError("Engine reconnect smoke check failed")
 
+            # A second daemon must not take over the same user profile/endpoint.
+            competing = subprocess.Popen([str(binary), "engine"], env=env, stdout=log, stderr=log)
+            try:
+                try:
+                    competing.wait(timeout=5)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError("Second engine remained running for the same profile") from error
+                if competing.returncode == 0:
+                    raise RuntimeError("Second engine reported successful startup for the same profile")
+                if process.poll() is not None or one_connection(endpoint)["total"] != "0":
+                    raise RuntimeError("Second engine disrupted the original instance")
+            finally:
+                if competing.poll() is None:
+                    competing.terminate()
+                    competing.wait(timeout=5)
+
+            unnegotiated = new_connection(endpoint)
+            try:
+                if rpc_error_code(unnegotiated, "jobs.list", {"offset": 0, "limit": 1}) != -32001:
+                    raise RuntimeError("Engine accepted a job request before handshake")
+                if rpc_error_code(unnegotiated, "engine.hello", {
+                    "protocol": {"major": 99, "minor": 0},
+                    "client": {"kind": "phase0-smoke", "version": "0.1.0"},
+                    "features": [],
+                }) != -32002:
+                    raise RuntimeError("Engine accepted an unsupported protocol major")
+            finally:
+                unnegotiated.close()
+            if process.poll() is not None or one_connection(endpoint)["total"] != "0":
+                raise RuntimeError("Invalid handshake disrupted the engine")
+
+            simultaneous = []
+            for _ in range(4):
+                stream = new_connection(endpoint)
+                simultaneous.append(stream)
+                rpc(stream, "engine.hello", {
+                    "protocol": {"major": 1, "minor": 0},
+                    "client": {"kind": "phase0-multi-client", "version": "0.1.0"},
+                    "features": [],
+                })
+            try:
+                for stream in simultaneous:
+                    if rpc(stream, "jobs.list", {"offset": 0, "limit": 1})["total"] != "0":
+                        raise RuntimeError("Concurrent client saw inconsistent job state")
+            finally:
+                for stream in simultaneous:
+                    stream.close()
+
             if os.name != "nt":
                 for path in (Path(endpoint).parent, Path(endpoint)):
                     if stat.S_IMODE(path.stat().st_mode) & 0o077:
@@ -312,7 +370,7 @@ def main():
             recovered = one_connection(endpoint)
             if recovered["total"] != "1" or recovered["jobs"][0]["state"] != "completed":
                 raise RuntimeError("Engine restart did not recover the completed job")
-            print("Phase 0 IPC smoke passed: hello, list, reconnect, malformed-frame recovery, change subscription, live progress, transfer, restart persistence")
+            print("Phase 0 IPC smoke passed: hello/version rejection, multi-client, single engine, list, reconnect, malformed-frame recovery, change subscription, live progress, transfer, restart persistence")
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()
