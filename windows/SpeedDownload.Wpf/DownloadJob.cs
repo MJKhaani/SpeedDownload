@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Windows.Media;
 
 namespace SpeedDownload;
 
@@ -17,12 +18,23 @@ public sealed class DownloadJob
     [JsonPropertyName("requested_control")] public string? RequestedControl { get; init; }
     [JsonPropertyName("priority")] public int Priority { get; init; }
 
-    [JsonIgnore] public string Title => string.IsNullOrWhiteSpace(Name) ? Url : Name;
+    [JsonIgnore] public string Title
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Name)) return Name;
+            if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri)) return Url;
+            var lastSegment = Path.GetFileName(Uri.UnescapeDataString(uri.AbsolutePath));
+            return string.IsNullOrWhiteSpace(lastSegment) ? uri.Host : lastSegment;
+        }
+    }
     [JsonIgnore] public ulong Completed => ulong.TryParse(ReceivedBytes ?? CompletedBytes, out var value) ? value : 0;
     [JsonIgnore] public ulong Total => ulong.TryParse(TotalBytes, out var value) ? value : 0;
     [JsonIgnore] public double Progress => Total == 0 ? 0 : Math.Min(100d, Completed * 100d / Total);
     [JsonIgnore] public string ProgressText => Total == 0 ? "Waiting for response…" : $"{FormatBytes(Completed)} of {FormatBytes(Total)}";
     [JsonIgnore] public string Host => Uri.TryCreate(Url, UriKind.Absolute, out var uri) ? uri.Host : "";
+    [JsonIgnore] public ImageSource? FileIcon => FileTypeIcon.ForName(Title);
+    [JsonIgnore] public string SpeedText { get; set; } = "";
 
     private static string FormatBytes(ulong value)
     {

@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 using Drawing = System.Drawing;
@@ -14,10 +17,24 @@ public partial class MainWindow : Window
     private IReadOnlyList<DownloadJob> _allJobs = [];
     private string _category = "All Downloads";
     private bool _refreshInFlight;
+    private bool _updatingLimitControl;
+    private bool _limitBusy;
+    private bool _limitLoaded;
+    private ulong _lastLimit;
+    private DateTime _limitReadAt;
+    private readonly Dictionary<string, (ulong bytes, long ticks)> _speedSamples = new();
+    private readonly List<SpeedLimitOption> _speedLimits = BuildSpeedLimits();
+
+    private sealed record SpeedLimitOption(ulong BytesPerSecond, string Label);
 
     public MainWindow()
     {
         InitializeComponent();
+        _updatingLimitControl = true;
+        StatusLimitCombo.ItemsSource = _speedLimits;
+        StatusLimitCombo.SelectedIndex = 0;
+        _updatingLimitControl = false;
+        PreviewKeyDown += OnWindowKeyDown;
         var trayMenu = new Forms.ContextMenuStrip();
         trayMenu.Items.Add("Open Speed Download", null, (_, _) => Dispatcher.Invoke(ShowAndActivate));
         trayMenu.Items.Add("Quit", null, (_, _) => Dispatcher.Invoke(Close));
@@ -51,14 +68,20 @@ public partial class MainWindow : Window
         try
         {
             _allJobs = await _engine.ListJobsAsync();
+            UpdateDownloadSpeeds();
             ApplyFilter();
             QueueSummary.Text = $"{_allJobs.Count(job => job.State == "downloading")} active · {_allJobs.Count(job => job.State is "queued" or "scheduled")} queued";
             ConnectionStatus.Text = "Engine connected";
+            ConnectionDot.Fill = Brushes.SeaGreen;
             Dispatcher.BeginInvoke(ReportPhase0UiState, DispatcherPriority.ApplicationIdle);
+            if (!_limitBusy && (!_limitLoaded || DateTime.UtcNow - _limitReadAt > TimeSpan.FromSeconds(15)))
+                await RefreshGlobalLimitAsync();
         }
         catch (Exception error)
         {
             ConnectionStatus.Text = $"Engine disconnected · {error.Message}";
+            ConnectionDot.Fill = Brushes.DarkOrange;
+            TotalSpeed.Text = "↓ 0 KB/s";
             Dispatcher.BeginInvoke(ReportPhase0UiState, DispatcherPriority.ApplicationIdle);
         }
         finally { _refreshInFlight = false; }
@@ -133,6 +156,91 @@ public partial class MainWindow : Window
     private DownloadJob? JobForButton(object sender) =>
         sender is Button { Tag: string id } ? _allJobs.FirstOrDefault(job => job.JobId == id) : null;
 
+    private void UpdateDownloadSpeeds()
+    {
+        var now = Stopwatch.GetTimestamp();
+        var activeIds = new HashSet<string>();
+        double total = 0;
+        foreach (var job in _allJobs.Where(job => job.State == "downloading"))
+        {
+            activeIds.Add(job.JobId);
+            double speed = 0;
+            if (_speedSamples.TryGetValue(job.JobId, out var previous) && job.Completed >= previous.bytes)
+            {
+                var seconds = (now - previous.ticks) / (double)Stopwatch.Frequency;
+                if (seconds > 0) speed = (job.Completed - previous.bytes) / seconds;
+            }
+            job.SpeedText = speed > 0 ? FormatRate(speed) : "";
+            total += speed;
+            _speedSamples[job.JobId] = (job.Completed, now);
+        }
+        foreach (var id in _speedSamples.Keys.Where(id => !activeIds.Contains(id)).ToArray()) _speedSamples.Remove(id);
+        TotalSpeed.Text = "↓ " + FormatRate(total);
+    }
+
+    private static string FormatRate(double bytesPerSecond) => bytesPerSecond switch
+    {
+        >= 1_000_000_000 => $"{bytesPerSecond / 1_000_000_000:0.#} GB/s",
+        >= 1_000_000 => $"{bytesPerSecond / 1_000_000:0.#} MB/s",
+        _ => $"{bytesPerSecond / 1_000:0.#} KB/s",
+    };
+
+    private static List<SpeedLimitOption> BuildSpeedLimits()
+    {
+        var values = new[] { 1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200 };
+        var options = new List<SpeedLimitOption> { new(0, "Unlimited") };
+        options.AddRange(values.Select(value => new SpeedLimitOption((ulong)value * 1_000_000, $"{value} MB/s")));
+        return options;
+    }
+
+    private async Task RefreshGlobalLimitAsync()
+    {
+        try
+        {
+            var limit = await _engine.GetGlobalBandwidthLimitAsync();
+            _lastLimit = limit;
+            _limitLoaded = true;
+            _limitReadAt = DateTime.UtcNow;
+            SelectLimit(limit);
+        }
+        catch (Exception error) { StatusLimitCombo.ToolTip = $"Could not read the global limit: {error.Message}"; }
+    }
+
+    private void SelectLimit(ulong limit)
+    {
+        _updatingLimitControl = true;
+        var choice = _speedLimits.FirstOrDefault(option => option.BytesPerSecond == limit);
+        if (choice is null)
+        {
+            choice = new SpeedLimitOption(limit, $"{limit / 1_000_000d:0.#} MB/s");
+            _speedLimits.Add(choice);
+            StatusLimitCombo.Items.Refresh();
+        }
+        StatusLimitCombo.SelectedItem = choice;
+        StatusLimitCombo.ToolTip = "Global download speed limit";
+        _updatingLimitControl = false;
+    }
+
+    private async void OnSpeedLimitChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingLimitControl || _limitBusy || StatusLimitCombo.SelectedItem is not SpeedLimitOption option) return;
+        _limitBusy = true;
+        StatusLimitCombo.IsEnabled = false;
+        try
+        {
+            await _engine.SetGlobalBandwidthLimitAsync(option.BytesPerSecond);
+            _lastLimit = option.BytesPerSecond;
+            _limitLoaded = true;
+            _limitReadAt = DateTime.UtcNow;
+        }
+        catch (Exception error)
+        {
+            SelectLimit(_lastLimit);
+            MessageBox.Show(this, error.Message, "Speed Download", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { _limitBusy = false; StatusLimitCombo.IsEnabled = true; }
+    }
+
     private async Task ControlAsync(DownloadJob job, string action)
     {
         try { await _engine.ControlJobAsync(job, action); await RefreshAsync(); }
@@ -141,7 +249,11 @@ public partial class MainWindow : Window
 
     private async void OnStartOrResume(object sender, RoutedEventArgs e)
     {
-        var job = JobForButton(sender);
+        await StartOrResumeAsync(JobForButton(sender));
+    }
+
+    private async Task StartOrResumeAsync(DownloadJob? job)
+    {
         if (job is null) return;
         var action = job.State switch
         {
@@ -155,7 +267,11 @@ public partial class MainWindow : Window
 
     private async void OnPause(object sender, RoutedEventArgs e)
     {
-        var job = JobForButton(sender);
+        await PauseAsync(JobForButton(sender));
+    }
+
+    private async Task PauseAsync(DownloadJob? job)
+    {
         if (job is not null && job.State is "downloading" or "queued" or "scheduled")
             await ControlAsync(job, "pause");
     }
@@ -173,5 +289,38 @@ public partial class MainWindow : Window
     {
         Inspector.Visibility = Visibility.Collapsed;
         InspectorColumn.Width = new GridLength(0);
+    }
+
+    private async void OnStartSelected(object sender, RoutedEventArgs e) => await StartOrResumeAsync(JobsList.SelectedItem as DownloadJob);
+    private async void OnPauseSelected(object sender, RoutedEventArgs e) => await PauseAsync(JobsList.SelectedItem as DownloadJob);
+    private void OnToggleInspector(object sender, RoutedEventArgs e)
+    {
+        if (Inspector.Visibility == Visibility.Visible) OnCloseInspector(sender, e);
+        else if (JobsList.SelectedItem is DownloadJob job)
+        {
+            InspectorColumn.Width = new GridLength(270);
+            Inspector.Visibility = Visibility.Visible;
+            UpdateDetails(job);
+        }
+    }
+
+    private void OnFind(object sender, RoutedEventArgs e) { SearchBox.Focus(); SearchBox.SelectAll(); }
+    private void OnFocusSpeedLimit(object sender, RoutedEventArgs e) { StatusLimitCombo.Focus(); StatusLimitCombo.IsDropDownOpen = true; }
+    private void OnQuit(object sender, RoutedEventArgs e) => Close();
+    private void OnAbout(object sender, RoutedEventArgs e) => MessageBox.Show(this,
+        "Speed Download\nWindows client with bundled download engine.", "About Speed Download", MessageBoxButton.OK, MessageBoxImage.Information);
+
+    private void OnOpenDownloadsFolder(object sender, RoutedEventArgs e)
+    {
+        var folder = (JobsList.SelectedItem as DownloadJob)?.Destination;
+        if (string.IsNullOrWhiteSpace(folder)) folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        if (Directory.Exists(folder)) Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+    }
+
+    private void OnWindowKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F5) { _ = RefreshAsync(); e.Handled = true; }
+        else if (e.Key == Key.N && Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { OnAdd(sender, new RoutedEventArgs()); e.Handled = true; }
+        else if (e.Key == Key.F && Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { OnFind(sender, new RoutedEventArgs()); e.Handled = true; }
     }
 }
