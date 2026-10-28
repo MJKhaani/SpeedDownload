@@ -54,12 +54,12 @@ public partial class MainWindow : Window
             ApplyFilter();
             QueueSummary.Text = $"{_allJobs.Count(job => job.State == "downloading")} active · {_allJobs.Count(job => job.State is "queued" or "scheduled")} queued";
             ConnectionStatus.Text = "Engine connected";
-            ReportPhase0UiState();
+            Dispatcher.BeginInvoke(ReportPhase0UiState, DispatcherPriority.ApplicationIdle);
         }
         catch (Exception error)
         {
             ConnectionStatus.Text = $"Engine disconnected · {error.Message}";
-            ReportPhase0UiState();
+            Dispatcher.BeginInvoke(ReportPhase0UiState, DispatcherPriority.ApplicationIdle);
         }
         finally { _refreshInFlight = false; }
     }
@@ -68,6 +68,7 @@ public partial class MainWindow : Window
     {
         var path = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_PHASE0_REPORT");
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) return;
+        if (JobsList.Items.Count > 0 && JobsList.ItemContainerGenerator.ContainerFromIndex(0) is null) return;
         try
         {
             var rows = _allJobs.Select(job => $"{job.JobId}\t{job.State}\t{job.Completed}");

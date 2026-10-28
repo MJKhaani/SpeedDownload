@@ -50,8 +50,11 @@ public partial class App : System.Windows.Application
         base.OnExit(e);
     }
 
-    private static void TracePhase0Exception(Exception error) =>
-        TracePhase0($"Unhandled {error.GetType().FullName}{Environment.NewLine}{error.StackTrace}");
+    private static void TracePhase0Exception(Exception error)
+    {
+        var cause = error.GetBaseException();
+        TracePhase0($"Unhandled {error.GetType().FullName}; cause {cause.GetType().FullName}: {cause.Message}{Environment.NewLine}{error.StackTrace}");
+    }
 
     private static void TracePhase0(string line)
     {

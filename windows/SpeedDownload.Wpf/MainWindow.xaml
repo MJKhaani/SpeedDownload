@@ -60,7 +60,7 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0">
                                         <TextBlock Text="{Binding State}" FontSize="11" />
-                                        <ProgressBar Value="{Binding Progress}" Maximum="100" Height="4" Margin="0,4,0,4" />
+                                        <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="4" Margin="0,4,0,4" />
                                         <TextBlock Text="{Binding ProgressText}" Foreground="Gray" FontSize="10" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
