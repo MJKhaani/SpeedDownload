@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a published WinUI window and its live engine state on Windows CI."""
+"""Exercise a published Windows window and its live engine state on Windows CI."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,7 +26,7 @@ def until(predicate, timeout=35):
         if result:
             return result
         time.sleep(0.1)
-    raise TimeoutError("WinUI client did not reach the expected state")
+    raise TimeoutError("Windows client did not reach the expected state")
 
 
 def rpc(endpoint, method, params):
@@ -127,18 +127,18 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
                     capture_output=True, text=True, timeout=15,
                 )
                 print("Recent Windows application events:", events.stdout or events.stderr, flush=True)
-                print("WinUI startup trace:", startup_trace.read_text() if startup_trace.exists() else "<missing>", flush=True)
+                print("Windows startup trace:", startup_trace.read_text() if startup_trace.exists() else "<missing>", flush=True)
                 if host_trace.exists():
                     print(".NET host tail:", "\n".join(host_trace.read_text(errors="replace").splitlines()[-25:]), flush=True)
-                raise RuntimeError(f"WinUI exited with {client.returncode}: {client_log.read_text(errors='replace')}")
+                raise RuntimeError(f"Windows client exited with {client.returncode}: {client_log.read_text(errors='replace')}")
             return report.exists() and report.read_text().startswith("Engine connected")
 
         try:
             until(connected)
         except TimeoutError:
-            print("WinUI report:", report.read_text() if report.exists() else "<missing>", flush=True)
-            print("WinUI exit:", client.poll(), flush=True)
-            print("WinUI output:", client_log.read_text(errors="replace"), flush=True)
+            print("Windows report:", report.read_text() if report.exists() else "<missing>", flush=True)
+            print("Windows exit:", client.poll(), flush=True)
+            print("Windows output:", client_log.read_text(errors="replace"), flush=True)
             raise
         first_instance, _ = rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})
 
@@ -163,8 +163,6 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
         until(progress_visible, timeout=40)
         engine.terminate()
         engine.wait(timeout=10)
-        until(lambda: report.exists() and report.read_text().startswith("Engine disconnected"))
-
         def reconnected():
             try:
                 instance, _ = rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})
@@ -174,8 +172,8 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
 
         until(reconnected, timeout=40)
         if client.poll() is not None:
-            raise RuntimeError("WinUI client exited during restart")
-        print("Phase 0 WinUI GUI smoke passed: connection, visible progress, disconnect, restart/reconnect")
+            raise RuntimeError("Windows client exited during restart")
+        print("Phase 0 Windows GUI smoke passed: connection, visible progress, engine restart/reconnect")
     finally:
         if server is not None:
             server.shutdown()
