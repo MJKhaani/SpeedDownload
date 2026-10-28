@@ -170,7 +170,14 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
             except (OSError, RuntimeError, TimeoutError):
                 return False
 
-        until(reconnected, timeout=40)
+        try:
+            until(reconnected, timeout=40)
+        except TimeoutError:
+            print("Windows reconnect report:", report.read_text() if report.exists() else "<missing>", flush=True)
+            print("Windows client exit:", client.poll(), flush=True)
+            print("Named-pipe server PID:", pipe_server_pid(endpoint), flush=True)
+            print("First engine instance:", first_instance, flush=True)
+            raise
         if client.poll() is not None:
             raise RuntimeError("Windows client exited during restart")
         print("Phase 0 Windows GUI smoke passed: connection, visible progress, engine restart/reconnect")
