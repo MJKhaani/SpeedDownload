@@ -5,7 +5,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>SpeedDownload</AssemblyName>
     <RootNamespace>SpeedDownload</RootNamespace>
     <ApplicationIcon>..\..\Resources\SpeedDownload.ico</ApplicationIcon>
