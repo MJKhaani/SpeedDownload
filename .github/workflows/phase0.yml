@@ -112,4 +112,26 @@ jobs:
       - name: Smoke WinUI client connection, progress, and engine restart
         if: runner.os == 'Windows' && inputs.verify_windows_gui == true
         shell: pwsh
-        run: python tests/integration/windows_client.py zig-out/bin/speed-download.exe windows/SpeedDownload/publish/SpeedDownload.exe
+        run: |
+          $dumpDir = Join-Path $env:RUNNER_TEMP 'speed-download-crash-dumps'
+          New-Item -ItemType Directory -Force $dumpDir | Out-Null
+          $key = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\SpeedDownload.exe'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -Value $dumpDir -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          python tests/integration/windows_client.py zig-out/bin/speed-download.exe windows/SpeedDownload/publish/SpeedDownload.exe
+
+      - name: Report native WinUI crash dump
+        if: failure() && runner.os == 'Windows' && inputs.verify_windows_gui == true
+        shell: pwsh
+        run: |
+          $dumpDir = Join-Path $env:RUNNER_TEMP 'speed-download-crash-dumps'
+          $debugger = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers' -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1 -ExpandProperty FullName
+          if ($debugger) {
+            Get-ChildItem $dumpDir -Filter '*.dmp' | ForEach-Object {
+              $analysis = & $debugger -z $_.FullName -c '.symfix; .reload; !analyze -v; q' 2>&1
+              $analysis | Where-Object { $_ -match '^(EXCEPTION_CODE|MODULE_NAME|IMAGE_NAME|SYMBOL_NAME|FAILURE_BUCKET_ID|ExceptionAddress):?\s' }
+            }
+          } else {
+            Write-Output 'cdb.exe is unavailable on this runner.'
+          }
