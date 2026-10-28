@@ -14,9 +14,12 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        var report = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE");
-        if (!string.IsNullOrEmpty(report) && Path.IsPathFullyQualified(report))
-            File.AppendAllText(report, "WPF app startup" + Environment.NewLine);
+        DispatcherUnhandledException += (_, error) => TracePhase0Exception(error.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, error) =>
+        {
+            if (error.ExceptionObject is Exception exception) TracePhase0Exception(exception);
+        };
+        TracePhase0("WPF app startup");
 
         _instanceMutex = new Mutex(true, @"Local\SpeedDownload.Gui.Instance", out var firstInstance);
         if (!firstInstance)
@@ -45,5 +48,16 @@ public partial class App : System.Windows.Application
     {
         _instanceMutex?.Dispose();
         base.OnExit(e);
+    }
+
+    private static void TracePhase0Exception(Exception error) =>
+        TracePhase0($"Unhandled {error.GetType().FullName}{Environment.NewLine}{error.StackTrace}");
+
+    private static void TracePhase0(string line)
+    {
+        var report = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE");
+        if (string.IsNullOrEmpty(report) || !Path.IsPathFullyQualified(report)) return;
+        try { File.AppendAllText(report, line + Environment.NewLine); }
+        catch (IOException) { }
     }
 }

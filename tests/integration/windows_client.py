@@ -175,6 +175,8 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
         except TimeoutError:
             print("Windows reconnect report:", report.read_text() if report.exists() else "<missing>", flush=True)
             print("Windows client exit:", client.poll(), flush=True)
+            print("Windows startup trace:", startup_trace.read_text() if startup_trace.exists() else "<missing>", flush=True)
+            print("Windows client output:", client_log.read_text(errors="replace"), flush=True)
             print("Named-pipe server PID:", pipe_server_pid(endpoint), flush=True)
             print("First engine instance:", first_instance, flush=True)
             raise
