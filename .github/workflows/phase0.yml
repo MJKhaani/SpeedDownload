@@ -113,6 +113,12 @@ jobs:
         if: runner.os == 'Windows' && inputs.verify_windows_gui == true
         shell: pwsh
         run: |
+          $runtime = if ($env:RUNNER_ARCH -eq 'ARM64') { 'win-arm64' } else { 'win-x64' }
+          dotnet publish tests/integration/windows_wpf_probe/WindowsWpfProbe.csproj -c Release -r $runtime --self-contained true -o tests/integration/windows_wpf_probe/publish
+          $env:SPEED_DOWNLOAD_WPF_PROBE_REPORT = Join-Path $env:RUNNER_TEMP 'speed-download-wpf-startup.txt'
+          $probe = Start-Process tests/integration/windows_wpf_probe/publish/WindowsWpfProbe.exe -Wait -PassThru
+          Write-Output "WPF startup probe exit: $($probe.ExitCode)"
+          if (Test-Path $env:SPEED_DOWNLOAD_WPF_PROBE_REPORT) { Get-Content $env:SPEED_DOWNLOAD_WPF_PROBE_REPORT }
           $dumpDir = Join-Path $env:RUNNER_TEMP 'speed-download-crash-dumps'
           New-Item -ItemType Directory -Force $dumpDir | Out-Null
           $key = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\SpeedDownload.exe'
