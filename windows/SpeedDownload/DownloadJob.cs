@@ -17,8 +17,10 @@ public sealed class DownloadJob
     [JsonPropertyName("total_bytes")] public string? TotalBytes { get; init; }
     [JsonPropertyName("requested_control")] public string? RequestedControl { get; init; }
     [JsonPropertyName("priority")] public int Priority { get; init; }
+    [JsonPropertyName("queue_id")] public string QueueId { get; init; } = "main";
 
     [JsonIgnore] public string Title => string.IsNullOrWhiteSpace(Name) ? Url : Name;
+    [JsonIgnore] public string Host => Uri.TryCreate(Url, UriKind.Absolute, out var uri) ? uri.Host : "";
     [JsonIgnore] public ulong Completed => ulong.TryParse(ReceivedBytes ?? CompletedBytes, out var value) ? value : 0;
     [JsonIgnore] public ulong Total => ulong.TryParse(TotalBytes, out var value) ? value : 0;
     [JsonIgnore] public double Progress => Total == 0 ? 0 : Math.Min(100d, Completed * 100d / Total);
@@ -28,6 +30,15 @@ public sealed class DownloadJob
     [JsonIgnore] public Visibility ResumeVisibility => State == "paused" ? Visibility.Visible : Visibility.Collapsed;
     [JsonIgnore] public Visibility RetryVisibility => State is "failed" or "retry_wait" ? Visibility.Visible : Visibility.Collapsed;
     [JsonIgnore] public Visibility CancelVisibility => State is "queued" or "scheduled" or "downloading" or "paused" or "retry_wait" ? Visibility.Visible : Visibility.Collapsed;
+    [JsonIgnore] public string PrimaryActionText => State switch
+    {
+        "downloading" => "Pause",
+        "paused" => "Resume",
+        "failed" => "Retry",
+        "queued" or "scheduled" or "retry_wait" => "Start",
+        _ => "",
+    };
+    [JsonIgnore] public Visibility PrimaryActionVisibility => PrimaryActionText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     [JsonIgnore] public string ProgressText => Total == 0 ? "Waiting for response…" : $"{FormatBytes(Completed)} of {FormatBytes(Total)}";
 
     private static string FormatBytes(ulong value)

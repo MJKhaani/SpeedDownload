@@ -1,5 +1,7 @@
 # BitTorrent status
 
+For the current cross-protocol implementation inventory and validation limits, see [engine feature status](../engine-feature-status.md). This page records the v1 torrent implementation in more detail; seeding and v2-only payload transfers remain unimplemented.
+
 The engine can inspect a local BitTorrent v1 `.torrent` file with
 `speed-download torrent-info <file.torrent>`. The command prints its name,
 tracker, total bytes, validated relative file paths with lengths and byte

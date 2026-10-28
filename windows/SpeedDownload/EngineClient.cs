@@ -144,11 +144,36 @@ internal sealed class EngineClient
         using var result = await CallAsync("jobs.control", parameters.RootElement, cancellationToken);
     }
 
+    public async Task MoveJobToQueueAsync(DownloadJob job, string queueId, CancellationToken cancellationToken = default)
+    {
+        using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            job_id = job.JobId,
+            queue_id = queueId,
+            expected_revision = job.Revision,
+        }));
+        using var result = await CallAsync("jobs.move-queue", parameters.RootElement, cancellationToken);
+    }
+
     public async Task<ulong> GetGlobalBandwidthLimitAsync(CancellationToken cancellationToken = default)
     {
         using var parameters = JsonDocument.Parse("{}");
         using var result = await CallAsync("settings.get", parameters.RootElement, cancellationToken);
         return result.RootElement.GetProperty("bandwidth_limit_bytes_per_second").GetUInt64();
+    }
+
+    public async Task<JsonObject> GetSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        using var parameters = JsonDocument.Parse("{}");
+        using var result = await CallAsync("settings.get", parameters.RootElement, cancellationToken);
+        return JsonNode.Parse(result.RootElement.GetRawText())?.AsObject()
+            ?? throw new InvalidDataException("The engine returned invalid settings.");
+    }
+
+    public async Task UpdateSettingsAsync(JsonObject settings, CancellationToken cancellationToken = default)
+    {
+        using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new { settings }));
+        using var result = await CallAsync("settings.update", parameters.RootElement, cancellationToken);
     }
 
     public async Task SetGlobalBandwidthLimitAsync(ulong bytesPerSecond, CancellationToken cancellationToken = default)

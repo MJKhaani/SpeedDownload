@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping build Speed Download. The project is in early implementation; read [`PROJECT.md`](PROJECT.md) and [`Agent.md`](Agent.md) before proposing implementation changes. These documents define platform caveats, safety invariants, and validation expectations.
+Thanks for helping build Speed Download. The project is in early implementation; read [`PROJECT.md`](PROJECT.md), [`Agent.md`](Agent.md), and the [engine feature status](docs/engine-feature-status.md) before proposing implementation changes. These documents define platform caveats, current capabilities, safety invariants, and validation expectations. WinUI 3/Fluent UI is the required Windows client target; WPF is a temporary alpha compatibility build.
 
 ## Before changing code
 
@@ -24,7 +24,7 @@ zig test src/protocols/http/download.zig
 python3 tests/integration/http_cli.py zig-out/bin/speed-download
 ```
 
-The integration fixture uses loopback networking only. Platform support remains unvalidated outside the development host.
+The integration fixture uses loopback networking only. Native engine/IPC and current client GUI smoke results are recorded in the [support matrix](docs/support-matrix.md); those results do not validate every protocol against public servers or the WinUI 3 client.
 
 ## License
 

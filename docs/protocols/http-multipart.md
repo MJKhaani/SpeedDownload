@@ -1,5 +1,7 @@
 # HTTP multipart range allocation
 
+For the current cross-protocol implementation inventory and validation limits, see [engine feature status](../engine-feature-status.md). This document specifies the HTTP range path only.
+
 This document describes the bounded HTTP range path in the engine. Eligible
 HTTP(S) downloads now probe with `Range: bytes=0-0`, then issue up to the
 configured number of concurrent segment requests when the server proves range support and returns a

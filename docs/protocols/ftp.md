@@ -1,5 +1,7 @@
 # FTP source status
 
+For the current cross-protocol implementation inventory and validation limits, see [engine feature status](../engine-feature-status.md).
+
 The engine accepts anonymous `ftp://` and `ftps://` file URLs in the CLI and queued jobs.
 The macOS Add Download dialog can inspect these URLs through the same IPC
 probe used for HTTP. FTP is currently an initial implementation; network

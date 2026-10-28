@@ -1,6 +1,6 @@
 # Speed Download Engine IPC — Protocol v1 (Draft)
 
-- **Status:** Draft normative contract; framing, `engine.hello`, per-connection negotiation, base JSON-RPC errors, macOS/Linux Unix transport with same-UID checks, Windows named-pipe source with a user/session DACL, and persistent `jobs.add`/`jobs.list`/`jobs.get`/`jobs.control`/`jobs.set-bandwidth`/`jobs.reorder`/`jobs.delete` RPCs are implemented. The listener is reachable via `speed-download engine`; `jobs.control` starts, pauses, resumes, retries, and cancels jobs. `jobs.set-bandwidth` changes a saved per-job speed cap while a transfer is active; `jobs.reorder` changes the persisted FIFO position of inactive jobs; `jobs.delete` removes an inactive job record and optionally its partial data, without deleting a completed destination file. Linux GTK and Windows WinUI client source is present. Windows and Linux engines cross-compile for x86_64; their runtime and native client validation remain pending. A bounded filtered subscription stream sends live per-job updates; the macOS client consumes it when available. Linux/Windows native client adoption remains pending.
+- **Status:** Draft contract with a substantial implemented subset. See the [engine feature status](../engine-feature-status.md) and the dispatcher in `src/ipc/unix.zig` for the current method set. Native engine/IPC smoke passed on macOS, Linux, Windows Server 2022 x64, and Windows 11 ARM64 in [CI run 40655450597](https://github.com/MJKhaani/SpeedDownload/actions/runs/40655450597). The Windows alpha uses a WPF compatibility client; WinUI 3/Fluent UI remains the client target and has a startup blocker.
 - **Date:** 2026-10-12
 - **Owner:** Zig engine/API, with Swift/C#/C client contract tests
 - **Applies to:** Native GUIs, Zig CLI, and the narrow trusted browser native-host bridge
@@ -21,7 +21,7 @@ The engine is an **independent single-instance per-user daemon**. Client process
 
 | OS | Local stream | Example endpoint | Identity/permissions |
 |---|---|---|---|
-| Windows | Named Pipe (byte stream) | `\\.\pipe\SpeedDownload-<user-SID>-<session-id>` | Explicit user/SYSTEM DACL and `PIPE_REJECT_REMOTE_CLIENTS`; client connects to this current-user/session endpoint. Server source present; native runtime validation pending. |
+| Windows | Named Pipe (byte stream) | `\\.\pipe\SpeedDownload-<user-SID>-<session-id>` | Explicit user/SYSTEM DACL and `PIPE_REJECT_REMOTE_CLIENTS`; native engine/IPC smoke passed on Server 2022 x64 and Windows 11 ARM64 CI. |
 | macOS | `AF_UNIX / SOCK_STREAM` | private short runtime path `<private-runtime>/engine.sock` | Check runtime directory ownership/mode; UID via `getpeereid`; keep under `sun_path` limit. |
 | Linux | `AF_UNIX / SOCK_STREAM` | `$XDG_RUNTIME_DIR/speed-download/engine.sock` | `0700` directory, `0600` socket where effective, `SO_PEERCRED` UID check. |
 
@@ -51,30 +51,36 @@ IDs are opaque JSON-RPC string or integral identifiers. `engine_instance_id` cha
 - **Timestamps:** RFC 3339 / ISO-8601 UTC e.g. `"2026-10-12T08:30:00Z"`; use monotonic elapsed times internally in Zig, not wall-clock subtraction for progress.
 - **Speeds:** explicit `bytes_per_second` (normally a numeric finite nonnegative estimate; its precision semantics defined in schema) rather than ambiguous `MB/s`.
 - **Job IDs:** UUID text; other opaque IDs and idempotency keys are limited-length UTF-8 strings.
-- **Input:** validate size, URI scheme, permitted destination and file name, state transitions, fields, enum values, overflow, torrent path traversal, and authentication boundaries. No raw OS pointer, credential handle, shell command, arbitrary file write API, or privileged action is part of v1.
+- **Input:** validate size, URI scheme, permitted destination and file name, state transitions, fields, enum values, overflow, torrent path traversal, and authentication boundaries. No raw OS pointer, credential handle, or arbitrary file write API is part of v1. The explicit per-queue completion action in validated settings can contain a user command; clients must present that as an OS-affecting action for user review.
 - **Unknown fields:** clients may ignore documented additive response fields; server rejects unexpected security-sensitive input fields. Publish explicit JSON schemas under `ipc-schema/`.
 
-## 4. Initial API surface (proposal)
+## 4. API surface (implemented methods and proposals)
+
+The engine currently dispatches the methods listed in the [implementation inventory](../engine-feature-status.md#ipc-methods-and-cli). Rows below for `jobs.start`, `jobs.pause`, `jobs.resume`, `jobs.retry`, `jobs.cancel`, `schedule.set`, and `torrents.selectFiles` are **proposals**, not separate implemented RPCs. Use `jobs.control`, `settings.update`, and `torrents.prepare`/`jobs.add` for their implemented equivalents.
 
 | Method | Client→server | Response | Security / semantics |
 |---|---|---|---|
 | `engine.hello` | Version + client capabilities | Negotiated version + engine ID | First method on every connection |
 | `engine.status` | `{}` | Engine instance ID, uptime in seconds, and total/active/waiting/paused job counts | No job URLs or credentials; available through `speed-download rpc status` |
-| `engine.status` | `{}` | Engine uptime/capabilities/state | No secrets, never leaks credentials |
 | `jobs.list` | Pagination, optional exact `state`, optional text `search` | Authoritative job summaries + revision | Bounded page size; search matches names and query-redacted source URLs, case-insensitively for ASCII text; `total` and `next_offset` count filtered matches |
 | `jobs.wait` | In-memory change cursor | New cursor + changed flag, within 5 seconds | Bounded long poll; client fetches a fresh `jobs.list` snapshot when changed |
 | `jobs.get` | `job_id` | One job summary with worker progress, using the same fields as `jobs.list` | Redacted URL query/fragment; returns job-not-found for an unknown ID; available through `speed-download rpc get <job-id>` |
+| `jobs.probe` | URL | Redirected source, suggested name, size/capabilities or torrent metadata | Engine performs bounded inspection before the client asks to queue |
 | `jobs.add` | URL, optional `reference_url`/name/priority/`expected_sha256`/`bandwidth_limit_bytes_per_second`/`selected_torrent_files`, destination, `idempotency_key` | Stable `job_id` after persisted enqueue | Priority is an integer from -100 to 100 (default 0); `expected_sha256` is an optional 64-character hexadecimal digest checked before completion; bandwidth zero means no per-job cap; require an absolute existing writable destination directory; validate URL and idempotent retries |
 | `jobs.control` | `job_id`, action (`start`, `pause`, `resume`, `cancel`, `retry`), `expected_revision` | Updated job state/revision | Start fills scheduler slots; retry moves a failed job back to the queue; active pause/cancel persists `requested_control` and returns the still-downloading job; worker applies it at its next progress callback; reject stale revisions and per-host cap violations |
 | `jobs.set-bandwidth` | `job_id`, `expected_revision`, `bandwidth_limit_bytes_per_second` | Updated revision and limit | Persists a per-job cap and applies it to active workers at their next progress callback; zero removes the per-job cap while the global cap still applies |
 | `jobs.reorder` | `job_id`, zero-based `position`, `expected_revision` | Updated position and revision | Only queued, scheduled, paused, or retry-wait jobs; persist order atomically; reject out-of-range position and stale revision |
+| `jobs.move-queue` | `job_id`, destination queue ID, expected revision | Updated job and queue membership | Queue must exist; preserve partial transfer data |
+| `jobs.resume-queue` | `{}` | Eligible paused jobs resumed | Applies to the current queue of eligible jobs; engine still enforces schedules and caps |
+| `jobs.replace-source` | `job_id`, `url`, `expected_revision`, `restart: true` | Updated source/revision | Explicitly discards incompatible partial progress; does not infer identity from a matching filename |
 | `jobs.delete` | `job_id`, `expected_revision`, optional `delete_partial` | Deleted job identifier | Reject active jobs and stale revisions; preserve completed destination files; partial file cleanup is opt-in |
 | `jobs.start` / `jobs.pause` / `jobs.resume` / `jobs.retry` | `job_id`, key, optional `expected_revision` | Updated job state/revision | Valid state transitions, idempotent operations |
 | `jobs.cancel` | `job_id`, explicit partial-file policy | Final state | Never conflate pause with deleting partial data |
 | `jobs.subscribe` | Optional `max_updates_per_second` (1–10), exact `state`, text `search` | `subscription_id`, first 20 matching job summaries, filtered total, next offset, and cursor | Dedicated connection; atomic filtered first page and cursor; bounded change notices |
 | `jobs.unsubscribe` | `subscription_id` | Confirmation | Must be sent on the same connection; closing it also unsubscribes |
-| `settings.get` | Scopes | Redacted public settings | No credentials in snapshots |
-| `settings.update` | Changed fields, key and expected revision | New revision | Validate settings and authorize sensitive changes |
+| `torrents.prepare` | Torrent or magnet URL, optional trackers and pagination | Pinned info hash, file list, trackers, source metadata | Preparation only; does not queue a payload |
+| `settings.get` | `{}` | Complete versioned settings document | Credentials are never stored in settings |
+| `settings.update` | Complete settings document under `params.settings` | Persisted settings | Validated and atomically saved before acknowledgment |
 | `schedule.set` | Rule, key, expected revision | Stored rule/revision | Time-zone and DST rules apply |
 | `torrents.selectFiles` | Torrent ID/file IDs, key | Updated selection | Validate IDs/paths and prevent traversal |
 
@@ -82,17 +88,17 @@ Final argument/result JSON Schemas must be committed and unit-tested before meth
 
 ### 4.1 Persisted user settings
 
-`settings.get` returns the complete versioned engine-owned settings document. `settings.update` accepts the complete validated document under `params.settings`; updates are atomically persisted before acknowledgment. Schema version 3 adds `queues`, each with a stable ID, unique name, `max_active`, `schedule_enabled`, 168 Boolean `schedule_slots`, and `finish_action` (`none`, `quit_app`, `power_off`, or `custom_app`). The optional `custom_app` must be an absolute path. The `main` queue is required. Jobs carry `queue_id`; `jobs.move-queue` changes it using the job ID and expected revision. Settings also carry `browser_grab_extensions`, `stop_seeding_after_minutes`, and `language`. Older settings migrate their global queue schedule and concurrency limit to `main`; older jobs join `main`.
+`settings.get` returns the complete versioned engine-owned settings document. `settings.update` accepts the complete validated document under `params.settings`; updates are atomically persisted before acknowledgment. Schema version 3 adds `queues`, each with a stable ID, unique name, `max_active`, `schedule_enabled`, 168 Boolean `schedule_slots`, and `finish_action` (`none`, `quit_app`, `power_off`, or `custom_app`); current settings also have optional `user_command`. The `main` queue is required. Jobs carry `queue_id`; `jobs.move-queue` changes it using the job ID and expected revision. Settings also carry `browser_grab_extensions`, `stop_seeding_after_minutes`, and `language`. The seeding time setting is inert until seeding is implemented. Older settings migrate their global queue schedule and concurrency limit to `main`; older jobs join `main`.
 
 `bandwidth_schedule_slots` remains a 168-element Sunday-first array of `global_limit | limited`. Index is `day * 24 + hour`; each cell applies to the hour beginning at that hour in the user's current local time zone. `bandwidth_schedule_enabled` controls that grid. Bandwidth values are decimal bytes per second; zero means unlimited.
 
 `debug_log_enabled` is a Boolean settings field, default `false`. When enabled, the engine writes redacted action and outcome records to `engine-debug.log` in the same per-user state directory as `settings.json`. The log is capped at approximately 4 MiB and is not created while debug mode is disabled.
-The settings file uses schema version 2. Startup upgrades version 1 atomically
+The settings file uses schema version 3. Startup upgrades older supported versions atomically
 after validating its fields. A newer or otherwise unknown version stops engine
 startup with `UnsupportedSettingsVersion`, preserving the file for a compatible
-engine instead of silently interpreting it as version 2.
+engine instead of silently interpreting it as version 3.
 
-For HTTP probes and downloads, a custom `http://` or `https://` proxy endpoint is applied to every request, including range probes and multipart workers. Proxy URLs containing credentials are rejected by settings validation. The `proxy_authentication_required` setting defaults to false. When true with a custom proxy, the engine rejects probes and transfers before connecting because headless Keychain proxy authentication is not yet implemented. This setting records only the user's requirement; no password enters settings or IPC snapshots. Unsupported proxy schemes fail closed rather than silently making a direct request. On macOS, `system` mode reads static HTTP and HTTPS proxy servers from `scutil --proxy` and honors simple-host, exact-host, wildcard-host, and numeric IP network exceptions for each request destination, including redirect hops. The lookup is cached for 30 seconds. PAC, auto-discovery, SOCKS, and headless Keychain proxy authentication remain pending; unsupported automatic configurations fail closed.
+For HTTP probes and downloads, a custom `http://` or `https://` proxy endpoint is applied to every request, including range probes and multipart workers. Proxy URLs containing credentials are rejected by settings validation. `proxy_authentication_required` records the user's requirement without storing a password in settings or IPC snapshots. On macOS, custom HTTP proxy credentials can be read from Keychain; authenticated HTTPS CONNECT remains unsupported. Unsupported proxy schemes fail closed rather than silently making a direct request. On macOS, `system` mode reads static HTTP and HTTPS proxy servers from `scutil --proxy` and honors simple-host, exact-host, wildcard-host, and numeric IP network exceptions for each request destination, including redirect hops. The lookup is cached for 30 seconds. PAC, auto-discovery, and SOCKS transport remain pending; unsupported automatic configurations fail closed.
 
 `jobs.probe` and `jobs.add` also accept anonymous `ftp://` and explicit
 `ftps://` file URLs. FTPS requires certificate-validated `AUTH TLS` and
@@ -111,8 +117,7 @@ and an unknown size until metadata arrives. A queued magnet resolves metadata
 from explicit peers, HTTP(S) tracker compact IPv4/IPv6 or dictionary peer lists, or UDP tracker compact IPv4/IPv6 peer lists, then transfers
 one file with per-piece SHA-1 verification. `completed_bytes` counts synced,
 verified pieces; `received_bytes` may include the current unverified piece.
-The daemon rehashes all `.part` pieces before resume. Multi-file torrents,
-DHT metadata discovery and seeding are outside this feature. After verified metainfo arrives, public torrents may use a bounded read-only DHT lookup for payload peers. Custom proxy mode rejects
+The daemon rehashes all `.part` pieces before resume. Multi-file v1 transfers and bounded read-only DHT metadata/payload discovery are implemented separately from this original single-file feature name; seeding remains unavailable. After verified metainfo arrives, public torrents may use a bounded read-only DHT lookup for payload peers. Custom proxy mode rejects
 magnet transfers rather than bypassing the configured proxy.
 
 The Unix engine also advertises `torrents.local-file-v1-single-file`.

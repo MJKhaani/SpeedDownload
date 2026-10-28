@@ -4,12 +4,14 @@
 > **Product name:** Speed Download (`speed-download` CLI)
 > **Type:** Free, open-source, cross-platform desktop download manager  
 > **Core/engine language:** Zig (shared across all platforms)
-> **Native GUIs:** macOS Swift / SwiftUI; Windows C# / WPF; Linux C / GTK 4
+> **Native GUI targets:** macOS Swift / SwiftUI; Windows C# / WinUI 3 and Windows App SDK (Fluent UI); Linux C / GTK 4
 
-**Windows implementation amendment (2026-10-28):** The Windows release client uses WPF. The WinUI 3 prototype crashed before managed startup on Windows Server 2022 x64 and hosted Windows 11 ARM64; WPF passed native window, progress, and engine restart smoke tests on both CI targets. References to WinUI 3 below record the original design plan and should be read as superseded for Windows packaging. See [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the [support matrix](docs/support-matrix.md).
+**Windows implementation decision (2026-10-28):** WinUI 3 with Fluent UI is the required Windows client architecture. The current alpha ZIP ships a WPF compatibility client while the WinUI 3 startup failure (`0xC0000409` on Windows Server 2022 and hosted Windows 11 ARM64) is investigated. WPF CI success does not satisfy the WinUI 3 Phase 0/3 release gate. New Windows UI work must target WinUI 3; retain the WPF client only as an explicitly labeled temporary compatibility build. See [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the [support matrix](docs/support-matrix.md).
 > **IPC:** JSON-RPC 2.0 over framed, local OS IPC (Windows Named Pipes; macOS/Linux Unix domain sockets)
-> **Document version:** 0.3 — 2026-10-24
-> **Related:** [Agent.md](Agent.md), [IPC v1](docs/protocols/ipc-v1.md), [ADR 0001](docs/adr/0001-native-guis-local-ipc.md)
+> **Document version:** 0.4 — 2026-10-28
+> **Related:** [Agent.md](Agent.md), [engine implementation inventory](docs/engine-feature-status.md), [IPC v1](docs/protocols/ipc-v1.md), [ADR 0001](docs/adr/0001-native-guis-local-ipc.md)
+
+**Implementation snapshot:** The Zig engine already implements persisted jobs and named queues, secure local IPC, HTTP(S) probing/single-stream/multipart transfers and resume, initial anonymous FTP/FTPS, experimental BitTorrent v1 magnet and `.torrent` transfers, settings/schedules/limits, recovery, and opt-in debug logging. The exact implemented behavior and remaining protocol gaps are tracked in the [engine feature status](docs/engine-feature-status.md). The MCP server, built-in media extraction, torrent seeding, and WinUI 3 release client remain unimplemented or blocked. Requirements below describe the intended product even where implementation is pending.
 
 ## 1. Vision
 

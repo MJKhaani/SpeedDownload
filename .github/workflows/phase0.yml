@@ -9,7 +9,7 @@ on:
       verify_windows_gui:
         description: Run Windows desktop window, progress, and reconnect smoke
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -88,15 +88,16 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Build native WPF client
+      - name: Build native WinUI 3 client
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           if ($env:RUNNER_ARCH -eq 'ARM64') {
-            dotnet publish windows/SpeedDownload.Wpf/SpeedDownload.Wpf.csproj -c Release -r win-arm64 --self-contained true -o windows/SpeedDownload.Wpf/publish
+            dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-arm64 -p:Platform=ARM64 --self-contained true -o windows/SpeedDownload/publish
           } else {
-            dotnet publish windows/SpeedDownload.Wpf/SpeedDownload.Wpf.csproj -c Release -r win-x64 --self-contained true -o windows/SpeedDownload.Wpf/publish
+            dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
           }
+          if ($LASTEXITCODE -ne 0) { throw 'WinUI publish failed' }
 
       - name: Upload Windows client and engine
         if: runner.os == 'Windows'
@@ -104,13 +105,13 @@ jobs:
         with:
           name: SpeedDownload-Windows-${{ runner.arch }}
           path: |
-            windows/SpeedDownload.Wpf/publish/
+            windows/SpeedDownload/publish/
             tests/integration/ipc_engine.py
             tests/integration/windows_client.py
           if-no-files-found: error
 
       - name: Smoke Windows client connection, progress, and engine restart
-        if: runner.os == 'Windows' && inputs.verify_windows_gui == true
+        if: runner.os == 'Windows' && (github.event_name != 'workflow_dispatch' || inputs.verify_windows_gui == true)
         shell: pwsh
         run: |
           $dumpDir = Join-Path $env:RUNNER_TEMP 'speed-download-crash-dumps'
@@ -119,10 +120,10 @@ jobs:
           New-Item -Path $key -Force | Out-Null
           New-ItemProperty -Path $key -Name DumpFolder -Value $dumpDir -PropertyType ExpandString -Force | Out-Null
           New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
-          python tests/integration/windows_client.py zig-out/bin/speed-download.exe windows/SpeedDownload.Wpf/publish/SpeedDownload.exe
+          python tests/integration/windows_client.py zig-out/bin/speed-download.exe windows/SpeedDownload/publish/SpeedDownload.exe
 
       - name: Report sanitized native WinUI crash identifiers
-        if: failure() && runner.os == 'Windows' && inputs.verify_windows_gui == true
+        if: failure() && runner.os == 'Windows' && (github.event_name != 'workflow_dispatch' || inputs.verify_windows_gui == true)
         shell: pwsh
         run: |
           $dumpDir = Join-Path $env:RUNNER_TEMP 'speed-download-crash-dumps'

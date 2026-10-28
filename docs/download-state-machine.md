@@ -1,8 +1,10 @@
 # Download State Machine
 
+For the current engine capability inventory and protocol limits, see [engine feature status](engine-feature-status.md). Named queue schedules and limits are persisted separately from each job's transfer state.
+
 The core defines the state vocabulary and legal transitions. The engine
-persists queued jobs, drains them through a host-aware scheduler (four workers
-globally, two per host), and supports queue pause/resume/cancel plus explicit
+persists queued jobs, drains them through a host-aware scheduler with a configurable
+global active-task limit and a per-host safety cap, and supports queue pause/resume/cancel plus explicit
 start and retry. Active pause/cancel requests are persisted and take effect at
 the next downloader progress check; a network read that has not returned data
 can delay that check.

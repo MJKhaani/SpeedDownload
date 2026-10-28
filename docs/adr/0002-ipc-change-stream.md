@@ -23,6 +23,8 @@ One connection has at most one subscription. Closing it or sending
 
 ## Limits
 
-This first stream sends invalidation notices rather than per-job deltas. The
+The original first stream sent invalidation notices. The current engine can also
+send bounded per-job deltas; see the [IPC contract](../protocols/ipc-v1.md) and
+[engine feature status](../engine-feature-status.md). The
 cursor is local to one engine instance and clients must re-snapshot after a
 reconnect. Native runtime and slow-subscriber behavior still need validation.

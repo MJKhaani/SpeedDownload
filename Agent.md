@@ -2,7 +2,7 @@
 
 > **Applies to:** all AI coding agents, automated contributors, and human maintainers working on this repository.  
 > **Canonical product specification:** [PROJECT.md](PROJECT.md)  
-> **Status:** Architecture adopted; daemon, IPC and native GUI implementations pending — 2026-10-12
+> **Status:** Engine, IPC, and native client work in progress — 2026-10-28. See [engine feature status](docs/engine-feature-status.md).
 > **Language:** Zig engine/CLI; Swift/SwiftUI on macOS; C#/WinUI 3 on Windows; C/GTK 4 on Linux; JS/TS for browser extension runtimes.
 
 ## 1. Your role and mission
@@ -17,6 +17,7 @@ You are a senior, security-conscious Zig engineer building a cross-platform open
 
 1. **Keep one authoritative engine.** Transfers, state, persistence, scheduling, and IPC live in Zig. The CLI and three separate native GUIs are IPC clients; they do not call engine internals or write its database.
 2. **Use the platform GUI.** macOS uses Swift/SwiftUI, Windows uses C#/WinUI 3, and Linux uses C/GTK 4. Follow [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the hard IPC contract in [protocol v1](docs/protocols/ipc-v1.md).
+   The Windows WPF alpha client is a temporary compatibility build; it does not complete the WinUI 3 requirement.
 3. **Pin and verify each toolchain independently.** Record tested Zig, Xcode/Swift, .NET/Windows App SDK, GTK/GLib versions and target-specific results. Cross-compilation alone does not establish runtime or GUI support.
 4. **macOS 32-bit builds are out of scope.** On Windows/Linux, x86 includes **32-bit and 64-bit**. ARM64 is required where stated; Linux 32-bit ARM is exploratory. Target status is experimental until exercised on the actual OS/CPU and packaged.
 5. **Security, integrity, and crash recovery are essential.** Never skip TLS validation, checksum/validator checks, safe filename/path rules, or durable progress journals for apparent speed.

@@ -113,18 +113,18 @@ jobs:
           } else {
             $runtime = 'win-x64'
           }
-          dotnet publish windows/SpeedDownload.Wpf/SpeedDownload.Wpf.csproj -c Release -r $runtime --self-contained true -o windows/SpeedDownload.Wpf/publish
+          dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r $runtime -p:Platform=$env:RUNNER_ARCH --self-contained true -o windows/SpeedDownload/publish
           if ($LASTEXITCODE -ne 0) { throw 'Windows client publish failed' }
-          Copy-Item zig-out/bin/speed-download.exe windows/SpeedDownload.Wpf/publish/speed-download.exe -Force
-          Copy-Item LICENSE windows/SpeedDownload.Wpf/publish/LICENSE
-          Copy-Item windows/SpeedDownload.Wpf/README.md windows/SpeedDownload.Wpf/publish/README-Windows.md
-          if (!(Test-Path windows/SpeedDownload.Wpf/publish/SpeedDownload.exe)) { throw 'Windows client executable missing' }
-          if (!(Test-Path windows/SpeedDownload.Wpf/publish/speed-download.exe)) { throw 'Bundled engine missing' }
-          python tests/integration/windows_client.py windows/SpeedDownload.Wpf/publish/speed-download.exe windows/SpeedDownload.Wpf/publish/SpeedDownload.exe
+          Copy-Item zig-out/bin/speed-download.exe windows/SpeedDownload/publish/speed-download.exe -Force
+          Copy-Item LICENSE windows/SpeedDownload/publish/LICENSE
+          Copy-Item windows/SpeedDownload/README.md windows/SpeedDownload/publish/README-Windows.md
+          if (!(Test-Path windows/SpeedDownload/publish/SpeedDownload.exe)) { throw 'Windows client executable missing' }
+          if (!(Test-Path windows/SpeedDownload/publish/speed-download.exe)) { throw 'Bundled engine missing' }
+          python tests/integration/windows_client.py windows/SpeedDownload/publish/speed-download.exe windows/SpeedDownload/publish/SpeedDownload.exe
           if ($LASTEXITCODE -ne 0) { throw 'Windows GUI smoke failed' }
           $version = $env:GITHUB_REF_NAME
           $archive = "release/SpeedDownload-$version-${{ matrix.target }}.zip"
-          Compress-Archive -Path windows/SpeedDownload.Wpf/publish/* -DestinationPath $archive -Force
+          Compress-Archive -Path windows/SpeedDownload/publish/* -DestinationPath $archive -Force
           $check = Join-Path $env:RUNNER_TEMP 'speed-download-zip-check'
           Expand-Archive -Path $archive -DestinationPath $check -Force
           if (!(Test-Path (Join-Path $check 'SpeedDownload.exe'))) { throw 'Windows client executable missing from ZIP' }
@@ -178,7 +178,7 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Alpha packages for Speed Download. Each platform archive contains the native client and Zig engine.
 
-          macOS DMGs are ad-hoc signed but not notarized. Linux requires GTK 4 and JSON-GLib from the distribution. The Windows WPF client is self-contained and bundles the engine.
+          macOS DMGs are ad-hoc signed but not notarized. Linux requires GTK 4 and JSON-GLib from the distribution. The Windows WinUI 3 client is self-contained and bundles the engine.
           NOTES
           prerelease=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi

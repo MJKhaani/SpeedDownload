@@ -3,7 +3,9 @@
 The engine and WPF client build and pass GUI startup, visible progress, and
 engine restart/reconnect smoke tests on Windows x64 and ARM64 GitHub runners.
 The original WinUI build crashed before managed startup; WPF is the packaged
-Windows client. An interactive desktop check is still needed.
+temporary compatibility client. The required Windows release client remains
+WinUI 3 with Fluent UI. An interactive WinUI check is still needed after its
+startup and deployment path is fixed.
 
 1. Open the latest [Phase 0 workflow run](https://github.com/MJKhaani/SpeedDownload/actions/workflows/phase0.yml), then download **SpeedDownload-Windows-X64** for an x64 PC or **SpeedDownload-Windows-ARM64** for an ARM64 PC. Extract the artifact.
 2. Quit any running Speed Download client and engine. The smoke script refuses to run while another engine owns the per-user named pipe.

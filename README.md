@@ -29,8 +29,8 @@ so closing a client window does not stop them.
 | --- | --- |
 | macOS client | Runnable SwiftUI app; requires macOS 14 or later. |
 | Linux client | GTK 4 client builds and passes connection, live progress, and engine restart smoke tests on Ubuntu. |
-| Windows client | WPF x64 and ARM64 builds pass window, live progress, and engine restart smoke tests. Interactive desktop verification remains outstanding. |
-| Engine and CLI | HTTP(S), initial anonymous FTP/FTPS support, and experimental BitTorrent v1 transfers, including HTTP(S) web seeds for public single-file torrents. |
+| Windows client | WinUI 3 / Fluent UI is the target. Current alpha ZIPs ship a temporary WPF client; x64 and ARM64 CI smoke passes, but WinUI startup remains blocked. |
+| Engine and CLI | Persisted named queues and settings; HTTP(S) probing, safe resume and multipart; initial anonymous FTP/FTPS; experimental BitTorrent v1 magnets and `.torrent` transfers. See the [engine feature status](docs/engine-feature-status.md). |
 | Browser extensions | Experimental Chrome and Firefox extensions for the macOS client. |
 
 FTP/FTPS interoperability and BitTorrent transfers against live swarms still need
@@ -88,14 +88,15 @@ offers downloads whose file extensions match the list in Browser settings.
 ## Development
 
 The engine owns transfers, scheduling, and persistence. Native clients communicate
-with it through local IPC: SwiftUI on macOS, WPF on Windows, and GTK 4 on Linux.
+with it through local IPC: SwiftUI on macOS, GTK 4 on Linux, and the current WPF compatibility client on Windows. The planned Windows client is WinUI 3 with Fluent UI.
 
 - [Project plan and requirements](PROJECT.md)
+- [Engine implementation inventory and remaining gaps](docs/engine-feature-status.md)
 - [Contribution workflow](Agent.md)
 - [Architecture decision](docs/adr/0001-native-guis-local-ipc.md)
 - [IPC protocol](docs/protocols/ipc-v1.md) and [download state model](docs/download-state-machine.md)
 - [FTP/FTPS details](docs/protocols/ftp.md) and [BitTorrent details](docs/protocols/torrent.md)
-- [Windows client](windows/SpeedDownload.Wpf/README.md) and [Linux client](linux/SpeedDownload/README.md)
+- [Windows WinUI 3 client](windows/SpeedDownload/README.md), [Windows WPF compatibility client](windows/SpeedDownload.Wpf/README.md), and [Linux client](linux/SpeedDownload/README.md)
 
 GitHub Actions includes [platform checks](.github/workflows/phase0.yml) and a
 [tag build workflow](.github/workflows/tag-build.yml) for tags matching `v*`.
