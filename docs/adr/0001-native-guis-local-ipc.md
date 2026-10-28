@@ -1,6 +1,6 @@
 # ADR 0001 — Separate Native GUIs and Local Engine IPC
 
-- **Status:** Accepted architecture; Phase 0 runtime gate partly blocked
+- **Status:** Accepted architecture; Windows UI amended to WPF on 2026-10-28
 - **Date:** 2026-10-12
 - **Supersedes:** Proposed Zig + Capy UI requirement in PROJECT.md v0.1
 
@@ -13,7 +13,7 @@ The UI needs request/response operations (add, pause, preferences), live progres
 ## Decision
 
 1. **One authoritative Zig background engine** is responsible for transfers, persistence, scheduler, safety, and the public control API. A Zig CLI is an IPC client, not a bypass around the API.
-2. **Three native UI codebases:** macOS Swift + SwiftUI (AppKit as necessary), Windows C# + WinUI 3 (Windows App SDK), Linux C + GTK 4/GLib (optionally libadwaita).
+2. **Three native UI codebases:** macOS Swift + SwiftUI (AppKit as necessary), Windows C# + WPF, Linux C + GTK 4/GLib (optionally libadwaita). WinUI 3 remains as an unshipped prototype after it failed before managed startup on Windows Server 2022 and hosted Windows 11 ARM64.
 3. **One transport-independent application protocol:** JSON-RPC 2.0 over UTF-8 JSON with 4-byte unsigned little-endian length framing. Wire schema, version negotiation, and tests are shared.
 4. **Native local transports:** Windows per-user Named Pipe; macOS/Linux AF_UNIX stream socket. No TCP/HTTP/WebSocket port is exposed by default.
 5. **Per-user authentication/authorization and safe lifecycle** through pipe ACLs / peer identity checks, single-instance enforcement, secure binary paths, independent engine startup, and GUI subscription/reconnect.
@@ -56,5 +56,9 @@ A phase-0 proof of concept must show each native GUI opening a window, connectin
 - [CI run 40604962261](https://github.com/MJKhaani/SpeedDownload/actions/runs/40604962261) built the Zig engine and native GUI on macOS 15, Ubuntu, Windows Server 2022 x64, and Windows 11 ARM64; isolated IPC/transfer/restart smokes passed on each runner. They also passed oversized-frame recovery and a `jobs.subscribe` change-event check; Unix runners verified private socket permissions.
 - The GTK 4 window on Xvfb showed connected status and intermediate transfer progress, then disconnected and reconnected after an engine restart. A packaged SwiftUI app on Intel macOS 14 showed intermediate progress and reconnected after a separate engine restart; CI also passed its Swift client restart fixture.
 - Published WinUI x64 and ARM64 binaries exit with `0xC0000409` before the managed `App` constructor on three GitHub-hosted Windows runner images. The Windows GUI runtime, installation, GUI subscription consumption, accessibility, cross-user unauthorized-client cases, and macOS notarized-helper execution remain outside the verified Phase 0 evidence. Windows GUI runtime is blocked pending an [interactive Windows desktop check](../phase0-windows-check.md) or a native startup diagnosis; the build and named-pipe engine checks are not blocked.
+
+## Windows amendment on 2026-10-28
+
+The user reproduced the same `0xC0000409` WinUI startup crash on an interactive Windows Server 2022 x64 desktop. A minimal WPF window initialized successfully on the same hosted Server 2022 runner where WinUI failed. We therefore package the self-contained WPF client with the Zig engine for Windows x64 and ARM64. [CI run 40647057144](https://github.com/MJKhaani/SpeedDownload/actions/runs/40647057144) passed GUI launch, rendered intermediate progress, and engine restart/reconnect on Server 2022 x64 and Windows 11 ARM64. Interactive desktop confirmation, installation, and accessibility checks remain.
 
 **Related:** [PROJECT.md](../../PROJECT.md), [IPC v1](../protocols/ipc-v1.md).

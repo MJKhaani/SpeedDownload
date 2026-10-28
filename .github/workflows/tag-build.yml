@@ -120,6 +120,8 @@ jobs:
           Copy-Item windows/SpeedDownload.Wpf/README.md windows/SpeedDownload.Wpf/publish/README-Windows.md
           if (!(Test-Path windows/SpeedDownload.Wpf/publish/SpeedDownload.exe)) { throw 'Windows client executable missing' }
           if (!(Test-Path windows/SpeedDownload.Wpf/publish/speed-download.exe)) { throw 'Bundled engine missing' }
+          python tests/integration/windows_client.py windows/SpeedDownload.Wpf/publish/speed-download.exe windows/SpeedDownload.Wpf/publish/SpeedDownload.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows GUI smoke failed' }
           $version = $env:GITHUB_REF_NAME
           $archive = "release/SpeedDownload-$version-${{ matrix.target }}.zip"
           Compress-Archive -Path windows/SpeedDownload.Wpf/publish/* -DestinationPath $archive -Force

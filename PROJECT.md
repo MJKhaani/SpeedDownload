@@ -4,7 +4,9 @@
 > **Product name:** Speed Download (`speed-download` CLI)
 > **Type:** Free, open-source, cross-platform desktop download manager  
 > **Core/engine language:** Zig (shared across all platforms)
-> **Native GUIs:** macOS Swift / SwiftUI; Windows C# / WinUI 3; Linux C / GTK 4
+> **Native GUIs:** macOS Swift / SwiftUI; Windows C# / WPF; Linux C / GTK 4
+
+**Windows implementation amendment (2026-10-28):** The Windows release client uses WPF. The WinUI 3 prototype crashed before managed startup on Windows Server 2022 x64 and hosted Windows 11 ARM64; WPF passed native window, progress, and engine restart smoke tests on both CI targets. References to WinUI 3 below record the original design plan and should be read as superseded for Windows packaging. See [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the [support matrix](docs/support-matrix.md).
 > **IPC:** JSON-RPC 2.0 over framed, local OS IPC (Windows Named Pipes; macOS/Linux Unix domain sockets)
 > **Document version:** 0.3 — 2026-10-24
 > **Related:** [Agent.md](Agent.md), [IPC v1](docs/protocols/ipc-v1.md), [ADR 0001](docs/adr/0001-native-guis-local-ipc.md)
