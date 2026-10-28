@@ -28,7 +28,8 @@ so closing a client window does not stop them.
 | Component | Status |
 | --- | --- |
 | macOS client | Runnable SwiftUI app; requires macOS 14 or later. |
-| Windows and Linux clients | Source included; further client work and native runtime validation are deferred. |
+| Linux client | GTK 4 client builds and passes connection, live progress, and engine restart smoke tests on Ubuntu. |
+| Windows client | WinUI x64 and ARM64 builds pass; interactive window startup remains unverified. |
 | Engine and CLI | HTTP(S), initial anonymous FTP/FTPS support, and experimental BitTorrent v1 transfers, including HTTP(S) web seeds for public single-file torrents. |
 | Browser extensions | Experimental Chrome and Firefox extensions for the macOS client. |
 
@@ -97,8 +98,13 @@ with it through local IPC: SwiftUI on macOS, WinUI 3 on Windows, and GTK 4 on Li
 - [Windows client](windows/SpeedDownload/README.md) and [Linux client](linux/SpeedDownload/README.md)
 
 GitHub Actions includes [platform checks](.github/workflows/phase0.yml) and a
-[tag build workflow](.github/workflows/tag-build.yml) that builds CLI and native
-client artifacts for tags matching `v*`.
+[tag build workflow](.github/workflows/tag-build.yml) for tags matching `v*`.
+Tagged builds contain the native client and engine together: macOS DMGs for
+Apple Silicon and Intel, Windows ZIPs for x64 and ARM64, and a Linux x64
+tar.gz. The workflow attaches SHA-256 checksums to the GitHub release.
+macOS alpha builds are not notarized; Linux needs GTK 4 and JSON-GLib from the
+distribution. See the [support matrix](docs/support-matrix.md) before using an
+experimental platform build.
 
 ## License
 

@@ -95,15 +95,19 @@ jobs:
           tar -czf "release/SpeedDownload-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C dist/linux SpeedDownload
           tar -tzf "release/SpeedDownload-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" | grep -F 'SpeedDownload/bin/speed-download-gtk'
 
+      - name: Build and smoke Windows engine
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p zig-out/bin
+          zig build-exe src/main.zig -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
+          python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
+
       - name: Build and check Windows app, then create ZIP
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force zig-out/bin, release | Out-Null
-          zig build-exe src/main.zig -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
-          if ($LASTEXITCODE -ne 0) { throw 'Zig engine build failed' }
-          python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
-          if ($LASTEXITCODE -ne 0) { throw 'Engine IPC smoke failed' }
+          New-Item -ItemType Directory -Force release | Out-Null
           if ($env:RUNNER_ARCH -eq 'ARM64') {
             $runtime = 'win-arm64'; $platform = 'ARM64'
           } else {
