@@ -13,6 +13,8 @@
 
 **Implementation snapshot:** The Zig engine already implements persisted jobs and named queues, secure local IPC, HTTP(S) probing/single-stream/multipart transfers and resume, initial anonymous FTP/FTPS, experimental BitTorrent v1 magnet and `.torrent` transfers, settings/schedules/limits, recovery, and opt-in debug logging. The exact implemented behavior and remaining protocol gaps are tracked in the [engine feature status](docs/engine-feature-status.md). The MCP server, built-in media extraction, torrent seeding, and WinUI 3 release client remain unimplemented or blocked. Requirements below describe the intended product even where implementation is pending.
 
+**Phase 0 gate (2026-10-28):** Engine/IPC smoke now checks single-engine ownership, multiple simultaneous clients, handshake and version rejection, secure endpoints, progress, reconnect, and restart recovery. Local macOS client reconnect and rebuilt app-bundle checks pass. The required WinUI 3 GUI still exits before startup with `0xC0000409` on both Windows CI architectures. The milestone remains open while Windows and Linux client changes are deferred; see the [Phase 0 evidence](docs/support-matrix.md#phase-0-exit-work).
+
 ## 1. Vision
 
 Build a fast, resilient, privacy-respecting download manager that feels native on macOS, Windows, and Linux while keeping its download engine usable independently of the GUI. The application supports HTTP, HTTPS, FTP, and BitTorrent; intelligently downloads different portions of large files in parallel when supported; resumes safely after failures; and integrates with browsers and operating-system services without intrusive tracking.

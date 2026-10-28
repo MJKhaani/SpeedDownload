@@ -99,14 +99,16 @@ No target is currently supported or release-certified. For each target, record e
 
 ## Phase 0 exit work
 
-Local macOS x86_64 evidence on 2026-10-27: `python3 tests/integration/ipc_engine.py zig-out/bin/speed-download` passed the isolated IPC/transfer/restart fixture, and `SPEED_DOWNLOAD_SWIFT_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk bash tests/integration/macos_client.sh` passed the standalone Swift client restart/reconnection fixture. Neither command launches the packaged GUI or substitutes for native CI on the other targets.
+Local macOS x86_64 evidence on 2026-10-28: the expanded `tests/integration/ipc_engine.py` passed against the rebuilt app's bundled engine, covering handshake/version rejection, four simultaneous clients, second-engine rejection, malformed-frame recovery, subscription, live progress, transfer and restart persistence. `tests/integration/macos_client.sh` passed connection, engine restart/reconnection and one responsive shared connection loop. The rebuilt Intel app bundle passed `plutil -lint`, executable/helper presence checks and ad hoc `codesign --verify --deep --strict`. These local checks do not prove an interactive packaged-window run on another Mac.
 
 - [x] Pin Zig 0.17.0; implement OS-specific engine IPC endpoints and secure per-user permissions.
 - [x] Implement IPC v1 framing, handshake, `jobs.list`, job controls, and polling-based reconnect; publish a shared request schema.
+- [x] Verify the engine rejects a second instance and invalid/unsupported handshakes while serving multiple simultaneous clients; the expanded fixture passed locally and on the Ubuntu CI engine step. Windows x64 and ARM64 engine steps passed the same fixture before their GUI smoke failures in [run 40720164244](https://github.com/MJKhaani/SpeedDownload/actions/runs/40720164244).
 - [x] Add native platform CI jobs for the engine, matching GUI build, and local transfer/progress/reconnect/restart smoke.
 - [x] Get native build and engine/IPC jobs green on the earlier compatibility revision: [run 40647057144](https://github.com/MJKhaani/SpeedDownload/actions/runs/40647057144) passed macOS 15, Ubuntu, Windows Server 2022 x64, and Windows 11 ARM64. The IPC fixture checks malformed-frame recovery, private Unix socket permissions, and subscription events. GTK, macOS, and the replacement WPF Windows client passed GUI connection, intermediate progress, and engine restart/reconnect smoke tests. The workflow now builds and smoke-tests the WinUI 3 client on Windows pushes; its result and [interactive desktop verification](phase0-windows-check.md) are still needed.
 - [x] Launch the current packaged GUI on each CI OS against its runner's engine and confirm connected status, visible progress, disconnect/reconnect, and engine restart. The Windows result applies to the temporary WPF compatibility client only.
 - [ ] Repeat native Windows GUI startup, progress, and reconnect tests with the required WinUI 3/Fluent UI client after resolving its startup failure.
+- [ ] Record a passing WinUI 3 GUI smoke on Windows x64 and ARM64. The current run fails only at that GUI step; user-directed work leaves Windows and Linux client code unchanged for now. Do not label Phase 0 complete until this gate passes.
 - [x] Mark tested GUI/OS targets experimental and record runner evidence; untested architectures and interactive/HIG release gates remain open.
 - Record results in [`adr/0001-native-guis-local-ipc.md`](adr/0001-native-guis-local-ipc.md) and keep target statuses evidence-based.
 
