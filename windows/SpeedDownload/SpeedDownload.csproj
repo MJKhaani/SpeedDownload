@@ -16,7 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <Content Include="..\..\Resources\SpeedDownload.ico">
       <Link>SpeedDownload.ico</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

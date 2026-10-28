@@ -121,11 +121,16 @@ jobs:
           New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
           python tests/integration/windows_client.py zig-out/bin/speed-download.exe windows/SpeedDownload/publish/SpeedDownload.exe
 
-      - name: Report native WinUI crash dump
+      - name: Report sanitized native WinUI crash identifiers
         if: failure() && runner.os == 'Windows' && inputs.verify_windows_gui == true
         shell: pwsh
         run: |
           $dumpDir = Join-Path $env:RUNNER_TEMP 'speed-download-crash-dumps'
+          Start-Sleep -Seconds 3
+          Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=(Get-Date).AddMinutes(-5) } -MaxEvents 100 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'SpeedDownload.exe' } |
+            Select-Object -First 3 |
+            ForEach-Object { $_.Message -split "`r?`n" | Where-Object { $_ -match '^(Faulting application name|Faulting module name|Exception code|Fault offset):' } }
           $debugger = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers' -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1 -ExpandProperty FullName
           if ($debugger) {
             Get-ChildItem $dumpDir -Filter '*.dmp' | ForEach-Object {
