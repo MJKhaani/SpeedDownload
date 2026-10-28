@@ -12,7 +12,7 @@ startup and deployment path is fixed.
 3. In PowerShell, from the extracted artifact's top directory, run:
 
    ```powershell
-   python tests\integration\windows_client.py windows\SpeedDownload.Wpf\publish\speed-download.exe windows\SpeedDownload.Wpf\publish\SpeedDownload.exe
+   python tests\integration\windows_client.py windows\SpeedDownload\publish\speed-download.exe windows\SpeedDownload\publish\SpeedDownload.exe
    ```
 
 The script launches the published window and an isolated engine, serves a slow
@@ -20,7 +20,7 @@ local test download, checks that the window reports intermediate progress,
 terminates the engine, and checks that the window reconnects to a new engine
 instance. It removes its temporary state and stops its test processes.
 
-If Python is unavailable, launch `windows\SpeedDownload.Wpf\publish\SpeedDownload.exe`
+If Python is unavailable, launch `windows\SpeedDownload\publish\SpeedDownload.exe`
 from the extracted artifact and check that a window appears with **Engine
 connected**. That manual check covers startup and connection only; the script
 is needed to verify progress and restart behavior.

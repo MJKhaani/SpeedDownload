@@ -262,9 +262,9 @@ public sealed partial class MainWindow : Window
 
     private void OnSettingLostFocus(object sender, RoutedEventArgs e)
     {
-        if (sender == DownloadFolderBox) _ = SaveSettingsAsync(settings => settings["default_download_folder"] = DownloadFolderBox.Text.Trim());
-        else if (sender == BrowserExtensionsBox) _ = SaveSettingsAsync(settings => settings["browser_grab_extensions"] = BrowserExtensionsBox.Text.Trim());
-        else if (sender == ProxyUrlBox) _ = SaveSettingsAsync(settings =>
+        if (ReferenceEquals(sender, DownloadFolderBox)) _ = SaveSettingsAsync(settings => settings["default_download_folder"] = DownloadFolderBox.Text.Trim());
+        else if (ReferenceEquals(sender, BrowserExtensionsBox)) _ = SaveSettingsAsync(settings => settings["browser_grab_extensions"] = BrowserExtensionsBox.Text.Trim());
+        else if (ReferenceEquals(sender, ProxyUrlBox)) _ = SaveSettingsAsync(settings =>
         {
             settings["proxy_url"] = string.IsNullOrWhiteSpace(ProxyUrlBox.Text) ? null : ProxyUrlBox.Text.Trim();
             settings["proxy_mode"] = (ProxyModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "system";
