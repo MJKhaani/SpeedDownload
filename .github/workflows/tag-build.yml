@@ -1,30 +1,32 @@
-name: Build tagged revision
+name: Package Speed Download
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
+  package:
+    name: Package ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - os: macos-15
+            target: macos-arm64
+          - os: macos-15-intel
+            target: macos-x86_64
+          - os: windows-2022
+            target: windows-x64
+          - os: windows-11-arm
+            target: windows-arm64
           - os: ubuntu-latest
-            binary: zig-out/bin/speed-download
-            artifact: speed-download-linux-x86_64
-          - os: windows-latest
-            binary: zig-out/bin/speed-download.exe
-            artifact: speed-download-windows-x86_64
-          - os: macos-latest
-            binary: zig-out/bin/speed-download
-            artifact: speed-download-macos-arm64
+            target: linux-x86_64
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -34,41 +36,10 @@ jobs:
         with:
           version: 0.17.0
 
-      - name: Build CLI and validate core
-        shell: bash
-        run: |
-          mkdir -p zig-out/bin
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            zig build-exe src/main.zig -femit-bin=${{ matrix.binary }}
-          else
-            zig build-exe src/main.zig -lc -femit-bin=${{ matrix.binary }}
-          fi
-          zig test src/core/root.zig
-          zig test src/core/queue.zig
-          zig test src/protocols/http/download.zig
-          python3 tests/integration/http_cli.py ${{ matrix.binary }}
-
-      - name: Build native macOS GUI
-        if: runner.os == 'macOS'
-        run: bash macos/SpeedDownload/package-app.sh "dist/Speed Download.app"
-
-      - name: Build native Linux GTK GUI
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev
-          cmake -S linux/SpeedDownload -B linux/SpeedDownload/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build linux/SpeedDownload/build --parallel
-          cmake --install linux/SpeedDownload/build --prefix "$GITHUB_WORKSPACE/linux/SpeedDownload/dist"
-
-      - name: Retain native Linux GUI build
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          name: speed-download-linux-gtk-${{ github.ref_name }}
-          path: linux/SpeedDownload/dist/bin
-          if-no-files-found: error
+          python-version: '3.x'
 
       - name: Set up .NET for WinUI
         if: runner.os == 'Windows'
@@ -76,30 +47,138 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Build native Windows WinUI GUI
+      - name: Install GTK build dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake pkg-config libgtk-4-dev libjson-glib-dev xvfb dbus-x11
+
+      - name: Build and check macOS app, then create DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SPEED_DOWNLOAD_SKIP_REGISTER=1 bash macos/SpeedDownload/package-app.sh 'dist/Speed Download.app'
+          test -x 'dist/Speed Download.app/Contents/MacOS/SpeedDownload'
+          test -x 'dist/Speed Download.app/Contents/Helpers/speed-download'
+          test -x 'dist/Speed Download.app/Contents/Helpers/speed-download-browser-host'
+          python tests/integration/ipc_engine.py 'dist/Speed Download.app/Contents/Helpers/speed-download'
+          bash tests/integration/macos_client.sh 'dist/Speed Download.app/Contents/Helpers/speed-download'
+          codesign --force --deep --sign - 'dist/Speed Download.app'
+          codesign --verify --deep --strict 'dist/Speed Download.app'
+          mkdir -p release dist/dmg-stage
+          cp -R 'dist/Speed Download.app' dist/dmg-stage/
+          cp LICENSE dist/dmg-stage/
+          ln -s /Applications dist/dmg-stage/Applications
+          hdiutil create -volname 'Speed Download' -srcfolder dist/dmg-stage -ov -format UDZO "release/SpeedDownload-${GITHUB_REF_NAME}-${{ matrix.target }}.dmg"
+          hdiutil verify "release/SpeedDownload-${GITHUB_REF_NAME}-${{ matrix.target }}.dmg"
+
+      - name: Build and check Linux app, then create tar.gz
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zig-out/bin release
+          zig build-exe src/main.zig -O ReleaseSafe -lc -femit-bin=zig-out/bin/speed-download
+          python tests/integration/ipc_engine.py zig-out/bin/speed-download
+          cmake -S linux/SpeedDownload -B linux/SpeedDownload/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build linux/SpeedDownload/build --parallel
+          xvfb-run -a dbus-run-session -- python tests/integration/linux_client.py zig-out/bin/speed-download linux/SpeedDownload/build/speed-download-gtk
+          stage="$PWD/dist/linux/SpeedDownload"
+          cmake --install linux/SpeedDownload/build --prefix "$stage"
+          install -m 755 zig-out/bin/speed-download "$stage/bin/speed-download"
+          cp LICENSE "$stage/LICENSE"
+          cp linux/SpeedDownload/README.md "$stage/INSTALL.md"
+          test -x "$stage/bin/speed-download"
+          test -x "$stage/bin/speed-download-gtk"
+          tar -czf "release/SpeedDownload-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C dist/linux SpeedDownload
+          tar -tzf "release/SpeedDownload-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" | grep -F 'SpeedDownload/bin/speed-download-gtk'
+
+      - name: Build and check Windows app, then create ZIP
         if: runner.os == 'Windows'
         shell: pwsh
-        run: dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
+        run: |
+          New-Item -ItemType Directory -Force zig-out/bin, release | Out-Null
+          zig build-exe src/main.zig -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Zig engine build failed' }
+          python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Engine IPC smoke failed' }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $runtime = 'win-arm64'; $platform = 'ARM64'
+          } else {
+            $runtime = 'win-x64'; $platform = 'x64'
+          }
+          dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r $runtime -p:Platform=$platform --self-contained true -o windows/SpeedDownload/publish
+          if ($LASTEXITCODE -ne 0) { throw 'WinUI publish failed' }
+          Copy-Item zig-out/bin/speed-download.exe windows/SpeedDownload/publish/speed-download.exe -Force
+          Copy-Item LICENSE windows/SpeedDownload/publish/LICENSE
+          Copy-Item windows/SpeedDownload/README.md windows/SpeedDownload/publish/README-Windows.md
+          if (!(Test-Path windows/SpeedDownload/publish/SpeedDownload.exe)) { throw 'WinUI executable missing' }
+          if (!(Test-Path windows/SpeedDownload/publish/speed-download.exe)) { throw 'Bundled engine missing' }
+          $version = $env:GITHUB_REF_NAME
+          $archive = "release/SpeedDownload-$version-${{ matrix.target }}.zip"
+          Compress-Archive -Path windows/SpeedDownload/publish/* -DestinationPath $archive -Force
+          $check = Join-Path $env:RUNNER_TEMP 'speed-download-zip-check'
+          Expand-Archive -Path $archive -DestinationPath $check -Force
+          if (!(Test-Path (Join-Path $check 'SpeedDownload.exe'))) { throw 'WinUI executable missing from ZIP' }
+          if (!(Test-Path (Join-Path $check 'speed-download.exe'))) { throw 'Engine missing from ZIP' }
 
-      - name: Retain native Windows GUI build
-        if: runner.os == 'Windows'
+      - name: Upload platform package
         uses: actions/upload-artifact@v4
         with:
-          name: speed-download-windows-winui-${{ github.ref_name }}
-          path: windows/SpeedDownload/publish
+          name: package-${{ matrix.target }}
+          path: release/SpeedDownload-*
           if-no-files-found: error
 
-      - name: Retain native macOS GUI build
-        if: runner.os == 'macOS'
+  collect:
+    name: Verify release packages
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: release
+          merge-multiple: true
+
+      - name: Check formats and create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find release -maxdepth 1 -name '*.dmg' | wc -l)" -eq 2
+          test "$(find release -maxdepth 1 -name '*.zip' | wc -l)" -eq 2
+          test "$(find release -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
+          (cd release && sha256sum *.dmg *.zip *.tar.gz > SHA256SUMS.txt)
+          cat release/SHA256SUMS.txt
+
+      - name: Upload complete package set
         uses: actions/upload-artifact@v4
         with:
-          name: speed-download-macos-gui-${{ github.ref_name }}
-          path: dist/Speed Download.app
+          name: SpeedDownload-${{ github.ref_name }}-packages
+          path: release/
           if-no-files-found: error
 
-      - name: Retain native CLI build
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}-${{ github.ref_name }}
-          path: ${{ matrix.binary }}
-          if-no-files-found: error
+      - name: Publish GitHub release for tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          Alpha packages for Speed Download. Each platform archive contains the native client and Zig engine.
+
+          macOS DMGs are ad-hoc signed but not notarized. Linux requires GTK 4 and JSON-GLib from the distribution. Windows WinUI builds are experimental: hosted runner window startup has not passed, although builds and engine IPC checks pass.
+          NOTES
+          prerelease=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --verify-tag "${prerelease[@]}" --title "Speed Download $GITHUB_REF_NAME" --notes-file release-notes.md
+          fi
+    permissions:
+      contents: write
