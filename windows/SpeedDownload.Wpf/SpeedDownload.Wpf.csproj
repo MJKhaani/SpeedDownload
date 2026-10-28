@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SpeedDownload</AssemblyName>
+    <RootNamespace>SpeedDownload</RootNamespace>
+    <ApplicationIcon>..\..\Resources\SpeedDownload.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\SpeedDownload\EngineClient.cs" Link="EngineClient.cs" />
+    <Content Include="..\..\Resources\SpeedDownload.ico">
+      <Link>SpeedDownload.ico</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\..\zig-out\bin\speed-download.exe')">
+    <Content Include="..\..\zig-out\bin\speed-download.exe">
+      <Link>speed-download.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
