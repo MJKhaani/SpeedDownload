@@ -26,10 +26,13 @@ The Zig engine includes a Windows named-pipe listener at
 DACL and remote-client rejection. The engine cross-compiles from macOS for
 x86_64 Windows. The WinUI project builds but currently exits before managed
 startup on Windows Server 2022 and hosted Windows 11 ARM64 with `0xC0000409`.
-The alpha ZIP therefore ships the separately documented [WPF compatibility
-client](../SpeedDownload.Wpf/README.md). WinUI 3 remains the required Windows
-client target; its runtime, packaging, and Fluent UI need to pass the same GUI
-and IPC checks before it replaces WPF.
+Earlier alpha ZIPs shipped the separately documented [WPF compatibility
+client](../SpeedDownload.Wpf/README.md). The WinUI alpha ZIP is an experimental
+test build: it currently exits before managed startup with `0xC0000409` on
+GitHub-hosted Windows Server 2022 and Windows 11 ARM64 runners. Extract the
+entire ZIP and report the OS version, process exit code, and native crash dump
+if it also fails on your desktop. The WinUI runtime, packaging, and Fluent UI
+must pass the same GUI and IPC checks before it replaces WPF as a verified client.
 
 The WinUI shell changes above have only been checked for XAML well-formedness
 on macOS. A Windows .NET build, startup check, named-pipe smoke test, keyboard
