@@ -25,7 +25,15 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         App.TracePhase0Startup("Main window constructor");
-        InitializeComponent();
+        try
+        {
+            InitializeComponent();
+        }
+        catch (Exception error)
+        {
+            App.TracePhase0Startup($"Main window XAML error: {error.GetType().FullName}: {error.Message}");
+            throw;
+        }
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         App.TracePhase0Startup("Main window XAML initialized");
