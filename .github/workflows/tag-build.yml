@@ -124,6 +124,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             if ($env:GITHUB_REF_NAME -match '-alpha(\.|$)') {
               Write-Warning 'WinUI GUI launch smoke failed. Publishing this alpha for interactive diagnosis; it is not a verified Windows client.'
+              $global:LASTEXITCODE = 0
             } else {
               throw 'Windows GUI smoke failed'
             }
