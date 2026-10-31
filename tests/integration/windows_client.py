@@ -138,6 +138,7 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
         except TimeoutError:
             print("Windows report:", report.read_text() if report.exists() else "<missing>", flush=True)
             print("Windows exit:", client.poll(), flush=True)
+            print("Windows startup trace:", startup_trace.read_text() if startup_trace.exists() else "<missing>", flush=True)
             print("Windows output:", client_log.read_text(errors="replace"), flush=True)
             raise
         first_instance, _ = rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})
