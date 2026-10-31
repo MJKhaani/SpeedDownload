@@ -98,6 +98,7 @@ jobs:
             dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
           }
           if ($LASTEXITCODE -ne 0) { throw 'WinUI publish failed' }
+          if (!(Test-Path windows/SpeedDownload/publish/SpeedDownload.pri)) { throw 'WinUI app resource index missing from publish output' }
 
       - name: Upload Windows client and engine
         if: runner.os == 'Windows'

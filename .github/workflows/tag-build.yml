@@ -115,6 +115,7 @@ jobs:
           }
           dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r $runtime -p:Platform=$env:RUNNER_ARCH --self-contained true -o windows/SpeedDownload/publish
           if ($LASTEXITCODE -ne 0) { throw 'Windows client publish failed' }
+          if (!(Test-Path windows/SpeedDownload/publish/SpeedDownload.pri)) { throw 'WinUI app resource index missing from publish output' }
           Copy-Item zig-out/bin/speed-download.exe windows/SpeedDownload/publish/speed-download.exe -Force
           Copy-Item LICENSE windows/SpeedDownload/publish/LICENSE
           Copy-Item windows/SpeedDownload/README.md windows/SpeedDownload/publish/README-Windows.md
