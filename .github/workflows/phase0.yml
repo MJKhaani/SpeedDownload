@@ -57,6 +57,18 @@ jobs:
             python tests/integration/ipc_engine.py zig-out/bin/speed-download
           fi
 
+      - name: Smoke release-mode Windows HTTPS CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          zig build-exe src/main.zig -O ReleaseSafe -femit-bin=zig-out/bin/speed-download-release.exe
+          if ($LASTEXITCODE -ne 0) { throw 'ReleaseSafe engine build failed' }
+          $destination = Join-Path $env:RUNNER_TEMP 'speed-download-https-smoke.html'
+          & zig-out/bin/speed-download-release.exe 'https://example.com/' $destination
+          if ($LASTEXITCODE -ne 0) { throw "HTTPS CLI exited with $LASTEXITCODE" }
+          if (!(Test-Path $destination) -or (Get-Item $destination).Length -eq 0) { throw 'HTTPS CLI wrote no data' }
+
       - name: Build native SwiftUI client
         if: runner.os == 'macOS'
         run: SPEED_DOWNLOAD_SKIP_REGISTER=1 bash macos/SpeedDownload/package-app.sh "dist/Speed Download.app"
