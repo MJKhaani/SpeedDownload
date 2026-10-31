@@ -186,7 +186,7 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Alpha packages for Speed Download. Each platform archive contains the native client and Zig engine.
 
-          macOS DMGs are ad-hoc signed but not notarized. Linux requires GTK 4 and JSON-GLib from the distribution. The Windows WinUI 3 client is self-contained and bundles the engine. On this alpha, WinUI launch smoke still fails with 0xC0000409 before managed App startup on GitHub-hosted Windows runners; Windows ZIPs are for interactive diagnosis, not a verified working client.
+          macOS DMGs are ad-hoc signed but not notarized. Linux requires GTK 4 and JSON-GLib from the distribution. The Windows WinUI 3 client is self-contained and bundles the engine. Windows Server 2022 CI tests GUI startup, engine connection, live progress, and reconnection; interactive desktop validation remains pending.
           NOTES
           prerelease=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi

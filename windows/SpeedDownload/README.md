@@ -26,15 +26,14 @@ The Zig engine includes a Windows named-pipe listener at
 DACL and remote-client rejection. Earlier alpha ZIPs shipped the separately
 documented [WPF compatibility client](../SpeedDownload.Wpf/README.md).
 
-The WinUI alpha still fails during `MainWindow.xaml` initialization on Windows
-Server 2022 and hosted Windows 11 ARM64. The current managed exception is
-`XamlParseException` (`0x802B000A`), followed by a WinUI stowed-exception
-fail-fast (`0xC000027B`). The client records the HRESULT, managed stack, and
-inner exception text in
+The WinUI client passed the Windows Server 2022 GUI and engine smoke test after
+packaging the app PRI resource and replacing an unsupported XAML symbol. The
+client records startup exceptions, HRESULTs, managed stacks, and inner exception
+text in
 `%LOCALAPPDATA%\SpeedDownload\logs\client-crash.log`; the previous log rotates
 to `client-crash.previous.log` after 1 MiB. The log may contain local paths, so
-review it before sharing. A native dump is still needed when XAML does not
-expose the underlying parse location.
+review it before sharing. An interactive desktop check is still needed for the
+Windows release client.
 
-The WinUI client must pass the Windows GUI and IPC startup smoke before it can
-replace WPF as a verified client.
+The CI GUI smoke covers startup, engine connection, live progress, and engine
+restart. The WPF compatibility client remains available in earlier alpha ZIPs.

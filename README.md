@@ -29,7 +29,7 @@ so closing a client window does not stop them.
 | --- | --- |
 | macOS client | Runnable SwiftUI app; requires macOS 14 or later. |
 | Linux client | GTK 4 client builds and passes connection, live progress, and engine restart smoke tests on Ubuntu. |
-| Windows client | WinUI 3 / Fluent UI is the target. New WinUI alpha ZIPs are diagnostic builds: the GUI currently crashes before startup in Windows CI. Earlier WPF alpha ZIPs passed GUI smoke. |
+| Windows client | WinUI 3 / Fluent UI alpha. The GUI launches and connects to the bundled engine in the Windows Server 2022 CI smoke test; interactive desktop validation remains pending. |
 | Engine and CLI | Persisted named queues and settings; HTTP(S) probing, safe resume and multipart; initial anonymous FTP/FTPS; experimental BitTorrent v1 magnets and `.torrent` transfers. See the [engine feature status](docs/engine-feature-status.md). |
 | Browser extensions | Experimental Chrome and Firefox extensions for the macOS client. |
 
