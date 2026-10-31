@@ -8,7 +8,7 @@
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <TitleBar x:Name="AppTitleBar" Title="Speed Download" />
-    <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto" OpenPaneLength="250" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
+    <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="LeftMinimal" IsPaneOpen="False" OpenPaneLength="230" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
         <NavigationView.MenuItems>
             <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" Icon="Download" IsSelected="True" />
             <NavigationViewItem x:Name="ProgressNavigationItem" Content="In progress" Tag="In progress" Icon="Play" />
@@ -16,6 +16,7 @@
             <NavigationViewItem x:Name="FailedNavigationItem" Content="Failed" Tag="Failed" Icon="Important" />
             <NavigationViewItemSeparator />
             <NavigationViewItemHeader Content="Queues" />
+            <NavigationViewItem Content="New queue" Tag="new-queue" Icon="Add" />
         </NavigationView.MenuItems>
         <Grid>
         <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12">
@@ -32,7 +33,7 @@
                 <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" />
             </StackPanel>
             <Grid Grid.Row="1" ColumnSpacing="14" SizeChanged="OnWorkspaceSizeChanged">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="DetailsColumn" Width="340"/></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="DetailsColumn" Width="0"/></Grid.ColumnDefinitions>
                 <ListView x:Name="JobsList" SelectionMode="Single" SelectionChanged="OnJobSelectionChanged" IsItemClickEnabled="False">
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="local:DownloadJob">
@@ -49,16 +50,17 @@
                                 </StackPanel>
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                                     <Button Content="{x:Bind PrimaryActionText}" Tag="{x:Bind JobId}" Visibility="{x:Bind PrimaryActionVisibility}" Click="OnJobAction" />
+                                    <Button Content="ⓘ" Tag="{x:Bind JobId}" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
                                     <Button Content="⋯" Tag="{x:Bind JobId}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
-                <Border x:Name="DetailsPane" Grid.Column="1" Padding="18" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                <Border x:Name="DetailsPane" Grid.Column="1" Visibility="Collapsed" Padding="18" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="14">
-                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" Style="{ThemeResource TitleTextBlockStyle}" /><Button x:Name="CloseDetailsButton" Content="Back to downloads" Click="OnCloseDetails" Visibility="Collapsed" /></StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" Style="{ThemeResource TitleTextBlockStyle}" /><Button x:Name="CloseDetailsButton" Content="Close" Click="OnCloseDetails" /></StackPanel>
                             <TextBlock x:Name="DetailTitle" Text="Select a transfer" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
                             <TextBlock Text="STATUS" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             <TextBlock x:Name="DetailState" Text="—" />
@@ -72,14 +74,15 @@
                     </ScrollViewer>
                 </Border>
             </Grid>
-            <Grid Grid.Row="2" ColumnSpacing="8">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <Grid Grid.Row="2" ColumnSpacing="12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock x:Name="ConnectionStatus" Text="Starting local engine…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                <TextBlock x:Name="QueueSummary" Grid.Column="1" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                <ComboBox x:Name="SpeedLimitBox" Grid.Column="1" Header="Speed limit" MinWidth="125" SelectionChanged="OnSpeedLimitChanged"><ComboBoxItem Content="Unlimited" Tag="0"/><ComboBoxItem Content="1 MB/s" Tag="1"/><ComboBoxItem Content="2 MB/s" Tag="2"/><ComboBoxItem Content="5 MB/s" Tag="5"/><ComboBoxItem Content="10 MB/s" Tag="10"/><ComboBoxItem Content="20 MB/s" Tag="20"/><ComboBoxItem Content="50 MB/s" Tag="50"/><ComboBoxItem Content="100 MB/s" Tag="100"/></ComboBox>
+                <TextBlock x:Name="QueueSummary" Grid.Column="2" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
             </Grid>
         </Grid>
         <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-            <StackPanel Padding="24" Spacing="14" MaxWidth="1050" HorizontalAlignment="Stretch">
+            <StackPanel Padding="16" Spacing="14" HorizontalAlignment="Stretch">
                 <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}" />
                 <InfoBar x:Name="SettingsMessage" IsOpen="False" Severity="Error" />
                 <TextBlock Text="General" Style="{ThemeResource SubtitleTextBlockStyle}" />

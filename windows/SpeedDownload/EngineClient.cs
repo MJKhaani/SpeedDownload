@@ -120,7 +120,15 @@ internal sealed class EngineClient
         await server.WaitForExitAsync(cancellationToken);
     }
 
-    public async Task AddJobAsync(string url, string? name, string destination, int priority, CancellationToken cancellationToken = default)
+    public async Task<JsonObject> ProbeAsync(string url, CancellationToken cancellationToken = default)
+    {
+        using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new { url }));
+        using var result = await CallAsync("jobs.probe", parameters.RootElement, cancellationToken);
+        return JsonNode.Parse(result.RootElement.GetRawText())?.AsObject()
+            ?? throw new InvalidDataException("The engine returned an invalid probe result.");
+    }
+
+    public async Task AddJobAsync(string url, string? name, string destination, int priority, string queueId = "main", CancellationToken cancellationToken = default)
     {
         using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
@@ -128,6 +136,7 @@ internal sealed class EngineClient
             name = string.IsNullOrWhiteSpace(name) ? null : name,
             destination,
             priority,
+            queue_id = queueId,
             idempotency_key = Guid.NewGuid().ToString(),
         }));
         using var result = await CallAsync("jobs.add", parameters.RootElement, cancellationToken);

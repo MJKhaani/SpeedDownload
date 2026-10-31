@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System.Text.Json.Nodes;
 using ContextMenuStrip = System.Windows.Forms.ContextMenuStrip;
 using Icon = System.Drawing.Icon;
@@ -20,6 +21,8 @@ public sealed partial class MainWindow : Window
     private readonly SemaphoreSlim _settingsGate = new(1, 1);
     private bool _loadingSettings;
     private bool _showNarrowDetails;
+    private bool _loadingSpeedLimit;
+    private string _lastQueueId = "main";
     private readonly NotifyIcon _trayIcon;
 
     public MainWindow()
@@ -36,6 +39,7 @@ public sealed partial class MainWindow : Window
         }
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(920, 620));
         App.TracePhase0Startup("Main window XAML initialized");
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Open Speed Download", null, (_, _) => Activate());
@@ -111,6 +115,7 @@ public sealed partial class MainWindow : Window
         }
         if (args.InvokedItemContainer is NavigationViewItem item && item.Tag is string tag)
         {
+            if (tag == "new-queue") { _ = CreateQueueAsync(); return; }
             _category = tag;
             SectionTitle.Text = tag.StartsWith("queue:", StringComparison.Ordinal) ? item.Content?.ToString() ?? "Queue" : tag;
             SettingsView.Visibility = Visibility.Collapsed;
@@ -185,6 +190,10 @@ public sealed partial class MainWindow : Window
             ConcurrentBox.Value = ReadNumber("max_concurrent_tasks");
             ConnectionsBox.Value = ReadNumber("default_connections_per_task");
             BandwidthBox.Value = ReadNumber("bandwidth_limit_bytes_per_second") / 1_000_000d;
+            _loadingSpeedLimit = true;
+            var selectedLimit = ReadNumber("bandwidth_limit_bytes_per_second") / 1_000_000d;
+            SpeedLimitBox.SelectedItem = SpeedLimitBox.Items.OfType<ComboBoxItem>().FirstOrDefault(item => double.TryParse(item.Tag?.ToString(), out var value) && value == selectedLimit);
+            _loadingSpeedLimit = false;
             BrowserExtensionsBox.Text = ReadString("browser_grab_extensions");
             ProxyUrlBox.Text = ReadString("proxy_url");
             SelectChoice(MultipartModeBox, ReadString("multipart_mode"));
@@ -208,7 +217,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateQueues()
     {
-        while (AppNavigation.MenuItems.Count > 6) AppNavigation.MenuItems.RemoveAt(6);
+        while (AppNavigation.MenuItems.Count > 7) AppNavigation.MenuItems.RemoveAt(7);
         if (_settings?["queues"] is not JsonArray queues) return;
         foreach (var queue in queues.OfType<JsonObject>())
         {
@@ -286,19 +295,54 @@ public sealed partial class MainWindow : Window
         var queue = queues.OfType<JsonObject>().FirstOrDefault(value => value["id"]?.GetValue<string>() == id);
         if (queue is null) return;
         var count = new NumberBox { Header = "Maximum active downloads", Minimum = 1, Maximum = 32, Value = System.Text.Json.JsonSerializer.Deserialize<double>(queue["max_active"]?.ToJsonString() ?? "1") };
-        var schedule = new ToggleSwitch { Header = "Use the queue's existing weekly schedule", IsOn = queue["schedule_enabled"]?.GetValue<bool>() ?? false };
+        var schedule = new ToggleSwitch { Header = "Start and stop on a schedule", IsOn = queue["schedule_enabled"]?.GetValue<bool>() ?? false };
+        var days = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        string[] dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        var dayButtons = new ToggleButton[7];
+        for (var day = 0; day < 7; day++)
+        {
+            var active = (queue["schedule_slots"] as JsonArray)?.Skip(day * 24).Take(24).Any(slot => slot?.GetValue<bool>() == true) ?? true;
+            dayButtons[day] = new ToggleButton { Content = dayNames[day], IsChecked = active, MinWidth = 42 };
+            days.Children.Add(dayButtons[day]);
+        }
+        var startHour = new NumberBox { Header = "Start hour (0–23)", Minimum = 0, Maximum = 23, Value = 0, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var stopHour = new NumberBox { Header = "Stop hour (1–24)", Minimum = 1, Maximum = 24, Value = 24, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var hours = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        hours.Children.Add(startHour);
+        hours.Children.Add(stopHour);
+        var finish = new ComboBox { Header = "When all downloads finish", MinWidth = 180 };
+        finish.Items.Add(new ComboBoxItem { Content = "Do nothing", Tag = "none" });
+        finish.Items.Add(new ComboBoxItem { Content = "Exit app", Tag = "quit_app" });
+        finish.Items.Add(new ComboBoxItem { Content = "Power off", Tag = "power_off" });
+        finish.Items.Add(new ComboBoxItem { Content = "Run command", Tag = "user_command" });
+        SelectChoice(finish, queue["finish_action"]?.GetValue<string>() ?? "none");
+        var command = new TextBox { Header = "Command", Text = queue["user_command"]?.GetValue<string>() ?? "", PlaceholderText = "Command to run after this queue finishes" };
+        command.IsEnabled = (finish.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "user_command";
+        finish.SelectionChanged += (_, _) => command.IsEnabled = (finish.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "user_command";
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(count);
         panel.Children.Add(schedule);
-        var dialog = new ContentDialog { XamlRoot = Content.XamlRoot, Title = $"Queue settings · {queue["name"]?.GetValue<string>() ?? id}", Content = panel, PrimaryButtonText = "Save", CloseButtonText = "Cancel" };
+        panel.Children.Add(days);
+        panel.Children.Add(hours);
+        panel.Children.Add(finish);
+        panel.Children.Add(command);
+        var dialog = new ContentDialog { XamlRoot = Content.XamlRoot, Title = $"Queue settings · {queue["name"]?.GetValue<string>() ?? id}", Content = new ScrollViewer { Content = panel, MaxHeight = 500 }, PrimaryButtonText = "Save", CloseButtonText = "Cancel" };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        if (double.IsNaN(count.Value) || count.Value < 1 || count.Value > 32) { ShowMessage("Enter a value from 1 to 32.", InfoBarSeverity.Warning); return; }
+        if (double.IsNaN(count.Value) || count.Value < 1 || count.Value > 32 ||
+            double.IsNaN(startHour.Value) || double.IsNaN(stopHour.Value) || startHour.Value >= stopHour.Value)
+        { ShowMessage("Check the active download count and start/stop hours.", InfoBarSeverity.Warning); return; }
+        if ((finish.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "user_command" && string.IsNullOrWhiteSpace(command.Text))
+        { ShowMessage("Enter a command for the completion action.", InfoBarSeverity.Warning); return; }
         await SaveSettingsAsync(settings =>
         {
             var target = (settings["queues"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(value => value["id"]?.GetValue<string>() == id);
             if (target is null) return;
             target["max_active"] = (int)count.Value;
             target["schedule_enabled"] = schedule.IsOn;
+            target["schedule_slots"] = new JsonArray(Enumerable.Range(0, 168).Select(slot => (JsonNode?)JsonValue.Create(dayButtons[slot / 24].IsChecked == true && slot % 24 >= (int)startHour.Value && slot % 24 < (int)stopHour.Value)).ToArray());
+            var action = (finish.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "none";
+            target["finish_action"] = action;
+            target["user_command"] = action == "user_command" ? command.Text.Trim() : null;
         });
     }
 
@@ -392,29 +436,74 @@ public sealed partial class MainWindow : Window
     private void UpdateResponsiveLayout()
     {
         if (JobsList.Parent is not Grid grid) return;
-        var wide = grid.ActualWidth >= 780;
-        DetailsColumn.Width = new GridLength(wide ? 340 : 0);
-        DetailsPane.Visibility = wide || _showNarrowDetails ? Visibility.Visible : Visibility.Collapsed;
+        var show = _showNarrowDetails;
+        var wide = grid.ActualWidth >= 700;
+        DetailsColumn.Width = new GridLength(show && wide ? 300 : 0);
+        DetailsPane.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         Grid.SetColumn(DetailsPane, wide ? 1 : 0);
-        JobsList.Visibility = !wide && _showNarrowDetails ? Visibility.Collapsed : Visibility.Visible;
-        CloseDetailsButton.Visibility = wide ? Visibility.Collapsed : Visibility.Visible;
+        JobsList.Visibility = show && !wide ? Visibility.Collapsed : Visibility.Visible;
+        CloseDetailsButton.Visibility = Visibility.Visible;
+    }
+
+    private void OnShowDetails(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string id }) return;
+        JobsList.SelectedItem = (JobsList.ItemsSource as IEnumerable<DownloadJob>)?.FirstOrDefault(job => job.JobId == id);
+        _showNarrowDetails = true;
+        UpdateResponsiveLayout();
+    }
+
+    private void OnSpeedLimitChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSpeedLimit || _settings is null || SpeedLimitBox.SelectedItem is not ComboBoxItem item ||
+            !ulong.TryParse(item.Tag?.ToString(), out var megabytes)) return;
+        _ = SaveSettingsAsync(settings => settings["bandwidth_limit_bytes_per_second"] = megabytes * 1_000_000);
+    }
+
+    private async Task CreateQueueAsync()
+    {
+        if (_settings?["queues"] is not JsonArray queues) return;
+        var number = 1;
+        while (queues.OfType<JsonObject>().Any(queue => string.Equals(queue["name"]?.GetValue<string>(), $"queue #{number}", StringComparison.OrdinalIgnoreCase))) number++;
+        var name = $"queue #{number}";
+        var id = "queue-" + Guid.NewGuid().ToString("N");
+        await SaveSettingsAsync(settings =>
+        {
+            (settings["queues"] as JsonArray)?.Add(new JsonObject
+            {
+                ["id"] = id, ["name"] = name, ["max_active"] = 4,
+                ["schedule_enabled"] = false,
+                ["schedule_slots"] = new JsonArray(Enumerable.Repeat(true, 168).Select(value => (JsonNode?)JsonValue.Create(value)).ToArray()),
+                ["finish_action"] = "none",
+            });
+        });
+        UpdateQueues();
     }
 
     private async void OnAddDownload(object sender, RoutedEventArgs e)
     {
         var destination = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var url = new TextBox { Header = "URL", PlaceholderText = "https://example.com/file.zip" };
-        var name = new TextBox { Header = "Name (optional)" };
+        var name = new TextBox { Header = "File name" };
+        var probeSummary = new TextBlock { Text = "Paste a link to inspect it.", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
         var configuredFolder = ReadString("default_download_folder");
         var folder = new TextBox { Header = "Destination folder", Text = string.IsNullOrWhiteSpace(configuredFolder) ? Path.Combine(destination, "Downloads") : configuredFolder };
-        var priority = new ComboBox { Header = "Priority", SelectedIndex = 1 };
+        var priority = new ComboBox { Header = "Queue priority", SelectedIndex = 1 };
         priority.Items.Add(new ComboBoxItem { Content = "Low" });
         priority.Items.Add(new ComboBoxItem { Content = "Normal" });
         priority.Items.Add(new ComboBoxItem { Content = "High" });
+        var queueChoice = new ComboBox { Header = "Queue", MinWidth = 200 };
+        if (_settings?["queues"] is JsonArray queues)
+            foreach (var queue in queues.OfType<JsonObject>())
+                queueChoice.Items.Add(new ComboBoxItem { Content = queue["name"]?.GetValue<string>() ?? "main", Tag = queue["id"]?.GetValue<string>() ?? "main" });
+        queueChoice.SelectedItem = queueChoice.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Tag?.ToString() == _lastQueueId);
+        if (queueChoice.SelectedItem is null) queueChoice.SelectedIndex = 0;
         var panel = new StackPanel { Spacing = 10 };
         panel.Children.Add(url);
+        panel.Children.Add(probeSummary);
         panel.Children.Add(name);
         panel.Children.Add(folder);
+        panel.Children.Add(queueChoice);
         panel.Children.Add(priority);
         var dialog = new ContentDialog
         {
@@ -425,7 +514,41 @@ public sealed partial class MainWindow : Window
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        CancellationTokenSource? probeCancellation = null;
+        url.TextChanged += async (_, _) =>
+        {
+            probeCancellation?.Cancel();
+            probeCancellation?.Dispose();
+            probeCancellation = new CancellationTokenSource();
+            var token = probeCancellation.Token;
+            var text = url.Text.Trim();
+            if (!Uri.TryCreate(text, UriKind.Absolute, out var source) || source.Scheme is not ("http" or "https"))
+            {
+                probeSummary.Text = "Enter an HTTP or HTTPS link.";
+                return;
+            }
+            probeSummary.Text = "Inspecting link…";
+            try
+            {
+                await Task.Delay(400, token);
+                var result = await _engine.ProbeAsync(text, token);
+                if (token.IsCancellationRequested || url.Text.Trim() != text) return;
+                var suggestedName = result["suggested_name"]?.GetValue<string>() ?? "";
+                if (string.IsNullOrWhiteSpace(name.Text)) name.Text = suggestedName;
+                var final = result["final_url"]?.GetValue<string>() ?? text;
+                var total = result["total_bytes"]?.GetValue<string>();
+                var size = ulong.TryParse(total, out var bytes) ? $"{bytes / 1_000_000d:0.#} MB" : "Size unknown";
+                var resume = result["resume_supported"]?.GetValue<bool>() == true ? "Resume available" : "Resume unavailable";
+                var parallel = result["multipart_supported"]?.GetValue<bool>() == true ? "Parallel download available" : "Single connection";
+                probeSummary.Text = $"{size} · {resume} · {parallel}" + (final == text ? "" : $"\nRedirects to {final}");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error) { if (!token.IsCancellationRequested) probeSummary.Text = $"Could not inspect link: {error.Message}"; }
+        };
+        var choice = await dialog.ShowAsync();
+        probeCancellation?.Cancel();
+        probeCancellation?.Dispose();
+        if (choice != ContentDialogResult.Primary) return;
 
         if (!Uri.TryCreate(url.Text.Trim(), UriKind.Absolute, out var parsed) ||
             parsed.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(parsed.Host) ||
@@ -437,7 +560,8 @@ public sealed partial class MainWindow : Window
         var selectedPriority = priority.SelectedIndex switch { 0 => -1, 2 => 1, _ => 0 };
         try
         {
-            await _engine.AddJobAsync(url.Text.Trim(), name.Text.Trim(), folder.Text.Trim(), selectedPriority);
+            _lastQueueId = (queueChoice.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "main";
+            await _engine.AddJobAsync(url.Text.Trim(), name.Text.Trim(), folder.Text.Trim(), selectedPriority, _lastQueueId);
             await RefreshAsync();
         }
         catch (Exception error)

@@ -100,7 +100,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p zig-out/bin
-          zig build-exe src/main.zig -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
+          if [[ "$RUNNER_ARCH" == "ARM64" ]]; then
+            zig build-exe src/main.zig -target aarch64-windows -mcpu baseline -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
+          else
+            zig build-exe src/main.zig -target x86_64-windows -mcpu baseline -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
+          fi
           python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
 
       - name: Build and check Windows app, then create ZIP
