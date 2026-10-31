@@ -153,6 +153,17 @@ internal sealed class EngineClient
         using var result = await CallAsync("jobs.control", parameters.RootElement, cancellationToken);
     }
 
+    public async Task DeleteJobAsync(DownloadJob job, bool deletePartial = false, CancellationToken cancellationToken = default)
+    {
+        using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            job_id = job.JobId,
+            expected_revision = job.Revision,
+            delete_partial = deletePartial,
+        }));
+        using var result = await CallAsync("jobs.delete", parameters.RootElement, cancellationToken);
+    }
+
     public async Task MoveJobToQueueAsync(DownloadJob job, string queueId, CancellationToken cancellationToken = default)
     {
         using var parameters = JsonDocument.Parse(JsonSerializer.Serialize(new

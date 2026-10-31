@@ -18,6 +18,7 @@ public sealed partial class MainWindow : Window
     private bool _refreshInFlight;
     private IReadOnlyList<DownloadJob> _allJobs = [];
     private readonly ObservableCollection<DownloadJob> _visibleJobs = [];
+    private readonly ObservableCollection<DownloadWorker> _workerRows = [];
     private string _category = "All downloads";
     private JsonObject? _settings;
     private readonly SemaphoreSlim _settingsGate = new(1, 1);
@@ -44,6 +45,7 @@ public sealed partial class MainWindow : Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32(920, 620));
         App.TracePhase0Startup("Main window XAML initialized");
         JobsList.ItemsSource = _visibleJobs;
+        WorkerList.ItemsSource = _workerRows;
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Open Speed Download", null, (_, _) => Activate());
         trayMenu.Items.Add("Quit", null, (_, _) => Environment.Exit(0));
@@ -78,12 +80,14 @@ public sealed partial class MainWindow : Window
             ApplyFilter();
             UpdateSummary();
             ConnectionStatus.Text = "Engine connected";
+            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.ForestGreen);
             MessageBar.IsOpen = false;
             ReportPhase0UiState();
         }
         catch (Exception error)
         {
             ConnectionStatus.Text = "Engine disconnected";
+            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.DarkOrange);
             ShowMessage(error.Message, InfoBarSeverity.Error);
             ReportPhase0UiState();
         }
@@ -181,6 +185,15 @@ public sealed partial class MainWindow : Window
         DetailDestination.Text = job?.Destination ?? "—";
         DetailProgress.Text = job is null ? "" : job.Total > 0 ? $"{job.ProgressText} · {job.Progress:0.#}%" : job.State == "downloading" ? "Waiting for the server to report file size…" : "";
         DetailError.Text = job?.ErrorMessage ?? "";
+        var workers = job?.Workers ?? [];
+        WorkersHeading.Visibility = workers.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        for (var index = 0; index < workers.Count; index++)
+        {
+            if (index >= _workerRows.Count) _workerRows.Add(workers[index]);
+            else if (_workerRows[index].WorkerId == workers[index].WorkerId) _workerRows[index].UpdateFrom(workers[index]);
+            else _workerRows[index] = workers[index];
+        }
+        while (_workerRows.Count > workers.Count) _workerRows.RemoveAt(_workerRows.Count - 1);
     }
 
     private void UpdateSummary()
@@ -369,13 +382,12 @@ public sealed partial class MainWindow : Window
         if (JobsList.ItemsSource is not IEnumerable<DownloadJob> jobs) return;
         var job = jobs.FirstOrDefault(item => item.JobId == jobId);
         if (job is null) return;
-        var action = button.Content?.ToString() switch
+        var action = job.State switch
         {
-            "Start" => "start",
-            "Pause" => "pause",
-            "Resume" => "resume",
-            "Retry" => job.State == "retry_wait" ? "start" : "retry",
-            "Cancel" => "cancel",
+            "queued" or "scheduled" or "retry_wait" => "start",
+            "downloading" => "pause",
+            "paused" => "resume",
+            "failed" => "retry",
             _ => null,
         };
         if (action is null) return;
@@ -389,6 +401,22 @@ public sealed partial class MainWindow : Window
             ShowMessage(error.Message, InfoBarSeverity.Error);
             await RefreshAsync();
         }
+    }
+
+    private async void OnCancelOrRemove(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string jobId }) return;
+        var job = _visibleJobs.FirstOrDefault(item => item.JobId == jobId);
+        if (job is null) return;
+        try
+        {
+            if (job.State is "resolving" or "connecting" or "downloading" or "verifying" or "queued" or "scheduled" or "paused" or "retry_wait")
+                await _engine.ControlJobAsync(job, "cancel");
+            else
+                await _engine.DeleteJobAsync(job);
+            await RefreshAsync();
+        }
+        catch (Exception error) { ShowMessage(error.Message, InfoBarSeverity.Error); }
     }
 
     private async void OnStartAll(object sender, RoutedEventArgs e)
@@ -425,7 +453,6 @@ public sealed partial class MainWindow : Window
         }
         if (job.State is "queued" or "scheduled" or "downloading") Add("Pause", () => _ = RunJobActionAsync(job, "pause"));
         if (job.State is "paused" or "failed" or "retry_wait") Add(job.State == "failed" ? "Retry" : "Resume", () => _ = RunJobActionAsync(job, job.State switch { "failed" => "retry", "paused" => "resume", _ => "start" }));
-        Add("Details", () => { JobsList.SelectedItem = JobsList.ItemsSource is IEnumerable<DownloadJob> rows ? rows.FirstOrDefault(row => row.JobId == id) : null; _showNarrowDetails = true; UpdateDetails(job); UpdateResponsiveLayout(); });
         Add("Copy source URL", () => { var package = new Windows.ApplicationModel.DataTransfer.DataPackage(); package.SetText(job.Url); Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package); });
         if (job.State is "queued" or "scheduled" or "downloading" or "paused" or "retry_wait") Add("Cancel", () => _ = RunJobActionAsync(job, "cancel"));
         if (_settings?["queues"] is JsonArray queues && queues.Count > 1)

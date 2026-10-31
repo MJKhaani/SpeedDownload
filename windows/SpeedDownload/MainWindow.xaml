@@ -49,36 +49,50 @@
                                     <TextBlock Text="{Binding ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                    <Button Content="{Binding PrimaryActionText}" Tag="{Binding JobId}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" />
+                                    <Button Content="{Binding PrimaryActionGlyph}" Tag="{Binding JobId}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" ToolTipService.ToolTip="Start, pause, resume, or retry" />
                                     <Button Content="ⓘ" Tag="{Binding JobId}" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
+                                    <Button Content="✕" Tag="{Binding JobId}" Click="OnCancelOrRemove" ToolTipService.ToolTip="{Binding RemoveActionText}" />
                                     <Button Content="⋯" Tag="{Binding JobId}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
-                <Border x:Name="DetailsPane" Grid.Column="1" Visibility="Collapsed" Padding="18" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                <Border x:Name="DetailsPane" Grid.Column="1" Visibility="Collapsed" Padding="12" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel Spacing="14">
-                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" Style="{ThemeResource TitleTextBlockStyle}" /><Button x:Name="CloseDetailsButton" Content="Close" Click="OnCloseDetails" /></StackPanel>
-                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
-                            <TextBlock Text="STATUS" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailState" Text="—" />
-                            <TextBlock Text="SOURCE" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailUrl" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock Text="DESTINATION" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailDestination" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock x:Name="DetailProgress" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailError" Text="" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
+                        <StackPanel Spacing="7">
+                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" FontSize="14" FontWeight="SemiBold" /><Button x:Name="CloseDetailsButton" Content="Close" Click="OnCloseDetails" /></StackPanel>
+                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="STATUS" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailState" Text="—" FontSize="11" />
+                            <TextBlock Text="SOURCE" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailUrl" Text="—" FontSize="11" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock Text="DESTINATION" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailDestination" Text="—" FontSize="11" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock x:Name="DetailProgress" Text="" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailError" Text="" FontSize="11" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
+                            <TextBlock x:Name="WorkersHeading" Text="CONNECTIONS" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" Margin="0,8,0,0" />
+                            <ItemsControl x:Name="WorkerList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="local:DownloadWorker">
+                                        <StackPanel Spacing="2" Margin="0,2,0,4">
+                                            <TextBlock Text="{Binding Caption}" FontSize="10" />
+                                            <ProgressBar Value="{Binding Percent}" Maximum="100" Height="3" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </ScrollViewer>
                 </Border>
             </Grid>
-            <Grid Grid.Row="2" ColumnSpacing="12">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="ConnectionStatus" Text="Starting local engine…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                <ComboBox x:Name="SpeedLimitBox" Grid.Column="1" Header="Speed limit" MinWidth="125" SelectionChanged="OnSpeedLimitChanged"><ComboBoxItem Content="Unlimited" Tag="0"/><ComboBoxItem Content="1 MB/s" Tag="1"/><ComboBoxItem Content="2 MB/s" Tag="2"/><ComboBoxItem Content="5 MB/s" Tag="5"/><ComboBoxItem Content="10 MB/s" Tag="10"/><ComboBoxItem Content="20 MB/s" Tag="20"/><ComboBoxItem Content="50 MB/s" Tag="50"/><ComboBoxItem Content="100 MB/s" Tag="100"/></ComboBox>
-                <TextBlock x:Name="QueueSummary" Grid.Column="2" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+            <Grid Grid.Row="2" ColumnSpacing="10" Height="30">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Ellipse x:Name="EngineIndicator" Width="7" Height="7" Fill="DarkOrange" VerticalAlignment="Center" />
+                <TextBlock x:Name="ConnectionStatus" Grid.Column="1" Text="Starting local engine…" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="Speed limit" FontSize="11" VerticalAlignment="Center" />
+                <ComboBox x:Name="SpeedLimitBox" Grid.Column="3" Height="26" MinWidth="110" FontSize="11" SelectionChanged="OnSpeedLimitChanged"><ComboBoxItem Content="Unlimited" Tag="0"/><ComboBoxItem Content="1 MB/s" Tag="1"/><ComboBoxItem Content="2 MB/s" Tag="2"/><ComboBoxItem Content="5 MB/s" Tag="5"/><ComboBoxItem Content="10 MB/s" Tag="10"/><ComboBoxItem Content="20 MB/s" Tag="20"/><ComboBoxItem Content="50 MB/s" Tag="50"/><ComboBoxItem Content="100 MB/s" Tag="100"/></ComboBox>
+                <TextBlock x:Name="QueueSummary" Grid.Column="4" Text="0 active · 0 queued" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
             </Grid>
         </Grid>
         <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
