@@ -80,14 +80,14 @@ public sealed partial class MainWindow : Window
             ApplyFilter();
             UpdateSummary();
             ConnectionStatus.Text = "Engine connected";
-            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.ForestGreen);
+            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.ForestGreen);
             MessageBar.IsOpen = false;
             ReportPhase0UiState();
         }
         catch (Exception error)
         {
             ConnectionStatus.Text = "Engine disconnected";
-            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.DarkOrange);
+            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.DarkOrange);
             ShowMessage(error.Message, InfoBarSeverity.Error);
             ReportPhase0UiState();
         }
