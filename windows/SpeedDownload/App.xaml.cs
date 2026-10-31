@@ -17,7 +17,7 @@ public partial class App : Microsoft.UI.Xaml.Application
     {
         TracePhase0Startup("App constructor");
         UnhandledException += (_, args) =>
-            TracePhase0Startup($"WinUI unhandled error: {args.Exception.GetType().FullName}: {args.Exception.Message}");
+            TracePhase0Startup($"WinUI unhandled error: 0x{args.Exception.HResult:X8} {args.Exception}");
         InitializeComponent();
         TracePhase0Startup("App initialized");
     }

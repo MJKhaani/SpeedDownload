@@ -31,7 +31,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception error)
         {
-            App.TracePhase0Startup($"Main window XAML error: {error.GetType().FullName}: {error.Message}");
+            App.TracePhase0Startup($"Main window XAML error: 0x{error.HResult:X8} {error}");
             throw;
         }
         ExtendsContentIntoTitleBar = true;
