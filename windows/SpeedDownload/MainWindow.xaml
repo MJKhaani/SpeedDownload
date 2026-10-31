@@ -6,7 +6,7 @@
     Title="Speed Download">
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <Grid x:Name="AppTitleBar" Height="40"><TextBlock Text="Speed Download" /></Grid>
+        <TitleBar x:Name="AppTitleBar" Title="Speed Download" />
     <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" ItemInvoked="OnNavigationItemInvoked">
         <NavigationView.MenuItems>
             <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" IsSelected="True" />
