@@ -4,12 +4,9 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:SpeedDownload"
     Title="Speed Download">
-    <Window.SystemBackdrop><MicaBackdrop /></Window.SystemBackdrop>
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <Grid x:Name="AppTitleBar" Height="48" Padding="16,0">
-            <TextBlock Text="Speed Download" VerticalAlignment="Center" />
-        </Grid>
+        <TitleBar x:Name="AppTitleBar" Title="Speed Download" />
     <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto" OpenPaneLength="250" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
         <NavigationView.MenuItems>
             <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" Icon="Download" IsSelected="True" />
