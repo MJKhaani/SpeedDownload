@@ -22,13 +22,7 @@
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Spacing="8">
                 <TextBlock x:Name="SectionTitle" Text="All downloads" />
-                <CommandBar DefaultLabelPosition="Right">
-                    <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" />
-                    <AppBarButton Label="Start all" Icon="Play" Click="OnStartAll" />
-                    <AppBarButton Label="Pause all" Icon="Pause" Click="OnPauseAll" />
-                    <CommandBar.Content><AutoSuggestBox x:Name="SearchBox" Width="260" PlaceholderText="Search downloads" QueryIcon="Find" TextChanged="OnSearchTextChanged" /></CommandBar.Content>
-                    <CommandBar.SecondaryCommands><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /></CommandBar.SecondaryCommands>
-                </CommandBar>
+                <AutoSuggestBox x:Name="SearchBox" TextChanged="OnSearchTextChanged" />
                 <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" />
             </StackPanel>
             <Grid Grid.Row="1" ColumnSpacing="14" SizeChanged="OnWorkspaceSizeChanged">
