@@ -10,10 +10,10 @@
         <TitleBar x:Name="AppTitleBar" Title="Speed Download" />
     <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto" OpenPaneLength="250" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
         <NavigationView.MenuItems>
-            <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" IsSelected="True" />
-            <NavigationViewItem x:Name="ProgressNavigationItem" Content="In progress" Tag="In progress" />
-            <NavigationViewItem x:Name="CompletedNavigationItem" Content="Completed" Tag="Completed" />
-            <NavigationViewItem x:Name="FailedNavigationItem" Content="Failed" Tag="Failed" />
+            <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" Icon="Download" IsSelected="True" />
+            <NavigationViewItem x:Name="ProgressNavigationItem" Content="In progress" Tag="In progress" Icon="Play" />
+            <NavigationViewItem x:Name="CompletedNavigationItem" Content="Completed" Tag="Completed" Icon="Accept" />
+            <NavigationViewItem x:Name="FailedNavigationItem" Content="Failed" Tag="Failed" Icon="Warning" />
         </NavigationView.MenuItems>
         <Grid>
         <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12">
