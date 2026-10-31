@@ -9,6 +9,7 @@ public partial class App : Microsoft.UI.Xaml.Application
     private Window? _window;
     private static Mutex? _instanceMutex;
     private static readonly string InstanceKey = "Local\\SpeedDownload.Gui.Instance";
+    private static readonly object CrashLogGate = new();
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr window);
@@ -17,7 +18,7 @@ public partial class App : Microsoft.UI.Xaml.Application
     {
         TracePhase0Startup("App constructor");
         UnhandledException += (_, args) =>
-            TracePhase0Startup($"WinUI unhandled error: 0x{args.Exception.HResult:X8} {args.Exception}");
+            LogClientException(args.Exception, "WinUI unhandled exception");
         InitializeComponent();
         TracePhase0Startup("App initialized");
     }
@@ -28,6 +29,31 @@ public partial class App : Microsoft.UI.Xaml.Application
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) return;
         try { File.AppendAllText(path, stage + Environment.NewLine); }
         catch (IOException) { }
+    }
+
+    internal static void LogClientException(Exception error, string phase)
+    {
+        TracePhase0Startup($"{phase}: 0x{error.HResult:X8} {error}");
+        try
+        {
+            var logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SpeedDownload", "logs");
+            Directory.CreateDirectory(logDirectory);
+            var logPath = Path.Combine(logDirectory, "client-crash.log");
+            lock (CrashLogGate)
+            {
+                if (File.Exists(logPath) && new FileInfo(logPath).Length > 1024 * 1024)
+                    File.Move(logPath, Path.Combine(logDirectory, "client-crash.previous.log"), true);
+                File.AppendAllText(logPath,
+                    $"[{DateTimeOffset.Now:O}] {phase} (HRESULT 0x{error.HResult:X8}){Environment.NewLine}" +
+                    error + Environment.NewLine + Environment.NewLine);
+            }
+        }
+        catch (Exception)
+        {
+            // Diagnostic logging must never replace the original startup error.
+        }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)

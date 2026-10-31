@@ -23,18 +23,18 @@ dotnet publish .\SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --se
 
 The Zig engine includes a Windows named-pipe listener at
 `\\.\pipe\SpeedDownload-<user-SID>-<session-id>`, with a private user/SYSTEM
-DACL and remote-client rejection. The engine cross-compiles from macOS for
-x86_64 Windows. The WinUI project builds but currently exits before managed
-startup on Windows Server 2022 and hosted Windows 11 ARM64 with `0xC0000409`.
-Earlier alpha ZIPs shipped the separately documented [WPF compatibility
-client](../SpeedDownload.Wpf/README.md). The WinUI alpha ZIP is an experimental
-test build: it currently exits before managed startup with `0xC0000409` on
-GitHub-hosted Windows Server 2022 and Windows 11 ARM64 runners. Extract the
-entire ZIP and report the OS version, process exit code, and native crash dump
-if it also fails on your desktop. The WinUI runtime, packaging, and Fluent UI
-must pass the same GUI and IPC checks before it replaces WPF as a verified client.
+DACL and remote-client rejection. Earlier alpha ZIPs shipped the separately
+documented [WPF compatibility client](../SpeedDownload.Wpf/README.md).
 
-The WinUI shell changes above have only been checked for XAML well-formedness
-on macOS. A Windows .NET build, startup check, named-pipe smoke test, keyboard
-and accessibility review, and the existing `0xC0000409` startup investigation
-are still required before this can replace the compatibility ZIP.
+The WinUI alpha still fails during `MainWindow.xaml` initialization on Windows
+Server 2022 and hosted Windows 11 ARM64. The current managed exception is
+`XamlParseException` (`0x802B000A`), followed by a WinUI stowed-exception
+fail-fast (`0xC000027B`). The client records the HRESULT, managed stack, and
+inner exception text in
+`%LOCALAPPDATA%\SpeedDownload\logs\client-crash.log`; the previous log rotates
+to `client-crash.previous.log` after 1 MiB. The log may contain local paths, so
+review it before sharing. A native dump is still needed when XAML does not
+expose the underlying parse location.
+
+The WinUI client must pass the Windows GUI and IPC startup smoke before it can
+replace WPF as a verified client.
