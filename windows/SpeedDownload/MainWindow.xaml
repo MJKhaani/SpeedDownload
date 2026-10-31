@@ -58,25 +58,18 @@
                 <TextBlock x:Name="QueueSummary" Grid.Column="1" Text="0 active · 0 queued" VerticalAlignment="Center" />
             </Grid>
         </Grid>
-        <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-            <StackPanel Padding="24" Spacing="14" MaxWidth="1050" HorizontalAlignment="Stretch">
-                <TextBlock Text="Settings" />
-                <InfoBar x:Name="SettingsMessage" IsOpen="False" Severity="Error" />
-                <TextBlock Text="General" />
-                <StackPanel Spacing="8"><TextBlock Text="Diagnostic logging"/><ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled"/><TextBlock Text="Writes redacted engine activity to a bounded local log."/></StackPanel>
-                <TextBlock Text="Downloads" Margin="0,12,0,0" />
-                <TextBox x:Name="DownloadFolderBox" Header="Default download folder" LostFocus="OnSettingLostFocus" />
-                <NumberBox x:Name="ConcurrentBox" Header="Maximum simultaneous downloads" Minimum="1" Maximum="32" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <TextBlock Text="Network" Margin="0,12,0,0" />
-                <NumberBox x:Name="ConnectionsBox" Header="Maximum connections per download" Minimum="1" Maximum="32" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <ComboBox x:Name="MultipartModeBox" Header="Parallel downloading" SelectionChanged="OnChoiceSettingChanged"><ComboBoxItem Content="Automatic" Tag="auto"/><ComboBoxItem Content="Fixed" Tag="fixed"/><ComboBoxItem Content="Off" Tag="off"/></ComboBox>
-                <ComboBox x:Name="ProxyModeBox" Header="Proxy mode" SelectionChanged="OnChoiceSettingChanged"><ComboBoxItem Content="System" Tag="system"/><ComboBoxItem Content="Manual HTTP" Tag="custom"/><ComboBoxItem Content="Disabled" Tag="disabled"/></ComboBox>
-                <TextBox x:Name="ProxyUrlBox" Header="Manual HTTP proxy URL" PlaceholderText="http://proxy.example.com:8080" LostFocus="OnSettingLostFocus" />
-                <TextBlock Text="Bandwidth" Margin="0,12,0,0" />
-                <NumberBox x:Name="BandwidthBox" Header="Global download limit (MB/s; 0 = unlimited)" Minimum="0" Maximum="100000" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <TextBlock Text="Integration" Margin="0,12,0,0" />
-                <TextBox x:Name="BrowserExtensionsBox" Header="Browser capture file extensions" LostFocus="OnSettingLostFocus" />
-                <TextBlock Text="Torrent seeding is not active in the engine yet." />
+        <ScrollViewer x:Name="SettingsView" Visibility="Collapsed">
+            <StackPanel>
+                <InfoBar x:Name="SettingsMessage" />
+                <ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled" />
+                <TextBox x:Name="DownloadFolderBox" LostFocus="OnSettingLostFocus" />
+                <NumberBox x:Name="ConcurrentBox" ValueChanged="OnNumberSettingChanged" />
+                <NumberBox x:Name="ConnectionsBox" ValueChanged="OnNumberSettingChanged" />
+                <ComboBox x:Name="MultipartModeBox" SelectionChanged="OnChoiceSettingChanged" />
+                <ComboBox x:Name="ProxyModeBox" SelectionChanged="OnChoiceSettingChanged" />
+                <TextBox x:Name="ProxyUrlBox" LostFocus="OnSettingLostFocus" />
+                <NumberBox x:Name="BandwidthBox" ValueChanged="OnNumberSettingChanged" />
+                <TextBox x:Name="BrowserExtensionsBox" LostFocus="OnSettingLostFocus" />
             </StackPanel>
         </ScrollViewer>
         </Grid>
