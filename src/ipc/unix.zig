@@ -670,7 +670,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     } else if (isFtpUrl(task.url)) blk: {
         if (task.proxy_mode == .custom) break :blk error.UnsupportedFtpProxy;
         break :blk @import("../protocols/ftp/download.zig").downloadWithControl(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), checkHttpControl, @ptrCast(&progress));
-    } else @import("../protocols/http/download.zig").downloadWithPolicyAndBudget(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &retry_hint, &engine.http_connections, checkHttpControl);
+    } else @import("../protocols/http/download.zig").downloadWithPolicyAndBudget(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &retry_hint, &engine.http_connections, checkHttpControl, engine.jobs.directory_path);
     transfer catch |err| {
         if (engine.jobs.requestedControl(task.id)) |control| {
             engine.jobs.logAction("transfer", if (control == .pause) "paused" else "canceled");

@@ -1,23 +1,48 @@
 using System.Text.Json.Serialization;
 using Microsoft.UI.Xaml;
+using System.ComponentModel;
 
 namespace SpeedDownload;
 
-public sealed class DownloadJob
+public sealed class DownloadJob : INotifyPropertyChanged
 {
-    [JsonPropertyName("job_id")] public string JobId { get; init; } = "";
-    [JsonPropertyName("url")] public string Url { get; init; } = "";
-    [JsonPropertyName("name")] public string? Name { get; init; }
-    [JsonPropertyName("destination")] public string Destination { get; init; } = "";
-    [JsonPropertyName("state")] public string State { get; init; } = "queued";
-    [JsonPropertyName("revision")] public string Revision { get; init; } = "0";
-    [JsonPropertyName("error_message")] public string? ErrorMessage { get; init; }
-    [JsonPropertyName("completed_bytes")] public string? CompletedBytes { get; init; }
-    [JsonPropertyName("received_bytes")] public string? ReceivedBytes { get; init; }
-    [JsonPropertyName("total_bytes")] public string? TotalBytes { get; init; }
-    [JsonPropertyName("requested_control")] public string? RequestedControl { get; init; }
-    [JsonPropertyName("priority")] public int Priority { get; init; }
-    [JsonPropertyName("queue_id")] public string QueueId { get; init; } = "main";
+    [JsonPropertyName("job_id")] public string JobId { get; set; } = "";
+    [JsonPropertyName("url")] public string Url { get; set; } = "";
+    [JsonPropertyName("name")] public string? Name { get; set; }
+    [JsonPropertyName("destination")] public string Destination { get; set; } = "";
+    [JsonPropertyName("state")] public string State { get; set; } = "queued";
+    [JsonPropertyName("revision")] public string Revision { get; set; } = "0";
+    [JsonPropertyName("error_message")] public string? ErrorMessage { get; set; }
+    [JsonPropertyName("completed_bytes")] public string? CompletedBytes { get; set; }
+    [JsonPropertyName("received_bytes")] public string? ReceivedBytes { get; set; }
+    [JsonPropertyName("total_bytes")] public string? TotalBytes { get; set; }
+    [JsonPropertyName("requested_control")] public string? RequestedControl { get; set; }
+    [JsonPropertyName("priority")] public int Priority { get; set; }
+    [JsonPropertyName("queue_id")] public string QueueId { get; set; } = "main";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    public void UpdateFrom(DownloadJob next)
+    {
+        if (State == next.State && Revision == next.Revision && ReceivedBytes == next.ReceivedBytes &&
+            CompletedBytes == next.CompletedBytes && TotalBytes == next.TotalBytes && ErrorMessage == next.ErrorMessage &&
+            Name == next.Name && Url == next.Url && Destination == next.Destination && Priority == next.Priority && QueueId == next.QueueId)
+            return;
+        Url = next.Url;
+        Name = next.Name;
+        Destination = next.Destination;
+        State = next.State;
+        Revision = next.Revision;
+        ErrorMessage = next.ErrorMessage;
+        CompletedBytes = next.CompletedBytes;
+        ReceivedBytes = next.ReceivedBytes;
+        TotalBytes = next.TotalBytes;
+        RequestedControl = next.RequestedControl;
+        Priority = next.Priority;
+        QueueId = next.QueueId;
+        foreach (var property in new[] { nameof(Title), nameof(Host), nameof(State), nameof(Progress), nameof(ProgressVisibility), nameof(ProgressText), nameof(PrimaryActionText), nameof(PrimaryActionVisibility) })
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
+    }
 
     [JsonIgnore] public string Title => string.IsNullOrWhiteSpace(Name) ? Url : Name;
     [JsonIgnore] public string Host => Uri.TryCreate(Url, UriKind.Absolute, out var uri) ? uri.Host : "";

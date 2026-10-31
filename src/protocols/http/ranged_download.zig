@@ -56,6 +56,7 @@ pub fn downloadIfSupported(
     retry_hint: ?*@import("retry_after.zig").Hint,
     budget: ?*connection_budget.Budget,
     control: ?connection_budget.ControlCallback,
+    journal_root: ?[]const u8,
 ) !bool {
     var uri = std.Uri.parse(url) catch return false;
     if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) uri.scheme = "http" else if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) uri.scheme = "https" else return false;
@@ -69,8 +70,21 @@ pub fn downloadIfSupported(
 
     const part_path = try std.fmt.allocPrint(allocator, "{s}.part", .{destination});
     defer allocator.free(part_path);
-    const journal_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ part_path, checkpoint_suffix });
+    const legacy_journal_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ part_path, checkpoint_suffix });
+    defer allocator.free(legacy_journal_path);
+    const journal_path = if (journal_root) |root|
+        try checkpointPath(allocator, root, destination)
+    else
+        try allocator.dupe(u8, legacy_journal_path);
     defer allocator.free(journal_path);
+
+    if (journal_root) |root| {
+        const checkpoint_dir = try std.fs.path.join(allocator, &.{ root, "http-checkpoints" });
+        defer allocator.free(checkpoint_dir);
+        try cwd.createDirPath(io, checkpoint_dir);
+        if (!try fileExists(io, journal_path) and try fileExists(io, legacy_journal_path))
+            try Io.Dir.rename(cwd, legacy_journal_path, cwd, journal_path, io);
+    }
 
     const part_exists = fileExists(io, part_path) catch |err| return err;
     const journal_exists = fileExists(io, journal_path) catch |err| return err;
@@ -220,6 +234,15 @@ pub fn downloadIfSupported(
     try @import("download.zig").publishNoReplace(cwd, io, part_path, destination);
     cwd.deleteFile(io, journal_path) catch {};
     return true;
+}
+
+pub fn checkpointPath(allocator: Allocator, root: []const u8, destination: []const u8) ![]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(destination, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    const filename = try std.fmt.allocPrint(allocator, "{s}.sdr", .{&hex});
+    defer allocator.free(filename);
+    return std.fs.path.join(allocator, &.{ root, "http-checkpoints", filename });
 }
 
 const Shared = struct {
@@ -447,7 +470,11 @@ fn runSegment(self: *Shared, context: *WorkerContext, worker: ranges.Segment) !v
     }
     try file_writer.flush();
     try file.sync(self.io);
-    try self.checkpointSegment(context.slot, worker.id, worker.cursor + downloaded);
+    // A checkpoint on the last chunk already marks this extent complete.
+    // Advancing it again returns InvalidInterval and aborts an otherwise
+    // successful transfer.
+    if (downloaded != checkpointed)
+        try self.checkpointSegment(context.slot, worker.id, worker.cursor + downloaded);
     response_truncated = current_end < worker.end;
 }
 

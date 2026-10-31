@@ -103,6 +103,10 @@ pub fn download(allocator: Allocator, io: Io, url: []const u8, destination: []co
     return downloadWithProgress(allocator, io, url, destination, expected_sha256, null, null, null);
 }
 
+pub fn downloadWithJournalRoot(allocator: Allocator, io: Io, url: []const u8, destination: []const u8, expected_sha256: ?[32]u8, journal_root: []const u8) !void {
+    return downloadWithPolicyAndBudget(allocator, io, url, destination, expected_sha256, null, null, null, 4, .{}, null, null, null, journal_root);
+}
+
 pub fn downloadWithProgress(
     allocator: Allocator,
     io: Io,
@@ -143,7 +147,7 @@ pub fn downloadWithPolicy(
     proxy_policy: @import("proxy.zig").Policy,
     retry_hint: ?*@import("retry_after.zig").Hint,
 ) !void {
-    return downloadWithPolicyAndBudget(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, worker_callback, requested_connections, proxy_policy, retry_hint, null, null);
+    return downloadWithPolicyAndBudget(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, worker_callback, requested_connections, proxy_policy, retry_hint, null, null, null);
 }
 
 pub fn downloadWithPolicyAndBudget(
@@ -160,6 +164,7 @@ pub fn downloadWithPolicyAndBudget(
     retry_hint: ?*@import("retry_after.zig").Hint,
     budget: ?*connection_budget.Budget,
     control: ?connection_budget.ControlCallback,
+    journal_root: ?[]const u8,
 ) !void {
     const ranged = @import("ranged_download.zig");
     const range_completed = if (requested_connections == 0) false else try ranged.downloadIfSupported(
@@ -177,6 +182,7 @@ pub fn downloadWithPolicyAndBudget(
         retry_hint,
         budget,
         control,
+        journal_root,
     );
     if (range_completed) return;
     return downloadSingleStreamWithProgress(allocator, io, url, destination, expected_sha256, progress_callback, progress_context, proxy_policy, retry_hint, budget, control);

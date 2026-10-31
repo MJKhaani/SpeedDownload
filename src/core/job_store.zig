@@ -955,7 +955,9 @@ pub const Store = struct {
             const revision = try std.fmt.allocPrint(self.allocator, "{d}", .{job.revision});
             defer self.allocator.free(revision);
             return std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = request_id, .result = .{
-                .job_id = job.id, .queue_id = job.queue_id, .revision = revision,
+                .job_id = job.id,
+                .queue_id = job.queue_id,
+                .revision = revision,
             } }, .{});
         }
         return error.JobNotFound;
@@ -1986,12 +1988,15 @@ pub const Store = struct {
         defer self.allocator.free(journal_path);
         const segment_journal = try std.fmt.allocPrint(self.allocator, "{s}.sdr", .{part_path});
         defer self.allocator.free(segment_journal);
+        const private_segment_journal = try @import("../protocols/http/ranged_download.zig").checkpointPath(self.allocator, self.directory_path, destination);
+        defer self.allocator.free(private_segment_journal);
         const ftp_journal = try std.fmt.allocPrint(self.allocator, "{s}.ftpj", .{part_path});
         defer self.allocator.free(ftp_journal);
         const cwd = std.Io.Dir.cwd();
         cwd.deleteFile(self.io, part_path) catch {};
         cwd.deleteFile(self.io, journal_path) catch {};
         cwd.deleteFile(self.io, segment_journal) catch {};
+        cwd.deleteFile(self.io, private_segment_journal) catch {};
         cwd.deleteFile(self.io, ftp_journal) catch {};
     }
 
@@ -2004,12 +2009,15 @@ pub const Store = struct {
         defer self.allocator.free(journal_path);
         const segment_journal = try std.fmt.allocPrint(self.allocator, "{s}.sdr", .{part_path});
         defer self.allocator.free(segment_journal);
+        const private_segment_journal = try @import("../protocols/http/ranged_download.zig").checkpointPath(self.allocator, self.directory_path, destination);
+        defer self.allocator.free(private_segment_journal);
         const ftp_journal = try std.fmt.allocPrint(self.allocator, "{s}.ftpj", .{part_path});
         defer self.allocator.free(ftp_journal);
         const cwd = std.Io.Dir.cwd();
         try deleteFileIfPresent(cwd, self.io, part_path);
         try deleteFileIfPresent(cwd, self.io, journal_path);
         try deleteFileIfPresent(cwd, self.io, segment_journal);
+        try deleteFileIfPresent(cwd, self.io, private_segment_journal);
         try deleteFileIfPresent(cwd, self.io, ftp_journal);
     }
 

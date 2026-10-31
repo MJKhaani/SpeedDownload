@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const http_download = @import("protocols/http/download.zig").download;
+const http_download_with_journal_root = @import("protocols/http/download.zig").downloadWithJournalRoot;
 const ftp_download = @import("protocols/ftp/download.zig").download;
 const torrent_metainfo = @import("protocols/torrent/metainfo.zig");
 const torrent_magnet = @import("protocols/torrent/magnet.zig");
@@ -60,8 +60,20 @@ pub fn main(init: std.process.Init) !void {
 
     const transfer = if (isFtpUrl(args[url_index]))
         ftp_download(init.gpa, init.io, args[url_index], args[url_index + 1], expected_sha256, null, null)
-    else
-        http_download(init.gpa, init.io, args[url_index], args[url_index + 1], expected_sha256);
+    else blk: {
+        const state_directory = if (init.environ_map.get("SPEED_DOWNLOAD_STATE_DIR")) |override|
+            try init.gpa.dupe(u8, override)
+        else if (comptime builtin.os.tag == .windows)
+            try std.fs.path.join(init.gpa, &.{ init.environ_map.get("LOCALAPPDATA") orelse return error.StateDirectoryUnavailable, "Speed Download" })
+        else if (comptime builtin.os.tag == .macos)
+            try std.fs.path.join(init.gpa, &.{ init.environ_map.get("HOME") orelse return error.HomeDirectoryUnavailable, "Library", "Application Support", "Speed Download" })
+        else if (init.environ_map.get("XDG_STATE_HOME")) |home|
+            try std.fs.path.join(init.gpa, &.{ home, "speed-download" })
+        else
+            try std.fs.path.join(init.gpa, &.{ init.environ_map.get("HOME") orelse return error.HomeDirectoryUnavailable, ".local", "state", "speed-download" });
+        defer init.gpa.free(state_directory);
+        break :blk http_download_with_journal_root(init.gpa, init.io, args[url_index], args[url_index + 1], expected_sha256, state_directory);
+    };
     transfer catch |err| {
         std.debug.print("speed-download: {s}\n", .{errorMessage(err)});
         return err;

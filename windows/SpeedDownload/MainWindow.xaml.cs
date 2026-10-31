@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using System.Text.Json.Nodes;
+using System.Collections.ObjectModel;
 using ContextMenuStrip = System.Windows.Forms.ContextMenuStrip;
 using Icon = System.Drawing.Icon;
 using NotifyIcon = System.Windows.Forms.NotifyIcon;
@@ -16,6 +17,7 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _refreshTimer;
     private bool _refreshInFlight;
     private IReadOnlyList<DownloadJob> _allJobs = [];
+    private readonly ObservableCollection<DownloadJob> _visibleJobs = [];
     private string _category = "All downloads";
     private JsonObject? _settings;
     private readonly SemaphoreSlim _settingsGate = new(1, 1);
@@ -41,6 +43,7 @@ public sealed partial class MainWindow : Window
         SetTitleBar(AppTitleBar);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(920, 620));
         App.TracePhase0Startup("Main window XAML initialized");
+        JobsList.ItemsSource = _visibleJobs;
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Open Speed Download", null, (_, _) => Activate());
         trayMenu.Items.Add("Quit", null, (_, _) => Environment.Exit(0));
@@ -138,10 +141,24 @@ public sealed partial class MainWindow : Window
         };
         var query = SearchBox?.Text?.Trim();
         if (!string.IsNullOrEmpty(query)) jobs = jobs.Where(job => job.Title.Contains(query, StringComparison.OrdinalIgnoreCase) || job.Url.Contains(query, StringComparison.OrdinalIgnoreCase));
-        var currentSelection = JobsList.SelectedItem as DownloadJob;
-        JobsList.ItemsSource = jobs.ToList();
-        if (currentSelection is not null)
-            JobsList.SelectedItem = _allJobs.FirstOrDefault(job => job.JobId == currentSelection.JobId && jobs.Any(filtered => filtered.JobId == job.JobId));
+        var currentSelectionId = (JobsList.SelectedItem as DownloadJob)?.JobId;
+        var filtered = jobs.ToList();
+        for (var index = 0; index < filtered.Count; index++)
+        {
+            var incoming = filtered[index];
+            var existingIndex = -1;
+            for (var scan = index; scan < _visibleJobs.Count; scan++)
+                if (_visibleJobs[scan].JobId == incoming.JobId) { existingIndex = scan; break; }
+            if (existingIndex < 0) _visibleJobs.Insert(index, incoming);
+            else
+            {
+                if (existingIndex != index) _visibleJobs.Move(existingIndex, index);
+                _visibleJobs[index].UpdateFrom(incoming);
+            }
+        }
+        while (_visibleJobs.Count > filtered.Count) _visibleJobs.RemoveAt(_visibleJobs.Count - 1);
+        if (currentSelectionId is not null && (JobsList.SelectedItem as DownloadJob)?.JobId != currentSelectionId)
+            JobsList.SelectedItem = _visibleJobs.FirstOrDefault(job => job.JobId == currentSelectionId);
         UpdateDetails(JobsList.SelectedItem as DownloadJob);
     }
 

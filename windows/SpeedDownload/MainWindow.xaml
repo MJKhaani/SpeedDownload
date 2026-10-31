@@ -8,7 +8,7 @@
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <TitleBar x:Name="AppTitleBar" Title="Speed Download" />
-    <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="LeftMinimal" IsPaneOpen="False" OpenPaneLength="230" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
+    <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto" OpenPaneLength="230" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
         <NavigationView.MenuItems>
             <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" Icon="Download" IsSelected="True" />
             <NavigationViewItem x:Name="ProgressNavigationItem" Content="In progress" Tag="In progress" Icon="Play" />
@@ -40,18 +40,18 @@
                             <Grid Padding="12" ColumnSpacing="12" MinHeight="72">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="160"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <StackPanel Spacing="5" VerticalAlignment="Center">
-                                    <TextBlock Text="{x:Bind Title}" Style="{ThemeResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Text="{x:Bind Host}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" FontSize="12" />
+                                    <TextBlock Text="{Binding Title}" Style="{ThemeResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Host}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" FontSize="12" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-                                    <TextBlock Text="{x:Bind State}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <ProgressBar Value="{x:Bind Progress}" Maximum="100" Visibility="{x:Bind ProgressVisibility}" />
-                                    <TextBlock Text="{x:Bind ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" />
+                                    <TextBlock Text="{Binding State}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <ProgressBar Value="{Binding Progress}" Maximum="100" Visibility="{Binding ProgressVisibility}" />
+                                    <TextBlock Text="{Binding ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                    <Button Content="{x:Bind PrimaryActionText}" Tag="{x:Bind JobId}" Visibility="{x:Bind PrimaryActionVisibility}" Click="OnJobAction" />
-                                    <Button Content="ⓘ" Tag="{x:Bind JobId}" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
-                                    <Button Content="⋯" Tag="{x:Bind JobId}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
+                                    <Button Content="{Binding PrimaryActionText}" Tag="{Binding JobId}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" />
+                                    <Button Content="ⓘ" Tag="{Binding JobId}" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
+                                    <Button Content="⋯" Tag="{Binding JobId}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>
