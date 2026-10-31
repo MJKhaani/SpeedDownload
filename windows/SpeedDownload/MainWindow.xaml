@@ -21,7 +21,7 @@
         <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Spacing="8">
-                <TextBlock x:Name="SectionTitle" Text="All downloads" Style="{ThemeResource TitleTextBlockStyle}" />
+                <TextBlock x:Name="SectionTitle" Text="All downloads" />
                 <CommandBar DefaultLabelPosition="Right">
                     <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" />
                     <AppBarButton Label="Start all" Icon="Play" Click="OnStartAll" />
@@ -35,48 +35,48 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="DetailsColumn" Width="340"/></Grid.ColumnDefinitions>
                 <ListView x:Name="JobsList" SelectionMode="Single" SelectionChanged="OnJobSelectionChanged" IsItemClickEnabled="False">
                 </ListView>
-                <Border x:Name="DetailsPane" Grid.Column="1" Padding="18" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                <Border x:Name="DetailsPane" Grid.Column="1" Padding="18" BorderThickness="1" CornerRadius="8">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="14">
-                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" Style="{ThemeResource TitleTextBlockStyle}" /><Button x:Name="CloseDetailsButton" Content="Back to downloads" Click="OnCloseDetails" Visibility="Collapsed" /></StackPanel>
-                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
-                            <TextBlock Text="STATUS" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" /><Button x:Name="CloseDetailsButton" Content="Back to downloads" Click="OnCloseDetails" Visibility="Collapsed" /></StackPanel>
+                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" TextWrapping="Wrap" />
+                            <TextBlock Text="STATUS" />
                             <TextBlock x:Name="DetailState" Text="—" />
-                            <TextBlock Text="SOURCE" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="SOURCE" />
                             <TextBlock x:Name="DetailUrl" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock Text="DESTINATION" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="DESTINATION" />
                             <TextBlock x:Name="DetailDestination" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock x:Name="DetailProgress" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailError" Text="" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
+                            <TextBlock x:Name="DetailProgress" Text="" />
+                            <TextBlock x:Name="DetailError" Text="" TextWrapping="Wrap" />
                         </StackPanel>
                     </ScrollViewer>
                 </Border>
             </Grid>
             <Grid Grid.Row="2" ColumnSpacing="8">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="ConnectionStatus" Text="Starting local engine…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                <TextBlock x:Name="QueueSummary" Grid.Column="1" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                <TextBlock x:Name="ConnectionStatus" Text="Starting local engine…" VerticalAlignment="Center" />
+                <TextBlock x:Name="QueueSummary" Grid.Column="1" Text="0 active · 0 queued" VerticalAlignment="Center" />
             </Grid>
         </Grid>
         <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
             <StackPanel Padding="24" Spacing="14" MaxWidth="1050" HorizontalAlignment="Stretch">
-                <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}" />
+                <TextBlock Text="Settings" />
                 <InfoBar x:Name="SettingsMessage" IsOpen="False" Severity="Error" />
-                <TextBlock Text="General" Style="{ThemeResource SubtitleTextBlockStyle}" />
-                <StackPanel Spacing="8"><TextBlock Text="Diagnostic logging"/><ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled"/><TextBlock Text="Writes redacted engine activity to a bounded local log." Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
-                <TextBlock Text="Downloads" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="General" />
+                <StackPanel Spacing="8"><TextBlock Text="Diagnostic logging"/><ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled"/><TextBlock Text="Writes redacted engine activity to a bounded local log."/></StackPanel>
+                <TextBlock Text="Downloads" Margin="0,12,0,0" />
                 <TextBox x:Name="DownloadFolderBox" Header="Default download folder" LostFocus="OnSettingLostFocus" />
                 <NumberBox x:Name="ConcurrentBox" Header="Maximum simultaneous downloads" Minimum="1" Maximum="32" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <TextBlock Text="Network" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="Network" Margin="0,12,0,0" />
                 <NumberBox x:Name="ConnectionsBox" Header="Maximum connections per download" Minimum="1" Maximum="32" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
                 <ComboBox x:Name="MultipartModeBox" Header="Parallel downloading" SelectionChanged="OnChoiceSettingChanged"><ComboBoxItem Content="Automatic" Tag="auto"/><ComboBoxItem Content="Fixed" Tag="fixed"/><ComboBoxItem Content="Off" Tag="off"/></ComboBox>
                 <ComboBox x:Name="ProxyModeBox" Header="Proxy mode" SelectionChanged="OnChoiceSettingChanged"><ComboBoxItem Content="System" Tag="system"/><ComboBoxItem Content="Manual HTTP" Tag="custom"/><ComboBoxItem Content="Disabled" Tag="disabled"/></ComboBox>
                 <TextBox x:Name="ProxyUrlBox" Header="Manual HTTP proxy URL" PlaceholderText="http://proxy.example.com:8080" LostFocus="OnSettingLostFocus" />
-                <TextBlock Text="Bandwidth" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="Bandwidth" Margin="0,12,0,0" />
                 <NumberBox x:Name="BandwidthBox" Header="Global download limit (MB/s; 0 = unlimited)" Minimum="0" Maximum="100000" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <TextBlock Text="Integration" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="Integration" Margin="0,12,0,0" />
                 <TextBox x:Name="BrowserExtensionsBox" Header="Browser capture file extensions" LostFocus="OnSettingLostFocus" />
-                <TextBlock Text="Torrent seeding is not active in the engine yet." Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="Torrent seeding is not active in the engine yet." />
             </StackPanel>
         </ScrollViewer>
         </Grid>
