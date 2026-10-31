@@ -59,15 +59,12 @@ jobs:
 
       - name: Smoke release-mode Windows HTTPS CLI
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         timeout-minutes: 5
         run: |
           zig build-exe src/main.zig -O ReleaseSafe -femit-bin=zig-out/bin/speed-download-release.exe
-          if ($LASTEXITCODE -ne 0) { throw 'ReleaseSafe engine build failed' }
-          $destination = Join-Path $env:RUNNER_TEMP 'speed-download-https-smoke.html'
-          & zig-out/bin/speed-download-release.exe 'https://example.com/' $destination
-          if ($LASTEXITCODE -ne 0) { throw "HTTPS CLI exited with $LASTEXITCODE" }
-          if (!(Test-Path $destination) -or (Get-Item $destination).Length -eq 0) { throw 'HTTPS CLI wrote no data' }
+          zig-out/bin/speed-download-release.exe 'https://example.com/' "$RUNNER_TEMP/speed-download-https-smoke.html"
+          test -s "$RUNNER_TEMP/speed-download-https-smoke.html"
 
       - name: Build native SwiftUI client
         if: runner.os == 'macOS'
