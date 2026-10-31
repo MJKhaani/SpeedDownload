@@ -57,6 +57,15 @@ jobs:
             python tests/integration/ipc_engine.py zig-out/bin/speed-download
           fi
 
+      - name: Exercise exact multipart checkpoint boundary
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            python tests/integration/http_checkpoint.py zig-out/bin/speed-download.exe
+          else
+            python tests/integration/http_checkpoint.py zig-out/bin/speed-download
+          fi
+
       - name: Smoke release-mode Windows HTTPS CLI
         if: runner.os == 'Windows'
         shell: bash

@@ -36,6 +36,10 @@ For multipart transfers, the segment journal is atomically replaced after each
 4 MiB of a worker's synced data, at
 segment completion, and when a worker stops. A crash may redownload only the
 bytes after that worker's last durable checkpoint.
+The multipart checkpoint is keyed by the destination path and stored under
+`http-checkpoints` in the current user's Speed Download state directory. Existing
+`.part.sdr` files beside partial downloads are moved there when resumed. The
+`.part` file remains beside its final destination until publication.
 
 The Add Download preflight uses one small GET with the same range header. It
 derives the suggested name, final redirected URL, size, and range capability

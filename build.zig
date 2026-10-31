@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = target.result.os.tag == .macos or target.result.os.tag == .linux,
         }),
     });
+    if (target.result.os.tag == .macos) browser_host.root_module.addCSourceFile(.{ .file = b.path("src/core/posix_stat_macos.c"), .flags = &.{} });
     b.installArtifact(browser_host);
 
     const ipc_primitives = b.addObject(.{
