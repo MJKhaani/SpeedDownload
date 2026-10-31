@@ -13,7 +13,7 @@
             <NavigationViewItem x:Name="AllNavigationItem" Content="All downloads" Tag="All downloads" Icon="Download" IsSelected="True" />
             <NavigationViewItem x:Name="ProgressNavigationItem" Content="In progress" Tag="In progress" Icon="Play" />
             <NavigationViewItem x:Name="CompletedNavigationItem" Content="Completed" Tag="Completed" Icon="Accept" />
-            <NavigationViewItem x:Name="FailedNavigationItem" Content="Failed" Tag="Failed" Icon="Warning" />
+            <NavigationViewItem x:Name="FailedNavigationItem" Content="Failed" Tag="Failed" Icon="Important" />
         </NavigationView.MenuItems>
         <Grid>
         <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12">
