@@ -43,13 +43,15 @@
                     <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" />
                     <AppBarButton x:Name="StartAllButton" Label="Resume paused downloads" Icon="Play" Click="OnStartAll" />
                     <AppBarButton x:Name="PauseAllButton" Label="Pause all downloads" Icon="Pause" Click="OnPauseAll" />
-                    <AppBarButton Label="Details" Icon="View" Click="OnSelectedDetails" />
-                    <AppBarButton x:Name="ResumeSelectedButton" Label="Resume selected" Icon="Play" Click="OnResumeSelected" IsEnabled="False" />
-                    <AppBarButton x:Name="PauseSelectedButton" Label="Pause selected" Icon="Pause" Click="OnPauseSelected" IsEnabled="False" />
-                    <AppBarButton x:Name="RemoveSelectedButton" Label="Cancel or remove selected" Icon="Delete" Click="OnCancelOrRemoveSelected" IsEnabled="False" />
-                    <AppBarButton x:Name="SelectedActionsButton" Label="More actions" Click="OnSelectedActions" IsEnabled="False" />
                     <CommandBar.Content><AutoSuggestBox x:Name="SearchBox" Width="260" PlaceholderText="Search downloads" QueryIcon="Find" TextChanged="OnSearchTextChanged" /></CommandBar.Content>
-                    <CommandBar.SecondaryCommands><AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /><AppBarButton Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" /></CommandBar.SecondaryCommands>
+                    <CommandBar.SecondaryCommands>
+                        <AppBarButton Label="Details" Icon="View" Click="OnSelectedDetails" />
+                        <AppBarButton x:Name="ResumeSelectedButton" Label="Resume selected" Icon="Play" Click="OnResumeSelected" IsEnabled="False" />
+                        <AppBarButton x:Name="PauseSelectedButton" Label="Pause selected" Icon="Pause" Click="OnPauseSelected" IsEnabled="False" />
+                        <AppBarButton x:Name="RemoveSelectedButton" Label="Cancel or remove selected" Icon="Delete" Click="OnCancelOrRemoveSelected" IsEnabled="False" />
+                        <AppBarButton x:Name="SelectedActionsButton" Label="More actions" Click="OnSelectedActions" IsEnabled="False" />
+                        <AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /><AppBarButton Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" />
+                    </CommandBar.SecondaryCommands>
                 </CommandBar>
                 <ComboBox x:Name="SortBox" Header="Sort downloads" SelectedIndex="0" SelectionChanged="OnSortChanged" HorizontalAlignment="Left">
                     <ComboBoxItem Content="Engine order" Tag="order" />
