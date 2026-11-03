@@ -1,14 +1,21 @@
 # Platform Support and Feasibility Matrix
 
 **Status date:** 2026-10-28
-**Current project phase:** Engine and native clients are in active development. The current Windows alpha uses WPF temporarily; WinUI 3/Fluent UI is the required Windows client target.
+**Current project phase:** Engine and native clients are in active development. Current Windows source targets WinUI 3/Fluent UI; earlier alphas included a WPF compatibility client.
 **Meaning:** “Not validated” means no native build/runtime evidence is available. Cross-compilation alone cannot change a target to supported.
 
 The [engine feature status](engine-feature-status.md) is the current implementation inventory. The detailed notes below also preserve earlier dated observations; an earlier source build does not override a later native CI result. [Run 40655450597](https://github.com/MJKhaani/SpeedDownload/actions/runs/40655450597) passed native engine/IPC and client GUI smoke on macOS 15, Ubuntu, Windows Server 2022 x64, and Windows 11 ARM64. [Tag run 40655895412](https://github.com/MJKhaani/SpeedDownload/actions/runs/40655895412) packaged all five `v0.0.1-alpha.2` platform artifacts with their engines and checksums.
 
 ## Current evidence
 
-The Zig engine implements the capabilities and limitations listed in the [engine feature status](engine-feature-status.md). Native CI on 2026-10-28 passed the isolated engine/IPC fixture on macOS 15, Ubuntu, Windows Server 2022 x64, and Windows 11 ARM64. Current SwiftUI, GTK 4, and temporary WPF clients passed their platform GUI connection, intermediate progress, and engine restart/reconnect smoke checks. These tests use local fixtures; they do not certify public-server compatibility, torrent swarms, accessibility, installers, or the required WinUI 3 client. The `v0.0.1-alpha.2` tag workflow packaged two macOS DMGs, two Windows ZIPs, and one Linux tarball with their engines and SHA-256 checksums.
+A later WinUI alpha launched on the user's Windows Server 2022 x64 system.
+The current source adds Windows client, engine, scheduling, proxy and
+localization changes after earlier evidence; these changes require a new
+Windows build and interactive testing. English and partial Persian UI support
+are implemented, while complete localization and an accessibility audit remain
+open. Historical rows below describe their dated builds, not the current tree.
+
+The Zig engine implements the capabilities and limitations listed in the [engine feature status](engine-feature-status.md). Native CI on 2026-10-28 passed the isolated engine/IPC fixture on macOS 15, Ubuntu, Windows Server 2022 x64, and Windows 11 ARM64. The then-current SwiftUI, GTK 4, and temporary WPF clients passed GUI connection, progress, and reconnect smoke checks. These local-fixture tests do not certify the present source, public-server compatibility, accessibility, installers, or WinUI behavior. The `v0.0.1-alpha.2` tag workflow packaged two macOS DMGs, two Windows ZIPs, and one Linux tarball with their engines and SHA-256 checksums.
 
 ## Target matrix
 
@@ -58,8 +65,8 @@ See [Firefox link handoff](browser-firefox.md).
 | OS | CPU | Engine/CLI | Native GUI | IPC/runtime package | Status / next evidence |
 |---|---|---:|---:|---:|---|
 | Windows | x86 (32-bit) | Not validated | Not implemented | Not implemented | Blocked for Phase 0; assess 32-bit support separately. |
-| Windows | x86_64 | Native Zig build and isolated IPC/transfer/restart smoke pass on Server 2022 CI | WPF compatibility client opens, renders intermediate progress, and reconnects after engine restart; required WinUI 3 client still crashes before managed startup | Bundled WPF client and named-pipe engine pass GUI smoke on Server 2022 | **Experimental compatibility build**; WinUI 3/Fluent UI gate open. [CI run 40655450597](https://github.com/MJKhaani/SpeedDownload/actions/runs/40655450597). |
-| Windows | ARM64 | Native engine build and isolated IPC/transfer/restart smoke pass on Windows 11 ARM64 CI | WPF compatibility client opens, renders intermediate progress, and reconnects after engine restart; required WinUI 3 client still crashes before managed startup | Bundled WPF client and named-pipe engine pass GUI smoke on Windows 11 ARM64 CI | **Experimental compatibility build**; WinUI 3/Fluent UI gate open. [CI run 40655450597](https://github.com/MJKhaani/SpeedDownload/actions/runs/40655450597). |
+| Windows | x86_64 | Earlier native engine/IPC smoke passed on Server 2022 CI | A later WinUI alpha launched on Server 2022; current changes are untested | Named-pipe engine bundled with the WinUI client | Experimental; rebuild and verify current client and engine interactively. |
+| Windows | ARM64 | Earlier native engine/IPC smoke passed on Windows 11 ARM64 CI | Current WinUI source requires native build and runtime validation | Bundled engine and WinUI package require validation | Experimental; ARM64 native runtime and accessibility evidence pending. |
 | Linux | x86 (32-bit) | Not validated | Not implemented | Not implemented | Blocked for Phase 0; assess GTK4/GLib and large-file support separately. |
 | Linux | x86_64 | Native Zig build and isolated IPC/transfer/restart smoke pass on `ubuntu-latest` | GTK 4 build and Xvfb GUI runtime smoke pass | AF_UNIX GUI connection, intermediate progress, disconnect, and engine restart/reconnect pass | Experimental; installation and accessibility checks remain. [CI run 40538315654](https://github.com/MJKhaani/SpeedDownload/actions/runs/40538315654). |
 | Linux | ARM64 | Not validated | GTK source; not built | AF_UNIX source; not validated | Blocked for Phase 0; assess on ARM64 runner/hardware. |
@@ -71,7 +78,7 @@ See [Firefox link handoff](browser-firefox.md).
 
 Current engine API work includes `jobs.get` and filtered `jobs.list` snapshots. Source URL query strings and fragments are omitted from job snapshots; the private job store retains the original transfer URL. Native macOS and x86_64 Windows/Linux engine builds compile on the current host, but cross-builds do not establish Windows or Linux runtime behavior.
 
-Engine work still required for the full specification includes Linux/Windows native subscription client adoption, authenticated HTTPS proxy tunneling, Windows/Linux proxy credentials, and site credentials via OS secret stores, fuller FTP authentication/proxy coverage, and BitTorrent seeding/upload controls and network capabilities beyond the current v1 transfer path. A custom proxy marked as requiring authentication reads its credentials from macOS Keychain for HTTP transfers and refuses HTTPS links until authenticated CONNECT is available. Credentials remain outside engine settings. Native protocol, recovery, and security acceptance checks remain outstanding.
+Engine work still required for the full specification includes Linux/Windows native subscription client adoption, authenticated HTTPS proxy tunneling, Linux proxy credentials, site credentials via OS secret stores, fuller FTP authentication/proxy coverage, and BitTorrent seeding/upload controls and network capabilities beyond the current v1 transfer path. Custom proxy credentials for HTTP transfers are implemented using macOS Keychain or Windows Credential Manager, but the Windows path requires native testing. Authenticated HTTPS targets fail closed until authenticated CONNECT is available. Credentials remain outside engine settings. Native protocol, recovery, and security acceptance checks remain outstanding.
 
 Queued HTTP transfers and IPC URL probes now acquire engine-wide request permits:
 64 overall and 32 per destination host, including redirects. The code builds on macOS; actual

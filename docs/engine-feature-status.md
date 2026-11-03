@@ -1,12 +1,12 @@
 # Engine feature status
 
-This is the implementation inventory for the Zig engine at `src/` as of 2026-10-28. “Implemented” means the behavior exists in source; it does not imply interoperability with every server, torrent swarm, OS, or client. The [support matrix](support-matrix.md) records runtime evidence, while [PROJECT.md](../PROJECT.md) records the full product requirements.
+This is the implementation inventory for the Zig engine at `src/`. “Implemented” means the behavior exists in source; it does not imply interoperability with every server, torrent swarm, OS, or client. The [support matrix](support-matrix.md) records runtime evidence, while [PROJECT.md](../PROJECT.md) records the full product requirements.
 
 ## Core, storage, and control
 
 | Area | Implemented in the engine | Limits and remaining work |
 |---|---|---|
-| Process and IPC | Headless `engine` mode; one engine per user profile; per-user Unix sockets on macOS/Linux and named pipes on Windows; framed JSON-RPC 2.0 handshake; bounded client sessions; request validation; CLI RPC client. | The optional MCP server is not implemented. GUI startup and UI support differ by platform. |
+| Process and IPC | Headless `engine` mode; one engine per user profile; per-user Unix sockets on macOS/Linux and named pipes on Windows; framed JSON-RPC 2.0 handshake; bounded client sessions; request validation; CLI RPC client. Windows has a negotiated shutdown operation that rejects active workers. | Windows shutdown requires native validation; Unix shutdown and the optional MCP server are not implemented. GUI startup and UI support differ by platform. |
 | Jobs | Persisted jobs with stable IDs, revisions, idempotent add, priority/order, search/filter/pagination, per-job bandwidth, optional SHA-256, reference page, and replacement source. Start, pause, resume, retry, cancel, delete, move queue, reorder, and resume queue are exposed over IPC. | Replacement source is a user-confirmed operation; the engine cannot automatically recapture an authenticated browser link. |
 | State and recovery | Persistent state machine; partial data and metadata journals; restart recovery; bounded retry for temporary failures and HTTP `Retry-After`; no-replace final publication. | Recovery cannot make weak remote validators strong. Older unsupported journal formats can require a fresh download. |
 | Progress | Aggregate received/total bytes, HTTP worker ranges, torrent peer counts where known, change cursor, bounded subscriptions and `jobs.wait`. | Client rendering varies; Windows/Linux clients currently poll. |
@@ -23,7 +23,7 @@ This is the implementation inventory for the Zig engine at `src/` as of 2026-10-
 
 ## IPC methods and CLI
 
-The engine currently dispatches `engine.status`; `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.subscribe`, `jobs.add`, `jobs.probe`, `jobs.control`, `jobs.set-bandwidth`, `jobs.replace-source`, `jobs.resume-queue`, `jobs.reorder`, `jobs.move-queue`, `jobs.delete`; `torrents.prepare`; and `settings.get`/`settings.update`. The platform feature handshake differs: the Windows build advertises a smaller subset than the Unix build. See the [IPC contract](protocols/ipc-v1.md) and `src/main.zig` for the exact advertised sets.
+The engine currently dispatches `engine.status`; `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.subscribe`, `jobs.add`, `jobs.probe`, `jobs.control`, `jobs.set-bandwidth`, `jobs.replace-source`, `jobs.resume-queue`, `jobs.reorder`, `jobs.move-queue`, `jobs.delete`; `torrents.prepare`; and `settings.get`/`settings.update`. Windows also exposes `engine.shutdown`. The platform feature handshake differs by platform. See the [IPC contract](protocols/ipc-v1.md) and `src/main.zig` for the exact advertised sets.
 
 The CLI provides `engine`, direct HTTP(S)/FTP(S) download, torrent/magnet inspect and download commands, and `rpc` commands for status, list, get, probe, add, control, reorder, and delete. CLI help is the authority for exact arguments.
 

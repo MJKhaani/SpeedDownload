@@ -1,6 +1,7 @@
 //! Applies an engine-owned proxy policy to each HTTP client before requests.
 //! The proxy endpoint contains no credentials. On macOS, authenticated custom
-//! proxies read the user's Keychain item. A custom endpoint never falls back to direct.
+//! proxies read the user's Keychain item; Windows uses Credential Manager.
+//! A custom endpoint never falls back to direct.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -64,17 +65,22 @@ pub const State = struct {
         if (policy.mode == .system) {
             if (comptime builtin.os.tag == .macos) try self.applyMacOSSystem(client, target);
             if (comptime builtin.os.tag == .linux) try self.applyLinuxSystem(client, target);
+            if (comptime builtin.os.tag == .windows) try self.applyWindowsSystem(client, target);
             return;
         }
         if (policy.mode != .custom) return;
         const url = policy.url orelse return error.InvalidProxy;
         try self.applyEndpoint(client, url);
         if (policy.authentication_required) {
-            if (comptime builtin.os.tag != .macos) return error.ProxyAuthenticationUnavailable;
             // Zig 0.17 does not attach Proxy-Authorization to CONNECT. Ordinary
             // HTTP forwarding does attach it; never attempt HTTPS unauthenticated.
             if (std.ascii.eqlIgnoreCase(target.scheme, "https")) return error.AuthenticatedHttpsProxyUnsupported;
-            self.authorization = try keychainProxyAuthorization(self.allocator);
+            self.authorization = if (comptime builtin.os.tag == .macos)
+                try keychainProxyAuthorization(self.allocator)
+            else if (comptime builtin.os.tag == .windows)
+                try windowsProxyAuthorization(self.allocator, url)
+            else
+                return error.ProxyAuthenticationUnavailable;
             self.proxy.authorization = self.authorization.?;
             self.proxy.supports_connect = false;
         }
@@ -118,6 +124,64 @@ pub const State = struct {
             defer self.allocator.free(url);
             try self.applyEndpoint(client, url);
         }
+    }
+
+    fn applyWindowsSystem(self: *State, client: *http.Client, target: std.Uri) !void {
+        if (comptime builtin.os.tag != .windows) return error.UnsupportedSystemProxyConfiguration;
+        var config: WindowsProxyConfig = std.mem.zeroes(WindowsProxyConfig);
+        defer if (config.auto_url) |value| { _ = GlobalFree(@ptrCast(value)); };
+        defer if (config.proxy) |value| { _ = GlobalFree(@ptrCast(value)); };
+        defer if (config.bypass) |value| { _ = GlobalFree(@ptrCast(value)); };
+        if (WinHttpGetIEProxyConfigForCurrentUser(&config) == 0) {
+            if (GetLastError() == 2) return; // No per-user proxy configuration.
+            return error.InvalidSystemProxy;
+        }
+
+        var automatic: WindowsProxyInfo = std.mem.zeroes(WindowsProxyInfo);
+        defer if (automatic.proxy) |value| { _ = GlobalFree(@ptrCast(value)); };
+        defer if (automatic.bypass) |value| { _ = GlobalFree(@ptrCast(value)); };
+        var use_automatic = false;
+        if (config.auto_detect != 0 or config.auto_url != null) {
+            const session = WinHttpOpen(null, 1, null, null, 0) orelse return error.InvalidSystemProxy;
+            defer _ = WinHttpCloseHandle(session);
+            const raw_url = try uriString(self.allocator, target);
+            defer self.allocator.free(raw_url);
+            const wide_url = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, raw_url);
+            defer self.allocator.free(wide_url);
+            const options: WindowsAutoProxyOptions = .{
+                .flags = (if (config.auto_detect != 0) @as(u32, 1) else 0) | (if (config.auto_url != null) @as(u32, 2) else 0),
+                .auto_detect_flags = if (config.auto_detect != 0) 3 else 0,
+                .auto_config_url = config.auto_url,
+                .reserved = null, .reserved_number = 0, .auto_logon = 0,
+            };
+            if (WinHttpGetProxyForUrl(session, wide_url, &options, &automatic) != 0) {
+                use_automatic = true;
+            } else if (config.auto_url != null or GetLastError() != 12180) {
+                return error.UnsupportedSystemProxyConfiguration;
+            }
+        }
+        const proxy_value = if (use_automatic) automatic.proxy else config.proxy;
+        const bypass_value = if (use_automatic) automatic.bypass else config.bypass;
+        if (use_automatic and automatic.access_type == 1) return; // WinHTTP resolved DIRECT.
+        if (use_automatic and automatic.access_type != 3) return error.UnsupportedSystemProxyConfiguration;
+        if (proxy_value == null) {
+            if (use_automatic and automatic.access_type != 1) return error.InvalidSystemProxy;
+            return;
+        }
+        if (bypass_value) |wide| {
+            const bypass = try std.unicode.utf16LeToUtf8Alloc(self.allocator, std.mem.span(wide));
+            defer self.allocator.free(bypass);
+            if (try windowsProxyBypasses(bypass, target)) return;
+        }
+        const proxy_list = try std.unicode.utf16LeToUtf8Alloc(self.allocator, std.mem.span(proxy_value.?));
+        defer self.allocator.free(proxy_list);
+        const endpoint = try windowsProxyForScheme(proxy_list, target.scheme) orelse return;
+        const url = if (std.mem.indexOf(u8, endpoint, "://") != null)
+            try self.allocator.dupe(u8, endpoint)
+        else
+            try std.fmt.allocPrint(self.allocator, "http://{s}", .{endpoint});
+        defer self.allocator.free(url);
+        try self.applyEndpoint(client, url);
     }
 
     fn applyMacOSSystem(self: *State, client: *http.Client, target: std.Uri) !void {
@@ -167,6 +231,11 @@ fn keychainProxyAuthorization(allocator: std.mem.Allocator) ![]u8 {
     if (length == 0 or length > 4096) return error.ProxyCredentialsUnavailable;
     const bytes: [*]const u8 = @ptrCast(data.?);
     const secret = bytes[0..length];
+    return proxyAuthorizationFromSecret(allocator, secret);
+}
+
+fn proxyAuthorizationFromSecret(allocator: std.mem.Allocator, secret: []const u8) ![]u8 {
+    if (secret.len == 0 or secret.len > 4096) return error.ProxyCredentialsUnavailable;
     const separator = std.mem.indexOfScalar(u8, secret, '\n') orelse return error.ProxyCredentialsUnavailable;
     if (std.mem.indexOfScalar(u8, secret[0..separator], ':') != null or
         std.mem.indexOfScalar(u8, secret, '\r') != null or std.mem.indexOfScalar(u8, secret, 0) != null)
@@ -182,6 +251,137 @@ fn keychainProxyAuthorization(allocator: std.mem.Allocator) ![]u8 {
     @memcpy(credentials[separator + 1 .. secret.len], secret[separator + 1 ..]);
     _ = std.base64.standard.Encoder.encode(authorization["Basic ".len..], credentials[0..secret.len]);
     return authorization;
+}
+
+test "proxy credentials are encoded without accepting invalid separators" {
+    const allocator = std.testing.allocator;
+    const authorization = try proxyAuthorizationFromSecret(allocator, "user\npassword");
+    defer allocator.free(authorization);
+    try std.testing.expectEqualStrings("Basic dXNlcjpwYXNzd29yZA==", authorization);
+    try std.testing.expectError(error.ProxyCredentialsUnavailable, proxyAuthorizationFromSecret(allocator, "user:bad\npassword"));
+    try std.testing.expectError(error.ProxyCredentialsUnavailable, proxyAuthorizationFromSecret(allocator, "missing-separator"));
+}
+
+const WindowsCredential = extern struct {
+    flags: u32,
+    credential_type: u32,
+    target_name: ?[*:0]u16,
+    comment: ?[*:0]u16,
+    last_written: extern struct { low: u32, high: u32 },
+    blob_size: u32,
+    blob: ?[*]u8,
+    persist: u32,
+    attribute_count: u32,
+    attributes: ?*anyopaque,
+    target_alias: ?[*:0]u16,
+    user_name: ?[*:0]u16,
+};
+const WindowsProxyConfig = extern struct {
+    auto_detect: i32,
+    auto_url: ?[*:0]u16,
+    proxy: ?[*:0]u16,
+    bypass: ?[*:0]u16,
+};
+const WindowsProxyInfo = extern struct { access_type: u32, proxy: ?[*:0]u16, bypass: ?[*:0]u16 };
+const WindowsAutoProxyOptions = extern struct {
+    flags: u32,
+    auto_detect_flags: u32,
+    auto_config_url: ?[*:0]u16,
+    reserved: ?*anyopaque,
+    reserved_number: u32,
+    auto_logon: i32,
+};
+extern "winhttp" fn WinHttpGetIEProxyConfigForCurrentUser(*WindowsProxyConfig) callconv(.winapi) i32;
+extern "winhttp" fn WinHttpOpen(?[*:0]const u16, u32, ?[*:0]const u16, ?[*:0]const u16, u32) callconv(.winapi) ?*anyopaque;
+extern "winhttp" fn WinHttpGetProxyForUrl(*anyopaque, [*:0]const u16, *const WindowsAutoProxyOptions, *WindowsProxyInfo) callconv(.winapi) i32;
+extern "winhttp" fn WinHttpCloseHandle(*anyopaque) callconv(.winapi) i32;
+extern "kernel32" fn GlobalFree(?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetLastError() callconv(.winapi) u32;
+
+fn windowsProxyForScheme(list: []const u8, scheme: []const u8) !?[]const u8 {
+    var entries = std.mem.splitScalar(u8, list, ';');
+    var saw_scheme = false;
+    while (entries.next()) |raw| {
+        var entry = std.mem.trim(u8, raw, " \t\r\n");
+        if (entry.len == 0) continue;
+        if (std.ascii.eqlIgnoreCase(entry, "DIRECT")) return null;
+        if (std.mem.indexOfScalar(u8, entry, '=')) |equal| {
+            saw_scheme = true;
+            const name = std.mem.trim(u8, entry[0..equal], " \t");
+            if (!std.ascii.eqlIgnoreCase(name, "http") and !std.ascii.eqlIgnoreCase(name, "https"))
+                return error.UnsupportedSystemProxyConfiguration;
+            if (!std.ascii.eqlIgnoreCase(name, scheme)) continue;
+            entry = std.mem.trim(u8, entry[equal + 1 ..], " \t");
+        } else if (entry.len > 6 and std.ascii.eqlIgnoreCase(entry[0..6], "PROXY ")) {
+            entry = std.mem.trim(u8, entry[6..], " \t");
+        }
+        if (entry.len == 0 or std.mem.indexOfAny(u8, entry, " \t\r\n") != null)
+            return error.UnsupportedSystemProxyConfiguration;
+        return entry;
+    }
+    if (saw_scheme) return null;
+    return error.InvalidSystemProxy;
+}
+
+fn windowsProxyBypasses(list: []const u8, target: std.Uri) !bool {
+    const part = target.host orelse return error.InvalidSystemProxy;
+    const host = switch (part) { .raw => |value| value, .percent_encoded => |value| value };
+    const port = target.port orelse if (std.ascii.eqlIgnoreCase(target.scheme, "https")) @as(u16, 443) else 80;
+    var entries = std.mem.tokenizeAny(u8, list, ";,");
+    while (entries.next()) |raw| {
+        var pattern = std.mem.trim(u8, raw, " \t\r\n");
+        if (pattern.len == 0) continue;
+        if (std.ascii.eqlIgnoreCase(pattern, "<local>")) {
+            if (std.mem.indexOfScalar(u8, host, '.') == null and !isIp6Literal(host)) return true;
+            continue;
+        }
+        if (std.mem.indexOfAny(u8, pattern, "<>?@") != null or std.mem.indexOf(u8, pattern, "://") != null)
+            return error.UnsupportedSystemProxyConfiguration;
+        if (std.mem.lastIndexOfScalar(u8, pattern, ':')) |colon| {
+            if (std.mem.indexOfScalar(u8, pattern[0..colon], ':') == null) {
+                const required = std.fmt.parseInt(u16, pattern[colon + 1 ..], 10) catch return error.UnsupportedSystemProxyConfiguration;
+                if (required != port) continue;
+                pattern = pattern[0..colon];
+            }
+        }
+        if (std.mem.indexOfScalar(u8, pattern, '/') != null) {
+            if (parseCidr(pattern) == null) return error.UnsupportedSystemProxyConfiguration;
+            if (cidrExceptionMatches(pattern, host)) return true;
+        } else if (hostPatternMatches(pattern, host)) return true;
+    }
+    return false;
+}
+
+test "Windows system proxy selection and bypass rules" {
+    try std.testing.expectEqualStrings("secure:8443", (try windowsProxyForScheme("http=plain:8080;https=secure:8443", "https")).?);
+    try std.testing.expect((try windowsProxyForScheme("http=plain:8080", "https")) == null);
+    try std.testing.expectEqualStrings("proxy:8080", (try windowsProxyForScheme("PROXY proxy:8080;DIRECT", "http")).?);
+    try std.testing.expectError(error.UnsupportedSystemProxyConfiguration, windowsProxyForScheme("socks=proxy:1080", "https"));
+    const target = try std.Uri.parse("https://a.example.test/file");
+    try std.testing.expect(try windowsProxyBypasses("<local>;*.example.test", target));
+    try std.testing.expect(!(try windowsProxyBypasses("*.example.test:80", target)));
+    try std.testing.expectError(error.UnsupportedSystemProxyConfiguration, windowsProxyBypasses("<unknown>", target));
+}
+extern "advapi32" fn CredReadW([*:0]const u16, u32, u32, *?*WindowsCredential) callconv(.winapi) i32;
+extern "advapi32" fn CredFree(?*anyopaque) callconv(.winapi) void;
+
+fn windowsProxyAuthorization(allocator: std.mem.Allocator, endpoint: []const u8) ![]u8 {
+    if (comptime builtin.os.tag != .windows) return error.ProxyAuthenticationUnavailable;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(endpoint, &digest, .{});
+    const target = try std.fmt.allocPrint(allocator, "SpeedDownload.ManualProxy.{s}", .{std.fmt.bytesToHex(digest, .lower)});
+    defer allocator.free(target);
+    const target_wide = try std.unicode.utf8ToUtf16LeAllocZ(allocator, target);
+    defer allocator.free(target_wide);
+    var credential: ?*WindowsCredential = null;
+    if (CredReadW(target_wide, 1, 0, &credential) == 0 or credential == null)
+        return error.ProxyCredentialsUnavailable;
+    defer CredFree(credential);
+    const value = credential.?;
+    if (value.blob_size == 0 or value.blob_size > 4096 or value.blob == null) return error.ProxyCredentialsUnavailable;
+    const secret = value.blob.?[0..value.blob_size];
+    defer @memset(secret, 0);
+    return proxyAuthorizationFromSecret(allocator, secret);
 }
 
 extern fn SecKeychainFindGenericPassword(?*anyopaque, u32, [*]const u8, u32, [*]const u8, *u32, *?*anyopaque, ?*?*anyopaque) c_int;

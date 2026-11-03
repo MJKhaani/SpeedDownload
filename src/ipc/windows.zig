@@ -42,6 +42,7 @@ pub const Error = error{
     PipeWriteFailed,
     PipeTimeout,
     TooManyClients,
+    ServerStopping,
 };
 
 pub const Config = struct {
@@ -152,7 +153,9 @@ pub fn serve(allocator: Allocator, config: Config) !void {
     };
 
     var first_pipe_instance = true;
+    var scheduler_thread: ?std.Thread = null;
     while (true) {
+        if (engine.stopping.load(.acquire)) break;
         const pipe = CreateNamedPipeW(
             pipe_name_utf16,
             pipe_access_duplex | (if (first_pipe_instance) file_flag_first_pipe_instance else 0),
@@ -165,11 +168,21 @@ pub fn serve(allocator: Allocator, config: Config) !void {
         );
         if (pipe == windows.INVALID_HANDLE_VALUE) {
             if (first_pipe_instance and GetLastError() == error_access_denied) return Error.EndpointExists;
-            return Error.PipeCreateFailed;
+            if (first_pipe_instance) return Error.PipeCreateFailed;
+            Sleep(100);
+            continue;
         }
-        first_pipe_instance = false;
-        waitForClient(pipe) catch {
+        if (first_pipe_instance) {
+            first_pipe_instance = false;
+            scheduler_thread = std.Thread.spawn(.{}, unix_service.schedulerLoop, .{&engine}) catch |err| {
+                _ = CloseHandle(pipe);
+                return err;
+            };
+            unix_service.scheduleTick(&engine);
+        }
+        waitForClient(pipe, &engine) catch {
             _ = CloseHandle(pipe);
+            if (engine.stopping.load(.acquire)) break;
             continue;
         };
         if (!reserveClient(&engine)) {
@@ -185,6 +198,8 @@ pub fn serve(allocator: Allocator, config: Config) !void {
         };
         thread.detach();
     }
+    if (scheduler_thread) |thread| thread.join();
+    while (engine.active_clients.load(.acquire) != 0 or engine.active_workers.load(.acquire) != 0) Sleep(10);
 }
 
 fn currentIdentity(allocator: Allocator) !struct { sid: []u8, session_id: u32 } {
@@ -210,8 +225,9 @@ fn currentIdentity(allocator: Allocator) !struct { sid: []u8, session_id: u32 } 
     return .{ .sid = sid_utf8, .session_id = session_id };
 }
 
-fn waitForClient(pipe: windows.HANDLE) Error!void {
+fn waitForClient(pipe: windows.HANDLE, engine: *unix_service.EngineContext) Error!void {
     while (true) {
+        if (engine.stopping.load(.acquire)) return error.ServerStopping;
         if (ConnectNamedPipe(pipe, null) != 0) return;
         switch (GetLastError()) {
             error_pipe_connected => return,
@@ -225,6 +241,7 @@ fn waitForClient(pipe: windows.HANDLE) Error!void {
 
 fn reserveClient(engine: *unix_service.EngineContext) bool {
     while (true) {
+        if (engine.stopping.load(.acquire)) return false;
         const active = engine.active_clients.load(.acquire);
         if (active >= max_pipe_clients) return false;
         if (engine.active_clients.cmpxchgWeak(active, active + 1, .acquire, .monotonic) == null) return true;
@@ -256,6 +273,7 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
     };
 
     while (true) {
+        if (engine.stopping.load(.acquire)) return;
         if (active_subscription) |*item| {
             var available: u32 = 0;
             if (PeekNamedPipe(pipe, null, 0, null, &available, null) == 0) return;
@@ -271,10 +289,10 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
                 continue;
             }
         }
-        try readExact(pipe, &header);
+        try readExact(pipe, &header, engine);
         const length = std.mem.readInt(u32, &header, .little);
         if (length == 0 or length > frame.max_payload_bytes) return;
-        try readExact(pipe, request_frame[frame.header_bytes .. frame.header_bytes + length]);
+        try readExact(pipe, request_frame[frame.header_bytes .. frame.header_bytes + length], engine);
         @memcpy(request_frame[0..frame.header_bytes], &header);
         const result = try protocol.handleFrame(
             allocator,
@@ -306,10 +324,11 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
     }
 }
 
-fn readExact(pipe: windows.HANDLE, buffer: []u8) Error!void {
+fn readExact(pipe: windows.HANDLE, buffer: []u8, engine: *unix_service.EngineContext) Error!void {
     var offset: usize = 0;
     const start = GetTickCount64();
     while (offset < buffer.len) {
+        if (engine.stopping.load(.acquire)) return error.ServerStopping;
         var count: u32 = 0;
         const amount: u32 = @intCast(@min(buffer.len - offset, std.math.maxInt(u32)));
         if (ReadFile(pipe, buffer[offset..].ptr, amount, &count, null) != 0 and count > 0) {

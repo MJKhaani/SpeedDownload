@@ -20,6 +20,7 @@ pub const hours_per_week = 7 * 24;
 pub const BandwidthScheduleMode = enum { global_limit, limited };
 pub const MultipartMode = enum { off, auto, fixed };
 pub const QueueFinishAction = enum { none, quit_app, power_off, custom_app, user_command };
+pub const QueueActionOutcome = enum { succeeded, failed };
 pub const QueueCompletion = struct {
     action: QueueFinishAction,
     custom_app: ?[]u8 = null,
@@ -115,6 +116,8 @@ pub const Job = struct {
     live_total_bytes: ?u64 = null,
     requested_control: ?StopAction = null,
     completion_trigger: bool = false,
+    queue_finish_action: ?QueueFinishAction = null,
+    queue_action_outcome: ?QueueActionOutcome = null,
     priority: i32 = 0,
     bandwidth_limit_bytes_per_second: u64 = 0,
     workers: [32]WorkerProgress = @splat(.{}),
@@ -711,7 +714,7 @@ pub const Store = struct {
         }, .{});
     }
 
-    pub fn statusJson(self: *Store, request_id: std.json.Value, engine_instance_id: []const u8, uptime_seconds: u64) ![]u8 {
+    pub fn statusJson(self: *Store, request_id: std.json.Value, engine_instance_id: []const u8, uptime_seconds: u64, local_slot: ?usize) ![]u8 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         var active: usize = 0;
@@ -723,12 +726,24 @@ pub const Store = struct {
             .paused => paused += 1,
             else => {},
         };
+        const scheduled_active: ?bool = if (!self.settings.bandwidth_schedule_enabled)
+            false
+        else if (local_slot) |slot|
+            if (slot < hours_per_week) self.settings.bandwidth_schedule_slots[slot] == .limited else null
+        else
+            null;
+        const effective_limit: ?u64 = if (scheduled_active) |scheduled|
+            if (scheduled) self.settings.scheduled_bandwidth_limit_bytes_per_second else self.settings.bandwidth_limit_bytes_per_second
+        else
+            null;
         return std.json.Stringify.valueAlloc(self.allocator, .{
             .jsonrpc = "2.0",
             .id = request_id,
             .result = .{
                 .engine_instance_id = engine_instance_id,
                 .uptime_seconds = uptime_seconds,
+                .effective_bandwidth_limit_bytes_per_second = effective_limit,
+                .scheduled_bandwidth_active = scheduled_active,
                 .jobs = .{ .total = self.jobs.items.len, .active = active, .waiting = waiting, .paused = paused },
             },
         }, .{});
@@ -1330,6 +1345,28 @@ pub const Store = struct {
         };
     }
 
+    pub fn recordQueueActionOutcome(self: *Store, job_id: []const u8, action: QueueFinishAction, outcome: QueueActionOutcome) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.jobs.items) |*job| {
+            if (!std.mem.eql(u8, job.id, job_id)) continue;
+            const old_action = job.queue_finish_action;
+            const old_outcome = job.queue_action_outcome;
+            const old_revision = job.revision;
+            job.revision = try std.math.add(u64, job.revision, 1);
+            job.queue_finish_action = action;
+            job.queue_action_outcome = outcome;
+            self.persist() catch |err| {
+                job.queue_finish_action = old_action;
+                job.queue_action_outcome = old_outcome;
+                job.revision = old_revision;
+                return err;
+            };
+            return;
+        }
+        return error.JobNotFound;
+    }
+
     /// Persist a bounded retry before releasing the worker slot. A later
     /// scheduler tick promotes the job only after its deadline has passed.
     pub fn scheduleTransientRetry(self: *Store, job_id: []const u8, failure: []const u8, minimum_delay_seconds: u32, rate_limited_connections: ?u8) !bool {
@@ -1767,6 +1804,14 @@ pub const Store = struct {
             null
         else
             return error.InvalidJobStore;
+        const queue_action_value = object.get("queue_finish_action") orelse .null;
+        const queue_finish_action: ?QueueFinishAction = if (queue_action_value == .string)
+            std.meta.stringToEnum(QueueFinishAction, queue_action_value.string) orelse return error.InvalidJobStore
+        else if (queue_action_value == .null) null else return error.InvalidJobStore;
+        const queue_outcome_value = object.get("queue_action_outcome") orelse .null;
+        const queue_action_outcome: ?QueueActionOutcome = if (queue_outcome_value == .string)
+            std.meta.stringToEnum(QueueActionOutcome, queue_outcome_value.string) orelse return error.InvalidJobStore
+        else if (queue_outcome_value == .null) null else return error.InvalidJobStore;
         const priority_value = object.get("priority") orelse std.json.Value{ .integer = 0 };
         if (priority_value != .integer or priority_value.integer < -100 or priority_value.integer > 100)
             return error.InvalidJobStore;
@@ -1826,6 +1871,8 @@ pub const Store = struct {
             .completed_bytes = @intCast(completed_value.integer),
             .total_bytes = total_bytes,
             .requested_control = requested_control,
+            .queue_finish_action = queue_finish_action,
+            .queue_action_outcome = queue_action_outcome,
             .priority = @intCast(priority_value.integer),
             .bandwidth_limit_bytes_per_second = @intCast(bandwidth_value.integer),
         });
@@ -1853,6 +1900,8 @@ pub const Store = struct {
             .completed_bytes = job.completed_bytes,
             .total_bytes = job.total_bytes,
             .requested_control = job.requested_control,
+            .queue_finish_action = job.queue_finish_action,
+            .queue_action_outcome = job.queue_action_outcome,
             .priority = job.priority,
             .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
         });
@@ -2106,6 +2155,8 @@ const Summary = struct {
     received_bytes: ?[]const u8,
     total_bytes: ?[]const u8,
     requested_control: ?StopAction,
+    queue_finish_action: ?QueueFinishAction,
+    queue_action_outcome: ?QueueActionOutcome,
     priority: i32,
     bandwidth_limit_bytes_per_second: u64,
     workers: []const WorkerProgress,
@@ -2144,6 +2195,8 @@ fn makeSummary(allocator: std.mem.Allocator, job: *const Job) !Summary {
         .received_bytes = received,
         .total_bytes = total,
         .requested_control = job.requested_control,
+        .queue_finish_action = job.queue_finish_action,
+        .queue_action_outcome = job.queue_action_outcome,
         .priority = job.priority,
         .bandwidth_limit_bytes_per_second = job.bandwidth_limit_bytes_per_second,
         .workers = job.workers[0..job.worker_count],
@@ -2182,6 +2235,8 @@ const PersistedJob = struct {
     completed_bytes: u64,
     total_bytes: ?u64,
     requested_control: ?StopAction,
+    queue_finish_action: ?QueueFinishAction,
+    queue_action_outcome: ?QueueActionOutcome,
     priority: i32,
     bandwidth_limit_bytes_per_second: u64,
 };

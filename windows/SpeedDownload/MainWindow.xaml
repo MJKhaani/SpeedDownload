@@ -3,9 +3,20 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:SpeedDownload"
+    xmlns:tv="using:WinUI.TableView"
     Title="Speed Download">
     <Window.SystemBackdrop><MicaBackdrop /></Window.SystemBackdrop>
     <Grid>
+        <Grid.Resources>
+            <DataTemplate x:Key="TorrentFileTemplate">
+                <CheckBox IsChecked="{Binding Selected, Mode=TwoWay}" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="{Binding Path}" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding SizeText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </CheckBox>
+            </DataTemplate>
+        </Grid.Resources>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <TitleBar x:Name="AppTitleBar" Title="Speed Download" />
     <NavigationView x:Name="AppNavigation" Grid.Row="1" IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto" OpenPaneLength="230" IsSettingsVisible="True" ItemInvoked="OnNavigationItemInvoked">
@@ -18,66 +29,136 @@
             <NavigationViewItemHeader Content="Queues" />
             <NavigationViewItem Content="New queue" Tag="new-queue" Icon="Add" />
         </NavigationView.MenuItems>
-        <Grid>
-        <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12">
+        <Grid x:Name="AppRoot">
+        <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12" AllowDrop="True" DragOver="OnDownloadDragOver" Drop="OnDownloadDrop">
+            <Grid.KeyboardAccelerators>
+                <KeyboardAccelerator Key="N" Modifiers="Control" Invoked="OnAddShortcut" />
+                <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="OnSearchShortcut" />
+                <KeyboardAccelerator Key="V" Modifiers="Control" Invoked="OnPasteDownloadShortcut" />
+                <KeyboardAccelerator Key="Left" Modifiers="Menu" Invoked="OnDetailsBackShortcut" />
+            </Grid.KeyboardAccelerators>
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Spacing="8">
                 <TextBlock x:Name="SectionTitle" Text="All downloads" Style="{ThemeResource TitleTextBlockStyle}" />
-                <CommandBar DefaultLabelPosition="Right">
+                <CommandBar x:Name="DownloadCommands" DefaultLabelPosition="Right">
                     <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" />
-                    <AppBarButton Label="Start all" Icon="Play" Click="OnStartAll" />
-                    <AppBarButton Label="Pause all" Icon="Pause" Click="OnPauseAll" />
+                    <AppBarButton x:Name="StartAllButton" Label="Resume paused downloads" Icon="Play" Click="OnStartAll" />
+                    <AppBarButton x:Name="PauseAllButton" Label="Pause all downloads" Icon="Pause" Click="OnPauseAll" />
+                    <AppBarButton Label="Details" Icon="View" Click="OnSelectedDetails" />
+                    <AppBarButton x:Name="ResumeSelectedButton" Label="Resume selected" Icon="Play" Click="OnResumeSelected" IsEnabled="False" />
+                    <AppBarButton x:Name="PauseSelectedButton" Label="Pause selected" Icon="Pause" Click="OnPauseSelected" IsEnabled="False" />
+                    <AppBarButton x:Name="RemoveSelectedButton" Label="Cancel or remove selected" Icon="Delete" Click="OnCancelOrRemoveSelected" IsEnabled="False" />
+                    <AppBarButton x:Name="SelectedActionsButton" Label="More actions" Click="OnSelectedActions" IsEnabled="False" />
                     <CommandBar.Content><AutoSuggestBox x:Name="SearchBox" Width="260" PlaceholderText="Search downloads" QueryIcon="Find" TextChanged="OnSearchTextChanged" /></CommandBar.Content>
-                    <CommandBar.SecondaryCommands><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /></CommandBar.SecondaryCommands>
+                    <CommandBar.SecondaryCommands><AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /><AppBarButton Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" /></CommandBar.SecondaryCommands>
                 </CommandBar>
-                <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" />
+                <ComboBox x:Name="SortBox" Header="Sort downloads" SelectedIndex="0" SelectionChanged="OnSortChanged" HorizontalAlignment="Left">
+                    <ComboBoxItem Content="Engine order" Tag="order" />
+                    <ComboBoxItem Content="Name (A–Z)" Tag="name-asc" />
+                    <ComboBoxItem Content="Name (Z–A)" Tag="name-desc" />
+                    <ComboBoxItem Content="Status (A–Z)" Tag="state-asc" />
+                    <ComboBoxItem Content="Status (Z–A)" Tag="state-desc" />
+                    <ComboBoxItem Content="Size (smallest first)" Tag="size-asc" />
+                    <ComboBoxItem Content="Size (largest first)" Tag="size-desc" />
+                    <ComboBoxItem Content="Speed (slowest first)" Tag="speed-asc" />
+                    <ComboBoxItem Content="Speed (fastest first)" Tag="speed-desc" />
+                    <ComboBoxItem Content="ETA (shortest first)" Tag="eta-asc" />
+                    <ComboBoxItem Content="ETA (longest first)" Tag="eta-desc" />
+                </ComboBox>
+                <TextBlock x:Name="SelectionSummary" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" AutomationProperties.LiveSetting="Polite" />
+                <InfoBar x:Name="ConnectionBar" IsOpen="False" Severity="Warning" IsClosable="False" Title="Engine disconnected" Message="Displayed downloads may be out of date. Reconnect to resume managing downloads." AutomationProperties.LiveSetting="Polite">
+                    <InfoBar.ActionButton><Button Content="Reconnect" Click="OnRefresh" /></InfoBar.ActionButton>
+                </InfoBar>
             </StackPanel>
             <Grid Grid.Row="1" ColumnSpacing="14" SizeChanged="OnWorkspaceSizeChanged">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="DetailsColumn" Width="0"/></Grid.ColumnDefinitions>
-                <ListView x:Name="JobsList" SelectionMode="Single" SelectionChanged="OnJobSelectionChanged" IsItemClickEnabled="False">
-                    <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="local:DownloadJob">
-                            <Grid Padding="12" ColumnSpacing="12" MinHeight="72">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="160"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <StackPanel Spacing="5" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Title}" Style="{ThemeResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Text="{Binding Host}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" FontSize="12" />
+                <tv:TableView x:Name="JobsList" KeyDown="OnJobsKeyDown" RightTapped="OnJobsRightTapped"
+                    SelectionMode="Extended" SelectionUnit="Row" SelectionChanged="OnJobSelectionChanged"
+                    Sorting="OnTableSorting" AutoGenerateColumns="False" IsReadOnly="True" AllowLiveShaping="False"
+                    CanFilterColumns="False" CanGroupColumns="False" CanSortColumns="True" ShowSortableColumnIcon="True"
+                    GridLinesVisibility="None" HeaderGridLinesVisibility="None" HeadersVisibility="Columns"
+                    CornerButtonMode="None" AutomationProperties.Name="Downloads">
+                    <tv:TableView.Columns>
+                        <tv:TableViewTemplateColumn Header="Name" Tag="name" Width="*" MinWidth="140" SortMemberPath="Title" OperationContentBinding="{Binding Title}" CanSort="True">
+                            <tv:TableViewTemplateColumn.CellTemplate><DataTemplate x:DataType="local:DownloadJob">
+                                <Grid ColumnSpacing="8" VerticalAlignment="Center" Margin="0,6">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="24" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="20" Visibility="{Binding FallbackIconVisibility}" AutomationProperties.AccessibilityView="Raw" />
+                                    <Image Source="{Binding FileIcon}" Width="20" Height="20" AutomationProperties.AccessibilityView="Raw" />
+                                    <StackPanel Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Host}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate></tv:TableViewTemplateColumn.CellTemplate>
+                        </tv:TableViewTemplateColumn>
+                        <tv:TableViewTemplateColumn Header="Status / progress" Tag="state" Width="190" SortMemberPath="StateText" OperationContentBinding="{Binding AccessibleStatus}" CanSort="True">
+                            <tv:TableViewTemplateColumn.CellTemplate><DataTemplate x:DataType="local:DownloadJob">
+                                <StackPanel Spacing="3" VerticalAlignment="Center" Margin="0,6">
+                                    <TextBlock Text="{Binding StateText}" TextTrimming="CharacterEllipsis" />
+                                    <ProgressBar Value="{Binding Progress}" Maximum="100" Visibility="{Binding ProgressVisibility}" AutomationProperties.Name="{Binding ProgressText}" />
+                                    <TextBlock Text="{Binding ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding CompactMetrics}" Visibility="{Binding CompactMetricsVisibility}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                                 </StackPanel>
-                                <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding State}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <ProgressBar Value="{Binding Progress}" Maximum="100" Visibility="{Binding ProgressVisibility}" />
-                                    <TextBlock Text="{Binding ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" />
+                            </DataTemplate></tv:TableViewTemplateColumn.CellTemplate>
+                        </tv:TableViewTemplateColumn>
+                        <tv:TableViewTextColumn Header="Size" Tag="size" Width="100" Binding="{Binding SizeText}" SortMemberPath="Total" />
+                        <tv:TableViewTextColumn Header="Speed" Tag="speed" Width="100" Binding="{Binding SpeedText}" SortMemberPath="BytesPerSecond" />
+                        <tv:TableViewTextColumn Header="ETA" Tag="eta" Width="140" Binding="{Binding EtaText}" SortMemberPath="EtaSeconds" />
+                        <tv:TableViewTemplateColumn Header="Actions" Width="168" CanSort="False">
+                            <tv:TableViewTemplateColumn.CellTemplate><DataTemplate x:DataType="local:DownloadJob">
+                                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <Button Content="{Binding PrimaryActionGlyph}" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="{Binding PrimaryActionText}" IsEnabled="{Binding CanControl}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" ToolTipService.ToolTip="{Binding PrimaryActionText}" />
+                                    <Button Content="&#xE946;" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="Show transfer details" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
+                                    <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="{Binding RemoveActionText}" IsEnabled="{Binding CanControl}" Click="OnCancelOrRemove" ToolTipService.ToolTip="{Binding RemoveActionText}" />
+                                    <Button Content="&#xE712;" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="More transfer actions" IsEnabled="{Binding CanControl}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
                                 </StackPanel>
-                                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                    <Button Content="{Binding PrimaryActionGlyph}" Tag="{Binding JobId}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" ToolTipService.ToolTip="Start, pause, resume, or retry" />
-                                    <Button Content="ⓘ" Tag="{Binding JobId}" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
-                                    <Button Content="✕" Tag="{Binding JobId}" Click="OnCancelOrRemove" ToolTipService.ToolTip="{Binding RemoveActionText}" />
-                                    <Button Content="⋯" Tag="{Binding JobId}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
-                                </StackPanel>
-                            </Grid>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
+                            </DataTemplate></tv:TableViewTemplateColumn.CellTemplate>
+                        </tv:TableViewTemplateColumn>
+                    </tv:TableView.Columns>
+                </tv:TableView>
+                <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Visibility="Collapsed">
+                    <TextBlock x:Name="EmptyStateText" Text="No downloads yet" Style="{ThemeResource SubtitleTextBlockStyle}" HorizontalAlignment="Center" />
+                    <Button x:Name="EmptyStateAction" Content="Add download" Click="OnEmptyStateAction" HorizontalAlignment="Center" />
+                </StackPanel>
                 <Border x:Name="DetailsPane" Grid.Column="1" Visibility="Collapsed" Padding="12" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="7">
                             <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" FontSize="14" FontWeight="SemiBold" /><Button x:Name="CloseDetailsButton" Content="Close" Click="OnCloseDetails" /></StackPanel>
-                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
-                            <TextBlock Text="STATUS" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailState" Text="—" FontSize="11" />
-                            <TextBlock Text="SOURCE" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailUrl" Text="—" FontSize="11" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock Text="DESTINATION" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailDestination" Text="—" FontSize="11" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock x:Name="DetailProgress" Text="" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock x:Name="DetailError" Text="" FontSize="11" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
-                            <TextBlock x:Name="WorkersHeading" Text="CONNECTIONS" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" Margin="0,8,0,0" />
+                            <TextBlock x:Name="DetailTitle" Text="Select a transfer" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <StackPanel x:Name="DetailCommands" Orientation="Vertical" Spacing="4" Visibility="Collapsed">
+                                <Button x:Name="DetailPrimaryAction" Click="OnJobAction" />
+                                <Button x:Name="DetailRemoveAction" Click="OnCancelOrRemove" />
+                                <Button x:Name="DetailMoreActions" Content="More actions" Click="OnMoreActions" />
+                            </StackPanel>
+                            <TextBlock Text="STATUS" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailState" Text="—" />
+                            <TextBlock Text="SOURCE HOST" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailUrl" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" FlowDirection="LeftToRight" />
+                            <TextBlock Text="DESTINATION" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailDestination" Text="—" TextWrapping="Wrap" IsTextSelectionEnabled="True" FlowDirection="LeftToRight" />
+                            <TextBlock x:Name="DetailProgress" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailCheckpoint" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                            <TextBlock x:Name="DetailRate" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailQueue" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailJobLimit" Text="" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailReference" Text="" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailChecksum" Text="" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailError" Text="" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" />
+                            <TextBlock x:Name="DetailRetry" Text="" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="DetailQueueAction" Text="" TextWrapping="Wrap" />
+                            <TextBlock x:Name="TorrentHeading" Text="TORRENT" FontWeight="SemiBold" Visibility="Collapsed" Margin="0,8,0,0" />
+                            <TextBlock x:Name="TorrentStats" Visibility="Collapsed" TextWrapping="Wrap" />
+                            <TextBlock x:Name="WorkersHeading" Text="CONNECTIONS" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" Margin="0,8,0,0" />
                             <ItemsControl x:Name="WorkerList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="local:DownloadWorker">
                                         <StackPanel Spacing="2" Margin="0,2,0,4">
-                                            <TextBlock Text="{Binding Caption}" FontSize="10" />
-                                            <ProgressBar Value="{Binding Percent}" Maximum="100" Height="3" />
+                                            <TextBlock Text="{Binding Caption}" />
+                                            <TextBlock Text="{Binding RangeText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{Binding RateText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <ProgressBar Value="{Binding Percent}" Maximum="100" Height="4" AutomationProperties.Name="{Binding Caption}" />
                                         </StackPanel>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -87,33 +168,74 @@
                 </Border>
             </Grid>
             <Grid Grid.Row="2" ColumnSpacing="10" Height="30">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Ellipse x:Name="EngineIndicator" Width="7" Height="7" Fill="DarkOrange" VerticalAlignment="Center" />
-                <TextBlock x:Name="ConnectionStatus" Grid.Column="1" Text="Starting local engine…" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="Speed limit" FontSize="11" VerticalAlignment="Center" />
-                <ComboBox x:Name="SpeedLimitBox" Grid.Column="3" Height="26" MinWidth="110" FontSize="11" SelectionChanged="OnSpeedLimitChanged"><ComboBoxItem Content="Unlimited" Tag="0"/><ComboBoxItem Content="1 MB/s" Tag="1"/><ComboBoxItem Content="2 MB/s" Tag="2"/><ComboBoxItem Content="5 MB/s" Tag="5"/><ComboBoxItem Content="10 MB/s" Tag="10"/><ComboBoxItem Content="20 MB/s" Tag="20"/><ComboBoxItem Content="50 MB/s" Tag="50"/><ComboBoxItem Content="100 MB/s" Tag="100"/></ComboBox>
-                <TextBlock x:Name="QueueSummary" Grid.Column="4" Text="0 active · 0 queued" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                <TextBlock x:Name="ConnectionStatus" Grid.Column="1" Text="Starting local engine…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                <TextBlock x:Name="AggregateSpeed" Grid.Column="2" HorizontalAlignment="Right" Text="Rate not available" Margin="0,0,12,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="EffectiveLimit" Grid.Column="3" Text="Effective cap unavailable" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="4" Text="Global limit" VerticalAlignment="Center" />
+                <ComboBox x:Name="SpeedLimitBox" Grid.Column="5" Height="26" MinWidth="110" SelectionChanged="OnSpeedLimitChanged"><ComboBoxItem Content="Unlimited" Tag="0"/><ComboBoxItem Content="1 MB/s" Tag="1"/><ComboBoxItem Content="2 MB/s" Tag="2"/><ComboBoxItem Content="5 MB/s" Tag="5"/><ComboBoxItem Content="10 MB/s" Tag="10"/><ComboBoxItem Content="20 MB/s" Tag="20"/><ComboBoxItem Content="50 MB/s" Tag="50"/><ComboBoxItem Content="100 MB/s" Tag="100"/></ComboBox>
+                <TextBlock x:Name="QueueSummary" Grid.Column="6" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
             </Grid>
         </Grid>
         <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-            <StackPanel Padding="16" Spacing="14" HorizontalAlignment="Stretch">
+            <StackPanel x:Name="SettingsContent" Padding="16" Spacing="14" HorizontalAlignment="Stretch">
                 <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}" />
-                <InfoBar x:Name="SettingsMessage" IsOpen="False" Severity="Error" />
-                <TextBlock Text="General" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                <InfoBar x:Name="SettingsMessage" IsOpen="False" Severity="Error" AutomationProperties.LiveSetting="Polite" />
+                <ComboBox x:Name="SettingsSectionBox" Header="Go to settings section" SelectionChanged="OnSettingsSectionChanged" HorizontalAlignment="Left">
+                    <ComboBoxItem Content="Appearance" Tag="appearance" /><ComboBoxItem Content="General" Tag="general" /><ComboBoxItem Content="Notifications" Tag="notifications" /><ComboBoxItem Content="Downloads" Tag="downloads" /><ComboBoxItem Content="Network" Tag="network" /><ComboBoxItem Content="Bandwidth" Tag="bandwidth" /><ComboBoxItem Content="Integration" Tag="integration" />
+                </ComboBox>
+                <TextBlock x:Name="AppearanceHeading" Text="Appearance" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                <ComboBox x:Name="AppearanceBox" Header="App theme" SelectionChanged="OnAppearanceChanged" HorizontalAlignment="Left">
+                    <ComboBoxItem Content="System" Tag="Default"/><ComboBoxItem Content="Light" Tag="Light"/><ComboBoxItem Content="Dark" Tag="Dark"/>
+                </ComboBox>
+                <TextBlock x:Name="GeneralHeading" Text="General" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                <ComboBox x:Name="LanguageBox" Header="Language" SelectionChanged="OnLanguageChanged" HorizontalAlignment="Left">
+                    <ComboBoxItem Content="System" Tag="system" /><ComboBoxItem Content="English" Tag="en" /><ComboBoxItem Content="فارسی" Tag="fa" />
+                </ComboBox>
+                <ToggleSwitch x:Name="LaunchOnLoginSwitch" Header="Open Speed Download at sign-in" Toggled="OnLoginSettingChanged" />
+                <ToggleSwitch x:Name="StartMinimizedSwitch" Header="Start minimized at sign-in" Toggled="OnClientSettingChanged" />
+                <ComboBox x:Name="CloseActionBox" Header="When closing the window" SelectionChanged="OnClientChoiceChanged" HorizontalAlignment="Left">
+                    <ComboBoxItem Content="Continue in the notification area" Tag="hide" />
+                    <ComboBoxItem Content="Exit the client" Tag="exit" />
+                    <ComboBoxItem Content="Ask to stop the engine and quit" Tag="stop" />
+                </ComboBox>
+                <TextBlock Text="Downloads continue in the background when the client exits." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="NotificationsHeading" Text="Notifications" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                <ToggleSwitch x:Name="NotifyCompletedSwitch" Header="Completed downloads" Toggled="OnClientSettingChanged" />
+                <ToggleSwitch x:Name="NotifyFailedSwitch" Header="Failed downloads" Toggled="OnClientSettingChanged" />
+                <TextBlock x:Name="NotificationStatus" Text="Checking Windows notification availability…" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button Content="Open Windows notification settings" Click="OnOpenNotificationSettings" HorizontalAlignment="Left" />
+                <TextBlock Text="Notifications omit file names, paths, and links. They are sent while Speed Download is running. Windows may suppress them when the app runs as administrator." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <StackPanel Spacing="8"><TextBlock Text="Diagnostic logging"/><ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled"/><TextBlock Text="Writes redacted engine activity to a bounded local log." Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
-                <TextBlock Text="Downloads" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
-                <TextBox x:Name="DownloadFolderBox" Header="Default download folder" LostFocus="OnSettingLostFocus" />
+                <TextBlock x:Name="DownloadsHeading" Text="Downloads" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBox x:Name="DownloadFolderBox" Header="Default download folder" FlowDirection="LeftToRight" LostFocus="OnSettingLostFocus" />
+                <Button Content="Choose default folder…" HorizontalAlignment="Left" Click="OnChooseDefaultFolder" />
                 <NumberBox x:Name="ConcurrentBox" Header="Maximum simultaneous downloads" Minimum="1" Maximum="32" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <TextBlock Text="Network" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock x:Name="NetworkHeading" Text="Network" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
                 <NumberBox x:Name="ConnectionsBox" Header="Maximum connections per download" Minimum="1" Maximum="32" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
                 <ComboBox x:Name="MultipartModeBox" Header="Parallel downloading" SelectionChanged="OnChoiceSettingChanged"><ComboBoxItem Content="Automatic" Tag="auto"/><ComboBoxItem Content="Fixed" Tag="fixed"/><ComboBoxItem Content="Off" Tag="off"/></ComboBox>
                 <ComboBox x:Name="ProxyModeBox" Header="Proxy mode" SelectionChanged="OnChoiceSettingChanged"><ComboBoxItem Content="System" Tag="system"/><ComboBoxItem Content="Manual HTTP" Tag="custom"/><ComboBoxItem Content="Disabled" Tag="disabled"/></ComboBox>
-                <TextBox x:Name="ProxyUrlBox" Header="Manual HTTP proxy URL" PlaceholderText="http://proxy.example.com:8080" LostFocus="OnSettingLostFocus" />
-                <TextBlock Text="Bandwidth" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock x:Name="ProxySystemNotice" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBox x:Name="ProxyUrlBox" Header="Manual HTTP proxy URL" PlaceholderText="http://proxy.example.com:8080" FlowDirection="LeftToRight" LostFocus="OnSettingLostFocus" />
+                <TextBlock Text="Manual proxy authentication" FontWeight="SemiBold" />
+                <TextBlock Text="Credentials are stored in Windows Credential Manager for this user. Authenticated HTTPS destinations are not supported yet; they fail without sending an unauthenticated request." TextWrapping="Wrap" />
+                <TextBox x:Name="ProxyUserBox" Header="Username" />
+                <PasswordBox x:Name="ProxyPasswordBox" Header="Password" />
+                <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="Save credentials" Click="OnSaveProxyCredentials" /><Button Content="Remove credentials" Click="OnRemoveProxyCredentials" /></StackPanel>
+                <TextBlock x:Name="ProxyCredentialStatus" Text="Credential status unavailable" TextWrapping="Wrap" />
+                <ToggleSwitch x:Name="ProxyAuthenticationSwitch" Header="Require authentication for manual proxy" Toggled="OnProxyAuthenticationToggled" />
+                <TextBlock x:Name="BandwidthHeading" Text="Bandwidth" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
                 <NumberBox x:Name="BandwidthBox" Header="Global download limit (MB/s; 0 = unlimited)" Minimum="0" Maximum="100000" SpinButtonPlacementMode="Compact" ValueChanged="OnNumberSettingChanged" />
-                <TextBlock Text="Integration" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <Button Content="Scheduled download limit…" Click="OnBandwidthSchedule" HorizontalAlignment="Left" />
+                <TextBlock x:Name="IntegrationHeading" Text="Integration" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="Register Speed Download as an available handler for torrent files and magnet links. Choose your default app in Windows Settings." TextWrapping="Wrap" />
+                <Button Content="Register torrent and magnet handler" Click="OnRegisterAssociations" HorizontalAlignment="Left" />
+                <Button Content="Open Windows default app settings" Click="OnOpenDefaultApps" HorizontalAlignment="Left" />
                 <TextBox x:Name="BrowserExtensionsBox" Header="Browser capture file extensions" LostFocus="OnSettingLostFocus" />
-                <TextBlock Text="Torrent seeding is not active in the engine yet." Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="Install the matching browser extension separately. Browser policies, authentication and site behavior may prevent interception." TextWrapping="Wrap" />
+                <Button Content="Register browser integration" Click="OnRegisterBrowserIntegration" HorizontalAlignment="Left" />
+
             </StackPanel>
         </ScrollViewer>
         </Grid>

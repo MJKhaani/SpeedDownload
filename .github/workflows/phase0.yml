@@ -48,6 +48,10 @@ jobs:
             zig build-exe src/main.zig -lc -femit-bin=zig-out/bin/speed-download
           fi
 
+      - name: Test local torrent source URLs
+        shell: bash
+        run: zig test src/protocols/torrent/source.zig
+
       - name: Run native IPC, reconnect, progress, transfer, and recovery smoke
         shell: bash
         run: |
@@ -65,6 +69,11 @@ jobs:
           else
             python tests/integration/http_checkpoint.py zig-out/bin/speed-download
           fi
+
+      - name: Verify Windows proxy credentials
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python tests/integration/windows_proxy_credentials.py zig-out/bin/speed-download.exe
 
       - name: Smoke release-mode Windows HTTPS CLI
         if: runner.os == 'Windows'
@@ -120,6 +129,9 @@ jobs:
             dotnet publish windows/SpeedDownload/SpeedDownload.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o windows/SpeedDownload/publish
           }
           if ($LASTEXITCODE -ne 0) { throw 'WinUI publish failed' }
+          $runtime = if ($env:RUNNER_ARCH -eq 'ARM64') { 'win-arm64' } else { 'win-x64' }
+          dotnet publish windows/SpeedDownload.BrowserHost/SpeedDownload.BrowserHost.csproj -c Release -r $runtime --self-contained true -o windows/SpeedDownload/publish
+          if ($LASTEXITCODE -ne 0) { throw 'Browser host publish failed' }
           if (!(Test-Path windows/SpeedDownload/publish/SpeedDownload.pri)) { throw 'WinUI app resource index missing from publish output' }
 
       - name: Upload Windows client and engine

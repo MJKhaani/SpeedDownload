@@ -37,6 +37,10 @@ const WindowsSystemTime = extern struct {
     milliseconds: u16,
 };
 extern "kernel32" fn GetLocalTime(*WindowsSystemTime) callconv(.winapi) void;
+extern "kernel32" fn GetSystemDirectoryW([*]u16, u32) callconv(.winapi) u32;
+extern "kernel32" fn OpenEventW(u32, i32, [*:0]const u16) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn SetEvent(*anyopaque) callconv(.winapi) i32;
+extern "kernel32" fn CloseHandle(*anyopaque) callconv(.winapi) i32;
 const SocketPath = [*:0]const u8;
 const max_socket_path_bytes = if (builtin.os.tag == .macos) 104 else 108;
 const max_ipc_clients = 32;
@@ -65,6 +69,7 @@ pub const EngineContext = struct {
     engine_instance_id: []const u8,
     started_ns: i96,
     active_workers: std.atomic.Value(u32) = .init(0),
+    stopping: std.atomic.Value(bool) = .init(false),
     http_connections: @import("../protocols/http/connection_budget.zig").Budget = .{},
     active_clients: std.atomic.Value(u32) = .init(0),
     next_subscription_id: std.atomic.Value(u64) = .init(1),
@@ -266,10 +271,29 @@ pub fn dispatchMethod(
     const jobs = engine.jobs;
     jobs.logAction(loggedMethod(method), "received");
     defer jobs.logAction(loggedMethod(method), "finished");
+    if (comptime builtin.os.tag == .windows) {
+        if (std.mem.eql(u8, method, "engine.shutdown")) {
+            const id = request_id orelse return null;
+            if (params) |value| if (value != .object or value.object.count() != 0)
+                return dispatchError(allocator, request_id, -32602, "Invalid params");
+            const response = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = id, .result = .{ .stopping = true } }, .{});
+            if (engine.stopping.swap(true, .acq_rel)) {
+                allocator.free(response);
+                return dispatchError(allocator, request_id, -32024, "Engine shutdown is already in progress");
+            }
+            if (engine.active_workers.load(.acquire) != 0) {
+                engine.stopping.store(false, .release);
+                allocator.free(response);
+                return dispatchError(allocator, request_id, -32025, "Pause active downloads before stopping the engine");
+            }
+            return @as(?[]u8, response);
+        }
+        if (engine.stopping.load(.acquire)) return dispatchError(allocator, request_id, -32024, "Engine shutdown is in progress");
+    }
     if (std.mem.eql(u8, method, "engine.status")) {
         const id = request_id orelse return null;
         const elapsed = std.Io.Clock.now(.awake, engine.io).nanoseconds - engine.started_ns;
-        return @as(?[]u8, try jobs.statusJson(id, engine.engine_instance_id, @intCast(@max(0, @divTrunc(elapsed, std.time.ns_per_s)))));
+        return @as(?[]u8, try jobs.statusJson(id, engine.engine_instance_id, @intCast(@max(0, @divTrunc(elapsed, std.time.ns_per_s))), localWeekSlot()));
     }
     if (std.mem.eql(u8, method, "jobs.list")) {
         const page = parseListPage(params) catch return dispatchError(allocator, request_id, -32602, "Invalid params");
@@ -466,7 +490,7 @@ pub fn dispatchMethod(
             else if (err == error.ProxyAuthenticationUnavailable)
                 "Authenticated proxy transfers are not available in this engine version. Turn off proxy authentication or use an unauthenticated proxy."
             else if (err == error.ProxyCredentialsUnavailable)
-                "Proxy credentials could not be read from your Keychain. Save the username and password again in Proxy settings."
+                "Proxy credentials could not be read from the system credential store. Save them again in Proxy settings."
             else if (err == error.AuthenticatedHttpsProxyUnsupported)
                 "Authenticated proxies cannot yet inspect HTTPS links because the HTTP transport cannot authorize CONNECT requests."
             else if (err == error.InsecureHttpRedirect)
@@ -504,7 +528,7 @@ pub fn dispatchMethod(
             if (err == error.StaleJobRevision) return dispatchError(allocator, request_id, -32015, "Job revision is stale; refresh the job before retrying");
             return dispatchError(allocator, request_id, -32020, "Could not save the download request");
         };
-        if (control.action == .retry) scheduleQueued(engine);
+        if (control.action == .@"resume") scheduleTick(engine) else if (control.action == .retry) scheduleQueued(engine);
         return @as(?[]u8, response);
     }
     if (std.mem.eql(u8, method, "jobs.resume-queue")) {
@@ -609,7 +633,7 @@ pub fn dispatchMethod(
 }
 
 fn loggedMethod(method: []const u8) []const u8 {
-    inline for (.{ "engine.status", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.replace-source", "jobs.resume-queue", "jobs.reorder", "jobs.move-queue", "jobs.delete", "settings.get", "settings.update" }) |known| {
+    inline for (.{ "engine.status", "engine.shutdown", "jobs.list", "jobs.get", "jobs.wait", "jobs.subscribe", "jobs.add", "jobs.probe", "torrents.prepare", "jobs.control", "jobs.set-bandwidth", "jobs.replace-source", "jobs.resume-queue", "jobs.reorder", "jobs.move-queue", "jobs.delete", "settings.get", "settings.update" }) |known| {
         if (std.mem.eql(u8, method, known)) return known;
     }
     return "unknown-method";
@@ -674,7 +698,6 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     transfer catch |err| {
         if (engine.jobs.requestedControl(task.id)) |control| {
             engine.jobs.logAction("transfer", if (control == .pause) "paused" else "canceled");
-            if (control == .cancel) deletePartial(engine, destination);
             engine.jobs.finishStoppedDownload(task.id, if (control == .pause) .paused else .canceled) catch {};
             return;
         }
@@ -697,7 +720,7 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
         else if (err == error.ProxyAuthenticationUnavailable)
             "Authenticated proxy transfers are not available in this engine version"
         else if (err == error.ProxyCredentialsUnavailable)
-            "Proxy credentials could not be read from Keychain. Save them again in Proxy settings."
+            "Proxy credentials could not be read from the system credential store. Save them again in Proxy settings."
         else if (err == error.AuthenticatedHttpsProxyUnsupported)
             "Authenticated proxies cannot yet download HTTPS links because the HTTP transport cannot authorize CONNECT requests."
         else if (err == error.FtpJournalUpgradeRequired)
@@ -725,11 +748,52 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     engine.jobs.logAction("transfer", "completed");
     if (engine.jobs.completedQueueAction(task.id) catch null) |completion| {
         defer completion.deinit(engine.allocator);
-        runQueueFinishAction(engine, completion);
+        var succeeded = false;
+        runQueueFinishAction(engine, completion, &succeeded);
+        if (comptime builtin.os.tag == .windows)
+            engine.jobs.recordQueueActionOutcome(task.id, completion.action, if (succeeded) .succeeded else .failed) catch
+                engine.jobs.logAction("queue.finish-action", "could not persist action outcome");
     }
 }
 
-fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompletion) void {
+fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompletion, succeeded: *bool) void {
+    if (comptime @import("builtin").os.tag == .windows) {
+        if (completion.action == .quit_app) {
+            const event = OpenEventW(0x0002, 0, std.unicode.utf8ToUtf16LeStringLiteral("Local\\SpeedDownload.Gui.QueueComplete.Quit")) orelse {
+                engine.jobs.logAction("queue.finish-action", "client quit event unavailable");
+                return;
+            };
+            defer _ = CloseHandle(event);
+            if (SetEvent(event) == 0) engine.jobs.logAction("queue.finish-action", "could not signal client to quit") else succeeded.* = true;
+            return;
+        }
+        if (completion.action != .user_command and completion.action != .power_off) return;
+        var system_directory: [32768]u16 = undefined;
+        const size = GetSystemDirectoryW(&system_directory, system_directory.len);
+        if (size == 0 or size >= system_directory.len) {
+            engine.jobs.logAction("queue.finish-action", "could not locate Windows system directory");
+            return;
+        }
+        const directory = std.unicode.utf16LeToUtf8Alloc(engine.allocator, system_directory[0..size]) catch return;
+        defer engine.allocator.free(directory);
+        const shell = std.fs.path.join(engine.allocator, &.{ directory, if (completion.action == .power_off) "shutdown.exe" else "cmd.exe" }) catch return;
+        defer engine.allocator.free(shell);
+        const args: []const []const u8 = if (completion.action == .power_off)
+            &.{ shell, "/s", "/t", "0", "/c", "Speed Download queue completed" }
+        else
+            &.{ shell, "/D", "/S", "/C", completion.user_command orelse return };
+        var child = std.process.spawn(engine.io, .{ .argv = args, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch {
+            engine.jobs.logAction("queue.finish-action", "could not start completion action");
+            return;
+        };
+        const term = child.wait(engine.io) catch {
+            engine.jobs.logAction("queue.finish-action", "user command failed");
+            return;
+        };
+        if (!term.success()) engine.jobs.logAction("queue.finish-action", "user command exited unsuccessfully");
+        succeeded.* = term.success();
+        return;
+    }
     if (comptime @import("builtin").os.tag != .macos) return;
     const script = switch (completion.action) {
         .none => return,
@@ -893,9 +957,14 @@ fn updateWorkerProgress(context: *anyopaque, worker_id: u32, start: u64, end: u6
 
 fn reserveWorker(engine: *EngineContext) bool {
     while (true) {
+        if (engine.stopping.load(.acquire)) return false;
         const active = engine.active_workers.load(.acquire);
         if (active >= engine.jobs.runtimePolicy().max_concurrent_tasks) return false;
-        if (engine.active_workers.cmpxchgWeak(active, active + 1, .acquire, .monotonic) == null) return true;
+        if (engine.active_workers.cmpxchgWeak(active, active + 1, .acq_rel, .monotonic) == null) {
+            if (!engine.stopping.load(.acquire)) return true;
+            _ = engine.active_workers.fetchSub(1, .release);
+            return false;
+        }
     }
 }
 
@@ -927,22 +996,6 @@ fn scheduleQueued(engine: *EngineContext) void {
             continue;
         };
     }
-}
-
-fn deletePartial(engine: *EngineContext, destination: []const u8) void {
-    const part_path = std.fmt.allocPrint(engine.allocator, "{s}.part", .{destination}) catch return;
-    defer engine.allocator.free(part_path);
-    const journal_path = std.fmt.allocPrint(engine.allocator, "{s}.odm", .{part_path}) catch return;
-    defer engine.allocator.free(journal_path);
-    const segment_journal_path = std.fmt.allocPrint(engine.allocator, "{s}.sdr", .{part_path}) catch return;
-    defer engine.allocator.free(segment_journal_path);
-    const ftp_journal_path = std.fmt.allocPrint(engine.allocator, "{s}.ftpj", .{part_path}) catch return;
-    defer engine.allocator.free(ftp_journal_path);
-    const cwd = std.Io.Dir.cwd();
-    cwd.deleteFile(engine.io, part_path) catch {};
-    cwd.deleteFile(engine.io, journal_path) catch {};
-    cwd.deleteFile(engine.io, segment_journal_path) catch {};
-    cwd.deleteFile(engine.io, ftp_journal_path) catch {};
 }
 
 const DownloadProgressContext = struct {
@@ -1056,15 +1109,17 @@ fn queueWindowOpen(engine: *EngineContext, job_id: []const u8) bool {
     return engine.jobs.queueActiveForJob(job_id, localWeekSlot() orelse return false);
 }
 
-fn scheduleTick(engine: *EngineContext) void {
+pub fn scheduleTick(engine: *EngineContext) void {
+    if (engine.stopping.load(.acquire)) return;
     engine.jobs.promoteDueRetries() catch return;
     const slot = localWeekSlot() orelse return;
     engine.jobs.applyQueueWindow(slot) catch return;
     scheduleQueued(engine);
 }
 
-fn schedulerLoop(engine: *EngineContext) void {
+pub fn schedulerLoop(engine: *EngineContext) void {
     while (true) {
+        if (engine.stopping.load(.acquire)) return;
         std.Io.sleep(engine.io, std.Io.Duration.fromSeconds(5), .awake) catch {};
         scheduleTick(engine);
     }

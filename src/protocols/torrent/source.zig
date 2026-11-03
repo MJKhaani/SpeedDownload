@@ -8,6 +8,10 @@ pub fn isLocalTorrent(url: []const u8) bool {
 
 /// Decode `torrent-file:///absolute/path.torrent`; caller owns the path.
 pub fn pathAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    return pathAllocForPlatform(allocator, url, @import("builtin").os.tag == .windows);
+}
+
+fn pathAllocForPlatform(allocator: std.mem.Allocator, url: []const u8, windows: bool) ![]u8 {
     if (!isLocalTorrent(url) or url.len > 8192) return error.InvalidTorrentSource;
     const uri = std.Uri.parse(url) catch return error.InvalidTorrentSource;
     if (uri.user != null or uri.password != null or uri.port != null or uri.query != null or uri.fragment != null) return error.InvalidTorrentSource;
@@ -28,10 +32,18 @@ pub fn pathAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
         index += 2;
     }
     const buffer = try allocator.dupe(u8, raw_path);
-    const decoded = std.Uri.percentDecodeInPlace(buffer);
-    if (decoded.len == 0 or decoded.len > 4096 or !std.fs.path.isAbsolute(decoded) or
+    const raw_decoded = std.Uri.percentDecodeInPlace(buffer);
+    // File URLs carry a leading slash before a Windows drive letter.
+    const decoded = if (windows and raw_decoded.len >= 3 and
+        raw_decoded[0] == '/' and std.ascii.isAlphabetic(raw_decoded[1]) and raw_decoded[2] == ':')
+        raw_decoded[1..]
+    else
+        raw_decoded;
+    const absolute = if (windows) std.fs.path.isAbsoluteWindows(decoded) else std.fs.path.isAbsolutePosix(decoded);
+    const basename = if (windows) std.fs.path.basenameWindows(decoded) else std.fs.path.basenamePosix(decoded);
+    if (decoded.len == 0 or decoded.len > 4096 or !absolute or
         std.mem.indexOfScalar(u8, decoded, 0) != null or
-        !std.ascii.eqlIgnoreCase(std.fs.path.extension(decoded), ".torrent"))
+        !std.ascii.eqlIgnoreCase(std.fs.path.extension(basename), ".torrent"))
     {
         allocator.free(buffer);
         return error.InvalidTorrentSource;
@@ -41,9 +53,15 @@ pub fn pathAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
 }
 
 pub fn urlAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return urlAllocForPlatform(allocator, path, @import("builtin").os.tag == .windows);
+}
+
+fn urlAllocForPlatform(allocator: std.mem.Allocator, path: []const u8, windows: bool) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
     try output.appendSlice(allocator, "torrent-file://");
+    if (windows and path.len >= 2 and std.ascii.isAlphabetic(path[0]) and path[1] == ':')
+        try output.append(allocator, '/');
     for (path) |byte| {
         if (std.ascii.isAlphanumeric(byte) or std.mem.indexOfScalar(u8, "/-._~", byte) != null) {
             try output.append(allocator, byte);
@@ -53,4 +71,33 @@ pub fn urlAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         }
     }
     return output.toOwnedSlice(allocator);
+}
+
+
+test "local torrent source round trip" {
+    const allocator = std.testing.allocator;
+    const path = if (@import("builtin").os.tag == .windows) "C:\\Users\\Test User\\file.torrent" else "/tmp/Test User/file.torrent";
+    const url = try urlAlloc(allocator, path);
+    defer allocator.free(url);
+    const decoded = try pathAlloc(allocator, url);
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings(path, decoded);
+}
+
+
+test "Windows torrent URLs preserve drive paths and reject unsafe inputs" {
+    const allocator = std.testing.allocator;
+    const path = "C:\\Users\\Test User\\file.torrent";
+    const encoded = try urlAllocForPlatform(allocator, path, true);
+    defer allocator.free(encoded);
+    const from_encoded = try pathAllocForPlatform(allocator, encoded, true);
+    defer allocator.free(from_encoded);
+    try std.testing.expectEqualStrings(path, from_encoded);
+    const from_file_uri = try pathAllocForPlatform(allocator, "torrent-file:///C:/Users/Test%20User/file.torrent", true);
+    defer allocator.free(from_file_uri);
+    try std.testing.expectEqualStrings("C:/Users/Test User/file.torrent", from_file_uri);
+    try std.testing.expectError(error.InvalidTorrentSource, pathAllocForPlatform(allocator, "torrent-file:///C:/a%00b.torrent", true));
+    try std.testing.expectError(error.InvalidTorrentSource, pathAllocForPlatform(allocator, "torrent-file://remote/share/file.torrent", true));
+    try std.testing.expectError(error.InvalidTorrentSource, pathAllocForPlatform(allocator, "torrent-file:///C:/a.torrent?private=1", true));
+    try std.testing.expectError(error.InvalidTorrentSource, pathAllocForPlatform(allocator, "torrent-file:///C:/folder.torrent/not-a-torrent", true));
 }

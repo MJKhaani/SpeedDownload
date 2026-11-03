@@ -4,6 +4,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import ipc_engine as ipc
 
 ENGINE = str(Path(sys.argv[1]).resolve())
 CLIENT = str(Path(sys.argv[2]).resolve())
+BROWSER_HOST = str(Path(CLIENT).with_name("SpeedDownload.BrowserHost.exe"))
 
 
 def until(predicate, timeout=35):
@@ -39,6 +41,18 @@ def rpc(endpoint, method, params):
         return hello["engine_instance_id"], ipc.rpc(stream, method, params)
     finally:
         stream.close()
+
+
+def native_request(message, env, origin="chrome-extension://fcjiipabggcamlocakedfideaamdgknn/"):
+    payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    process = subprocess.run([BROWSER_HOST, origin], input=len(payload).to_bytes(4, "little") + payload,
+                             capture_output=True, env=env, timeout=20)
+    if process.returncode != 0 or len(process.stdout) < 4:
+        raise RuntimeError("Windows browser host did not return a framed response")
+    size = int.from_bytes(process.stdout[:4], "little")
+    if size != len(process.stdout) - 4 or not 0 < size <= ipc.MAX_FRAME:
+        raise RuntimeError("Windows browser host returned an invalid frame")
+    return json.loads(process.stdout[4:])
 
 
 def pipe_server_pid(endpoint):
@@ -90,11 +104,13 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
     downloads.mkdir()
     report = root / "ui-state.txt"
     startup_trace = root / "startup.txt"
+    browser_report = root / "browser-state.txt"
     host_trace = root / "dotnet-host.txt"
     env = os.environ.copy()
     env.update(SPEED_DOWNLOAD_STATE_DIR=str(state), SPEED_DOWNLOAD_ENGINE_PATH=ENGINE,
                SPEED_DOWNLOAD_PHASE0_REPORT=str(report),
                SPEED_DOWNLOAD_PHASE0_STARTUP_TRACE=str(startup_trace),
+               SPEED_DOWNLOAD_PHASE0_BROWSER_REPORT=str(browser_report),
                DOTNET_HOST_TRACE="1", DOTNET_HOST_TRACEFILE=str(host_trace))
     endpoint = ipc.windows_pipe_identity()
     if pipe_server_pid(endpoint) is not None:
@@ -182,7 +198,31 @@ with tempfile.TemporaryDirectory(prefix="sd-phase0-winui-") as root:
             raise
         if client.poll() is not None:
             raise RuntimeError("Windows client exited during restart")
-        print("Phase 0 Windows GUI smoke passed: connection, visible progress, engine restart/reconnect")
+        if not Path(BROWSER_HOST).is_file():
+            raise RuntimeError("Packaged Windows browser host is missing")
+        unauthorized = native_request({"version": 1, "action": "status"}, env, "chrome-extension://unrecognized/")
+        if unauthorized.get("ok") is not False:
+            raise RuntimeError("Windows browser host accepted an unrecognized extension origin")
+        browser_key = str(uuid.uuid4())
+        browser_request = {"version": 1, "action": "add", "url": f"http://127.0.0.1:{server.server_port}/browser.bin",
+                           "reference_url": f"http://127.0.0.1:{server.server_port}/page", "idempotency_key": browser_key}
+        before = rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})[1]["total"]
+        response = native_request(browser_request, env)
+        if response.get("ok") is not True or response.get("dialog_opened") is not True:
+            raise RuntimeError("Windows browser host did not accept a valid handoff")
+        until(lambda: browser_report.exists() and f"opened\t{browser_key}\tadd" in browser_report.read_text())
+        duplicate = native_request(browser_request, env)
+        if duplicate.get("ok") is not True:
+            raise RuntimeError("Windows browser host did not deduplicate an identical retry")
+        if browser_report.read_text().count(f"accepted\t{browser_key}\tadd") != 1:
+            raise RuntimeError("Repeated browser request created another review")
+        conflicting = dict(browser_request, url=f"http://127.0.0.1:{server.server_port}/different.bin")
+        if native_request(conflicting, env).get("ok") is not False:
+            raise RuntimeError("Windows browser host accepted conflicting reuse of a request key")
+        after = rpc(endpoint, "jobs.list", {"offset": 0, "limit": 50})[1]["total"]
+        if before != after:
+            raise RuntimeError("Browser handoff created a download before review")
+        print("Phase 0 Windows GUI smoke passed: connection, progress, reconnect, browser review and deduplication")
     finally:
         if server is not None:
             server.shutdown()

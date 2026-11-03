@@ -61,7 +61,8 @@ The engine currently dispatches the methods listed in the [implementation invent
 | Method | Client→server | Response | Security / semantics |
 |---|---|---|---|
 | `engine.hello` | Version + client capabilities | Negotiated version + engine ID | First method on every connection |
-| `engine.status` | `{}` | Engine instance ID, uptime in seconds, and total/active/waiting/paused job counts | No job URLs or credentials; available through `speed-download rpc status` |
+| `engine.status` | `{}` | Engine instance ID, uptime in seconds, total/active/waiting/paused job counts, effective global download limit and scheduled-limit state | No job URLs or credentials; available through `speed-download rpc status` |
+| `engine.shutdown` (Windows; `engine.shutdown-v1`) | `{}` | `{ "stopping": true }` | Rejects while any worker is active; prevents new workers, then drains connections and exits. A client should confirm process exit and must not assume an acknowledgment is an exit confirmation. |
 | `jobs.list` | Pagination, optional exact `state`, optional text `search` | Authoritative job summaries + revision | Bounded page size; search matches names and query-redacted source URLs, case-insensitively for ASCII text; `total` and `next_offset` count filtered matches |
 | `jobs.wait` | In-memory change cursor | New cursor + changed flag, within 5 seconds | Bounded long poll; client fetches a fresh `jobs.list` snapshot when changed |
 | `jobs.get` | `job_id` | One job summary with worker progress, using the same fields as `jobs.list` | Redacted URL query/fragment; returns job-not-found for an unknown ID; available through `speed-download rpc get <job-id>` |
@@ -88,7 +89,9 @@ Final argument/result JSON Schemas must be committed and unit-tested before meth
 
 ### 4.1 Persisted user settings
 
-`settings.get` returns the complete versioned engine-owned settings document. `settings.update` accepts the complete validated document under `params.settings`; updates are atomically persisted before acknowledgment. Schema version 3 adds `queues`, each with a stable ID, unique name, `max_active`, `schedule_enabled`, 168 Boolean `schedule_slots`, and `finish_action` (`none`, `quit_app`, `power_off`, or `custom_app`); current settings also have optional `user_command`. The `main` queue is required. Jobs carry `queue_id`; `jobs.move-queue` changes it using the job ID and expected revision. Settings also carry `browser_grab_extensions`, `stop_seeding_after_minutes`, and `language`. The seeding time setting is inert until seeding is implemented. Older settings migrate their global queue schedule and concurrency limit to `main`; older jobs join `main`.
+`settings.get` returns the complete versioned engine-owned settings document. `settings.update` accepts the complete validated document under `params.settings`; updates are atomically persisted before acknowledgment. Schema version 3 adds `queues`, each with a stable ID, unique name, `max_active`, `schedule_enabled`, 168 Boolean `schedule_slots`, and `finish_action` (`none`, `quit_app`, `power_off`, `custom_app`, or `user_command`); current settings also have optional `user_command`. The `main` queue is required. Jobs carry `queue_id`; `jobs.move-queue` changes it using the job ID and expected revision. Settings also carry `browser_grab_extensions`, `stop_seeding_after_minutes`, and `language`. The seeding time setting is inert until seeding is implemented. Older settings migrate their global queue schedule and concurrency limit to `main`; older jobs join `main`.
+
+Windows engines advertising `queue.windows-finish-actions-v1` can request client quit or Windows shutdown after every job in a queue completes. `queue.finish-user-command-v1` adds execution of an explicitly configured command under the engine user account. The job that triggered the action exposes `queue_finish_action` and `queue_action_outcome` (`succeeded` or `failed`) after an outcome has been persisted. A successful system action means the request was accepted, not that the operating system completed shutdown. A failed or canceled job prevents the queue completion action. These Windows paths require native validation.
 
 `bandwidth_schedule_slots` remains a 168-element Sunday-first array of `global_limit | limited`. Index is `day * 24 + hour`; each cell applies to the hour beginning at that hour in the user's current local time zone. `bandwidth_schedule_enabled` controls that grid. Bandwidth values are decimal bytes per second; zero means unlimited.
 
@@ -99,6 +102,8 @@ startup with `UnsupportedSettingsVersion`, preserving the file for a compatible
 engine instead of silently interpreting it as version 3.
 
 For HTTP probes and downloads, a custom `http://` or `https://` proxy endpoint is applied to every request, including range probes and multipart workers. Proxy URLs containing credentials are rejected by settings validation. `proxy_authentication_required` records the user's requirement without storing a password in settings or IPC snapshots. On macOS, custom HTTP proxy credentials can be read from Keychain; authenticated HTTPS CONNECT remains unsupported. Unsupported proxy schemes fail closed rather than silently making a direct request. On macOS, `system` mode reads static HTTP and HTTPS proxy servers from `scutil --proxy` and honors simple-host, exact-host, wildcard-host, and numeric IP network exceptions for each request destination, including redirect hops. The lookup is cached for 30 seconds. PAC, auto-discovery, and SOCKS transport remain pending; unsupported automatic configurations fail closed.
+
+On Windows, negotiated `proxy.windows-system-v1` reads the current user's Windows proxy configuration and uses WinHTTP to resolve automatic proxy settings for each HTTP request. Explicit proxy bypass rules are evaluated for each target; unsupported proxy types or bypass syntax fail closed. `proxy.windows-credentials-v1` reads a generic Windows Credential Manager item scoped by a SHA-256 hash of the configured manual proxy endpoint. The credential is not included in engine settings or IPC. Basic authentication is currently supported for HTTP targets; authenticated HTTPS CONNECT, SOCKS, and authenticated system proxies remain unsupported. Windows runtime interoperability still requires validation.
 
 `jobs.probe` and `jobs.add` also accept anonymous `ftp://` and explicit
 `ftps://` file URLs. FTPS requires certificate-validated `AUTH TLS` and
@@ -158,6 +163,8 @@ for trusted local clients and must not be accepted by browser handoff bridges.
 
 `jobs.list` keeps `completed_bytes` as the durable resume checkpoint. While a transfer is active, it also exposes `received_bytes` for live UI progress and may expose a `total_bytes` learned from response headers before a durable checkpoint exists. These live fields are not persisted as completed data. The `workers` array includes a single connection for sequential HTTP transfers when the total size is known; its progress is also live and clears when the transfer stops. Clients should label received bytes as transfer progress rather than verified or resumable bytes.
 
+Cancel no longer explicitly removes a transfer's resumable partial files. Transfers that lack the validators needed for safe resumption may still discard their untrusted partial data. Removing partial files through `jobs.delete` requires the explicit `delete_partial` option.
+
 For active torrent jobs, `jobs.list` may expose ephemeral `torrent_peer_count`,
 `torrent_seeder_count`, and `torrent_leecher_count` integers. Peer count is
 the deduplicated discovered address list, capped at 80; seed and leecher
@@ -170,6 +177,13 @@ Transient connection and truncated-response errors may put a job in `retry_wait`
 The engine reevaluates the queue window every five seconds and immediately after settings changes or a new job. Outside an active window, queued jobs become scheduled and active HTTP transfers stop at the next progress callback, retaining their partial data. They resume through the normal queue when the window opens. The global download bandwidth setting is shared across HTTP workers and jobs, with the scheduled limit selected by the current local hour. A job's own cap is applied independently; both caps remain effective. A changed connection default applies when a job starts; resumed segmented transfers run no more than that many workers concurrently.
 
 `jobs.wait` remains an interim change signal used by the macOS client. The client sends a decimal-string `cursor`; the engine waits up to five seconds and returns `{ "cursor": "...", "changed": true|false }`. A cursor of `"0"` returns the current cursor immediately. Change detection is in memory and includes live received-byte and worker updates; it does not replace persisted job revisions. The client must reset its cursor after reconnecting to a new engine instance, then fetch authoritative pages with `jobs.list`. Wait checks are coalesced to 200 ms. The 30-second IPC socket timeout bounds a stalled client separately.
+
+The `engine.status` fields `effective_bandwidth_limit_bytes_per_second` and
+`scheduled_bandwidth_active` describe the engine's current global policy; a
+zero limit means unlimited. Both are `null` if an enabled schedule cannot be
+evaluated because local time is unavailable. These fields do not include any
+more restrictive per-job or protocol-specific limits. Older engines can omit
+them, so clients should show an unavailable state rather than infer a value.
 
 ## 5. Example: idempotent download creation
 
@@ -229,7 +243,7 @@ Future error classes include permission denied; validation/invalid URI; not foun
 
 A GUI connects to the secure endpoint; if unavailable, starts the **trusted installed** daemon without elevation and retries with bounded backoff. GUI closure and crashes do not interrupt active downloads. A daemon instance accepts multiple clients. GUI reconnect must repeat `engine.hello`, resubscribe and refresh snapshot. Major protocol changes require a controlled migration or a supported compatibility adapter, not silent guessing.
 
-An explicit stop/shutdown operation (to be defined) must honor running jobs, flush checkpoints and return a predictable outcome. GUI launch/engine startup and upgrades differ across MSIX, installer-based Windows deployment, signed macOS app bundles, and Linux distro/Flatpak packaging; all are release gates, not assumptions.
+Windows provides the negotiated `engine.shutdown-v1` operation. It refuses shutdown while workers are active; clients should first request pauses and wait for acknowledgments. An accepted request closes the listener, drains existing connections, stops the scheduler, and exits. Lost responses are ambiguous and must not trigger automatic restart. Unix shutdown remains to be implemented. GUI launch/engine startup and upgrades differ across MSIX, installer-based Windows deployment, signed macOS app bundles, and Linux distro/Flatpak packaging; all are release gates, not assumptions.
 
 ## 10. Conformance tests
 

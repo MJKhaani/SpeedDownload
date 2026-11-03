@@ -6,14 +6,14 @@
 > **Core/engine language:** Zig (shared across all platforms)
 > **Native GUI targets:** macOS Swift / SwiftUI; Windows C# / WinUI 3 and Windows App SDK (Fluent UI); Linux C / GTK 4
 
-**Windows implementation decision (2026-10-28):** WinUI 3 with Fluent UI is the required Windows client architecture. The current alpha ZIP ships a WPF compatibility client while the WinUI 3 startup failure (`0xC0000409` on Windows Server 2022 and hosted Windows 11 ARM64) is investigated. WPF CI success does not satisfy the WinUI 3 Phase 0/3 release gate. New Windows UI work must target WinUI 3; retain the WPF client only as an explicitly labeled temporary compatibility build. See [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the [support matrix](docs/support-matrix.md).
+**Windows implementation decision:** WinUI 3 with Fluent UI is the Windows client architecture. Earlier alpha ZIPs used a WPF compatibility client. A later WinUI build launched on Windows Server 2022; subsequent changes require a fresh Windows build and interactive validation. See [ADR 0001](docs/adr/0001-native-guis-local-ipc.md) and the [support matrix](docs/support-matrix.md).
 > **IPC:** JSON-RPC 2.0 over framed, local OS IPC (Windows Named Pipes; macOS/Linux Unix domain sockets)
 > **Document version:** 0.4 — 2026-10-28
 > **Related:** [Agent.md](Agent.md), [engine implementation inventory](docs/engine-feature-status.md), [IPC v1](docs/protocols/ipc-v1.md), [ADR 0001](docs/adr/0001-native-guis-local-ipc.md)
 
 **Implementation snapshot:** The Zig engine already implements persisted jobs and named queues, secure local IPC, HTTP(S) probing/single-stream/multipart transfers and resume, initial anonymous FTP/FTPS, experimental BitTorrent v1 magnet and `.torrent` transfers, settings/schedules/limits, recovery, and opt-in debug logging. The exact implemented behavior and remaining protocol gaps are tracked in the [engine feature status](docs/engine-feature-status.md). The MCP server, built-in media extraction, torrent seeding, and WinUI 3 release client remain unimplemented or blocked. Requirements below describe the intended product even where implementation is pending.
 
-**Phase 0 gate (2026-10-28):** Engine/IPC smoke now checks single-engine ownership, multiple simultaneous clients, handshake and version rejection, secure endpoints, progress, reconnect, and restart recovery. Local macOS client reconnect and rebuilt app-bundle checks pass. The required WinUI 3 GUI still exits before startup with `0xC0000409` on both Windows CI architectures. The milestone remains open while Windows and Linux client changes are deferred; see the [Phase 0 evidence](docs/support-matrix.md#phase-0-exit-work).
+**Phase 0 gate:** Engine/IPC smoke covers ownership, connections, protocol errors, secure endpoints, progress, reconnect, and recovery. A later WinUI build launched on Windows Server 2022, but the current working tree and its accessibility, installation, and platform behavior require fresh native validation. See the [Phase 0 evidence](docs/support-matrix.md#phase-0-exit-work).
 
 ## 1. Vision
 
