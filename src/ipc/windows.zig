@@ -201,6 +201,10 @@ pub fn serve(allocator: Allocator, config: Config) !void {
     engine.jobs.logAction("engine.shutdown", "joining scheduler");
     if (scheduler_thread) |thread| thread.join();
     engine.jobs.logAction("engine.shutdown", "draining workers and clients");
+    if (std.fmt.allocPrint(allocator, "clients={d} workers={d}", .{ engine.active_clients.load(.acquire), engine.active_workers.load(.acquire) })) |counts| {
+        engine.jobs.logAction("engine.shutdown", counts);
+        allocator.free(counts);
+    } else |_| {}
     while (engine.active_clients.load(.acquire) != 0 or engine.active_workers.load(.acquire) != 0) Sleep(10);
     engine.jobs.logAction("engine.shutdown", "server stopped");
 }
