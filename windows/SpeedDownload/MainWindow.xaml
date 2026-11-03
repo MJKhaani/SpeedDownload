@@ -28,6 +28,11 @@
             <NavigationViewItemHeader Content="Queues" />
             <NavigationViewItem Content="New queue" Tag="new-queue" Icon="Add" />
         </NavigationView.MenuItems>
+        <NavigationView.FooterMenuItems>
+            <NavigationViewItem x:Name="EngineStatusItem" Content="Starting engine…" IsEnabled="False">
+                <NavigationViewItem.Icon><FontIcon x:Name="EngineIndicator" Glyph="&#xE946;" Foreground="DarkOrange" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.FooterMenuItems>
         <Grid x:Name="AppRoot">
         <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12" AllowDrop="True" DragOver="OnDownloadDragOver" Drop="OnDownloadDrop">
             <Grid.KeyboardAccelerators>
@@ -38,11 +43,13 @@
             </Grid.KeyboardAccelerators>
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Spacing="8">
-                <TextBlock x:Name="SectionTitle" Text="All downloads" Style="{ThemeResource TitleTextBlockStyle}" />
-                <CommandBar x:Name="DownloadCommands" DefaultLabelPosition="Right">
-                    <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" />
-                    <AppBarButton x:Name="StartAllButton" Label="Resume paused downloads" Icon="Play" Click="OnStartAll" />
-                    <AppBarButton x:Name="PauseAllButton" Label="Pause all downloads" Icon="Pause" Click="OnPauseAll" />
+                <TextBlock x:Name="SectionTitle" Visibility="Collapsed" Text="All downloads" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <CommandBar x:Name="DownloadCommands" DefaultLabelPosition="Collapsed">
+                    <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" ToolTipService.ToolTip="Add download" />
+                    <AppBarButton x:Name="StartAllButton" Label="Resume paused downloads" Icon="Play" Click="OnStartAll" ToolTipService.ToolTip="Resume paused downloads" />
+                    <AppBarButton x:Name="PauseAllButton" Label="Pause all downloads" Icon="Pause" Click="OnPauseAll" ToolTipService.ToolTip="Pause all downloads" />
                     <CommandBar.Content><AutoSuggestBox x:Name="SearchBox" Width="260" PlaceholderText="Search downloads" QueryIcon="Find" TextChanged="OnSearchTextChanged" /></CommandBar.Content>
                     <CommandBar.SecondaryCommands>
                         <AppBarButton Label="Details" Icon="View" Click="OnSelectedDetails" />
@@ -53,19 +60,13 @@
                         <AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /><AppBarButton Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" />
                     </CommandBar.SecondaryCommands>
                 </CommandBar>
-                <ComboBox x:Name="SortBox" Header="Sort downloads" SelectedIndex="0" SelectionChanged="OnSortChanged" HorizontalAlignment="Left">
-                    <ComboBoxItem Content="Engine order" Tag="order" />
-                    <ComboBoxItem Content="Name (A–Z)" Tag="name-asc" />
-                    <ComboBoxItem Content="Name (Z–A)" Tag="name-desc" />
-                    <ComboBoxItem Content="Status (A–Z)" Tag="state-asc" />
-                    <ComboBoxItem Content="Status (Z–A)" Tag="state-desc" />
-                    <ComboBoxItem Content="Size (smallest first)" Tag="size-asc" />
-                    <ComboBoxItem Content="Size (largest first)" Tag="size-desc" />
-                    <ComboBoxItem Content="Speed (slowest first)" Tag="speed-asc" />
-                    <ComboBoxItem Content="Speed (fastest first)" Tag="speed-desc" />
-                    <ComboBoxItem Content="ETA (shortest first)" Tag="eta-asc" />
-                    <ComboBoxItem Content="ETA (longest first)" Tag="eta-desc" />
-                </ComboBox>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
+                    <FontIcon Glyph="&#xE8CB;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
+                    <ComboBox x:Name="SortBox" SelectedIndex="0" SelectionChanged="OnSortChanged" MinWidth="90" AutomationProperties.Name="Sort downloads">
+                        <ComboBoxItem Content="Order" Tag="order" /><ComboBoxItem Content="Status" Tag="state-asc" /><ComboBoxItem Content="Size" Tag="size-asc" />
+                    </ComboBox>
+                </StackPanel>
+                </Grid>
                 <TextBlock x:Name="SelectionSummary" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" AutomationProperties.LiveSetting="Polite" />
                 <InfoBar x:Name="ConnectionBar" IsOpen="False" Severity="Warning" IsClosable="False" Title="Engine disconnected" Message="Displayed downloads may be out of date. Reconnect to resume managing downloads." AutomationProperties.LiveSetting="Polite">
@@ -109,14 +110,10 @@
                 </StackPanel>
                 <Border x:Name="DetailsPane" Grid.Column="1" Visibility="Collapsed" Padding="12" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel Spacing="7">
-                            <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Transfer details" FontSize="14" FontWeight="SemiBold" /><Button x:Name="CloseDetailsButton" Content="Close" Click="OnCloseDetails" /></StackPanel>
+                        <StackPanel Spacing="5">
+                            <StackPanel.Resources><Style TargetType="TextBlock"><Setter Property="FontSize" Value="11" /></Style></StackPanel.Resources>
+                            <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Transfer details" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" /><Button x:Name="CloseDetailsButton" Grid.Column="1" Click="OnCloseDetails" ToolTipService.ToolTip="Close transfer details" AutomationProperties.Name="Close transfer details"><FontIcon Glyph="&#xE8BB;" FontFamily="Segoe MDL2 Assets" FontSize="12" /></Button></Grid>
                             <TextBlock x:Name="DetailTitle" Text="Select a transfer" FontWeight="SemiBold" TextWrapping="Wrap" />
-                            <StackPanel x:Name="DetailCommands" Orientation="Vertical" Spacing="4" Visibility="Collapsed">
-                                <Button x:Name="DetailPrimaryAction" Click="OnJobAction" />
-                                <Button x:Name="DetailRemoveAction" Click="OnCancelOrRemove" />
-                                <Button x:Name="DetailMoreActions" Content="More actions" Click="OnMoreActions" />
-                            </StackPanel>
                             <TextBlock Text="STATUS" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             <TextBlock x:Name="DetailState" Text="—" />
                             <TextBlock Text="SOURCE HOST" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -154,10 +151,9 @@
             </Grid>
             <Grid Grid.Row="2" ColumnSpacing="10" Height="30">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <Ellipse x:Name="EngineIndicator" Width="7" Height="7" Fill="DarkOrange" VerticalAlignment="Center" />
-                <TextBlock x:Name="ConnectionStatus" Grid.Column="1" Text="Starting local engine…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                <TextBlock x:Name="AggregateSpeed" Grid.Column="2" HorizontalAlignment="Right" Text="Rate not available" Margin="0,0,12,0" VerticalAlignment="Center" />
-                <TextBlock x:Name="EffectiveLimit" Grid.Column="3" Text="Effective cap unavailable" VerticalAlignment="Center" />
+                <TextBlock x:Name="ConnectionStatus" Grid.Column="1" Text="Starting local engine…" Visibility="Collapsed" />
+                <TextBlock x:Name="AggregateSpeed" Grid.Column="2" HorizontalAlignment="Right" Margin="0,0,12,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="EffectiveLimit" Grid.Column="3" VerticalAlignment="Center" />
                 <TextBlock Grid.Column="4" Text="Global limit" VerticalAlignment="Center" />
                 <ComboBox x:Name="SpeedLimitBox" Grid.Column="5" Height="26" MinWidth="110" SelectionChanged="OnSpeedLimitChanged"><ComboBoxItem Content="Unlimited" Tag="0"/><ComboBoxItem Content="1 MB/s" Tag="1"/><ComboBoxItem Content="2 MB/s" Tag="2"/><ComboBoxItem Content="5 MB/s" Tag="5"/><ComboBoxItem Content="10 MB/s" Tag="10"/><ComboBoxItem Content="20 MB/s" Tag="20"/><ComboBoxItem Content="50 MB/s" Tag="50"/><ComboBoxItem Content="100 MB/s" Tag="100"/></ComboBox>
                 <TextBlock x:Name="QueueSummary" Grid.Column="6" Text="0 active · 0 queued" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />

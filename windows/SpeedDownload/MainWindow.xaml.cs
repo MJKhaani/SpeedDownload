@@ -495,11 +495,11 @@ public sealed partial class MainWindow : Window
             try
             {
                 var (limit, scheduled) = await _engine.GetEffectiveBandwidthAsync();
-                EffectiveLimit.Text = limit is null ? "Effective cap unavailable" :
+                EffectiveLimit.Text = limit is null ? "" :
                     (limit == 0 ? "Effective: Unlimited" : $"Effective: {limit.Value / 1_000_000d:0.##} MB/s") + (scheduled == true ? " (scheduled)" : "");
             }
             catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException)
-            { EffectiveLimit.Text = "Effective cap unavailable"; }
+            { EffectiveLimit.Text = ""; }
             if (_settings is null || !_connected)
             {
                 await LoadSettingsAsync();
@@ -530,7 +530,8 @@ public sealed partial class MainWindow : Window
             SpeedLimitBox.IsEnabled = true;
             ConnectionBar.IsOpen = false;
             ConnectionStatus.Text = "Engine connected";
-            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.ForestGreen);
+            EngineIndicator.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.ForestGreen);
+            EngineStatusItem.Content = "Engine connected";
             ReportPhase0UiState();
         }
         catch (Exception error)
@@ -548,10 +549,11 @@ public sealed partial class MainWindow : Window
             DownloadCommands.IsEnabled = false;
             SpeedLimitBox.IsEnabled = false;
             ConnectionBar.IsOpen = true;
-            AggregateSpeed.Text = "Rate unavailable";
-            EffectiveLimit.Text = "Effective cap unavailable";
+            AggregateSpeed.Text = "";
+            EffectiveLimit.Text = "";
             ConnectionStatus.Text = "Engine disconnected · data may be out of date";
-            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.DarkOrange);
+            EngineIndicator.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.DarkOrange);
+            EngineStatusItem.Content = "Engine disconnected";
             ShowMessage(error.Message, InfoBarSeverity.Error);
             ReportPhase0UiState();
         }
@@ -599,6 +601,8 @@ public sealed partial class MainWindow : Window
             _category = tag;
             StartAllButton.Label = tag.StartsWith("queue:", StringComparison.Ordinal) ? "Resume this queue" : "Resume paused downloads";
             PauseAllButton.Label = tag.StartsWith("queue:", StringComparison.Ordinal) ? "Pause this queue" : "Pause all downloads";
+            ToolTipService.SetToolTip(StartAllButton, StartAllButton.Label);
+            ToolTipService.SetToolTip(PauseAllButton, PauseAllButton.Label);
             SectionTitle.Text = tag.StartsWith("queue:", StringComparison.Ordinal) ? item.Content?.ToString() ?? "Queue" : CategoryLabel(tag);
             SettingsView.Visibility = Visibility.Collapsed;
             Workspace.Visibility = Visibility.Visible;
@@ -803,16 +807,6 @@ public sealed partial class MainWindow : Window
     private void UpdateDetails(DownloadJob? job)
     {
         DetailTitle.Text = job?.Title ?? "Select a transfer";
-        DetailCommands.Visibility = job is null ? Visibility.Collapsed : Visibility.Visible;
-        DetailPrimaryAction.Tag = job?.JobId;
-        DetailPrimaryAction.Content = job?.PrimaryActionText ?? "";
-        DetailPrimaryAction.Visibility = job?.PrimaryActionVisibility ?? Visibility.Collapsed;
-        DetailPrimaryAction.IsEnabled = _connected && !_batchInFlight && job?.CanControl == true;
-        DetailRemoveAction.Tag = job?.JobId;
-        DetailRemoveAction.Content = job?.RemoveActionText ?? "Remove";
-        DetailRemoveAction.IsEnabled = _connected && !_batchInFlight && job?.CanControl == true;
-        DetailMoreActions.Tag = job?.JobId;
-        DetailMoreActions.IsEnabled = _connected && !_batchInFlight && job?.CanControl == true;
         DetailState.Text = job?.StateText ?? "—";
         DetailUrl.Text = job?.Host ?? "—";
         DetailDestination.Text = job?.Destination ?? "—";
@@ -883,7 +877,7 @@ public sealed partial class MainWindow : Window
     private void UpdateSummary()
     {
         QueueSummary.Text = $"{_allJobs.Count(job => job.State == "downloading")} active · {_allJobs.Count(job => job.State is "queued" or "scheduled")} queued";
-        AggregateSpeed.Text = _aggregateRate > 0 ? $"↓ {_aggregateRate / 1_000_000d:0.##} MB/s" : "Rate unavailable";
+        AggregateSpeed.Text = _aggregateRate > 0 ? $"↓ {_aggregateRate / 1_000_000d:0.##} MB/s" : "";
     }
 
     private void RecordNotificationTransitions(IReadOnlyList<DownloadJob> jobs)
@@ -994,8 +988,6 @@ public sealed partial class MainWindow : Window
         BandwidthBox.Header = L("Global download limit (MB/s; 0 = unlimited)", "محدودیت سراسری دانلود (مگابایت بر ثانیه؛ صفر یعنی نامحدود)");
         BrowserExtensionsBox.Header = L("Browser capture file extensions", "پسوندهای دریافت از مرورگر");
         SearchBox.PlaceholderText = L("Search downloads", "جست‌وجوی دانلودها");
-        SortBox.Header = L("Sort downloads", "مرتب‌سازی دانلودها");
-        CloseDetailsButton.Content = L("Close", "بستن");
         UpdateNavigationCounts();
         if (!_category.StartsWith("queue:", StringComparison.Ordinal)) SectionTitle.Text = CategoryLabel(_category);
         var sectionLabels = new[] { L("Appearance", "ظاهر"), L("General", "عمومی"), L("Notifications", "اعلان‌ها"), L("Downloads", "دانلودها"), L("Network", "شبکه"), L("Bandwidth", "پهنای باند"), L("Integration", "یکپارچه‌سازی") };
@@ -1069,7 +1061,7 @@ public sealed partial class MainWindow : Window
             var id = queue["id"]?.GetValue<string>();
             var name = queue["name"]?.GetValue<string>();
             if (!string.IsNullOrWhiteSpace(id))
-                AppNavigation.MenuItems.Add(new NavigationViewItem { Content = name ?? id, Tag = "queue:" + id, Icon = new SymbolIcon(Symbol.List) });
+                AppNavigation.MenuItems.Add(new NavigationViewItem { Content = id == "main" ? "Main" : name ?? id, Tag = "queue:" + id, Icon = new SymbolIcon(Symbol.List) });
         }
         if (selectedTag?.StartsWith("queue:", StringComparison.Ordinal) == true)
         {
@@ -1552,31 +1544,53 @@ public sealed partial class MainWindow : Window
         var schedule = new ToggleSwitch { Header = "Start and stop on a schedule", IsOn = queue["schedule_enabled"]?.GetValue<bool>() ?? false };
         if (queue["schedule_slots"] is not JsonArray scheduleSlots || scheduleSlots.Count != 168)
         { ShowMessage("The engine returned an invalid queue schedule. Refresh and try again.", InfoBarSeverity.Error); return; }
-        var grid = new Grid { ColumnSpacing = 4, RowSpacing = 4 };
-        for (var col = 0; col < 8; col++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        for (var row = 0; row < 25; row++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var dayFormat = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat;
-        var days = dayFormat.AbbreviatedDayNames;
+        var slots = scheduleSlots.Select(value => value?.GetValue<bool>() == true).ToArray();
+        var selectedDays = new bool[7];
+        var first = -1;
+        var last = -1;
+        var representable = true;
         for (var day = 0; day < 7; day++)
         {
-            var label = new TextBlock { Text = days[day], HorizontalAlignment = HorizontalAlignment.Center };
-            Grid.SetColumn(label, day + 1); grid.Children.Add(label);
+            var activeHours = Enumerable.Range(0, 24).Where(hour => slots[day * 24 + hour]).ToArray();
+            if (activeHours.Length == 0) continue;
+            selectedDays[day] = true;
+            var dayStart = activeHours[0];
+            var dayEnd = activeHours[^1] + 1;
+            if (activeHours.Length != dayEnd - dayStart || (first >= 0 && (first != dayStart || last != dayEnd)))
+                representable = false;
+            if (first < 0) { first = dayStart; last = dayEnd; }
         }
-        var cells = new CheckBox[168];
-        for (var hour = 0; hour < 24; hour++)
+        if (first < 0) { first = 9; last = 17; }
+        var dayButtons = new ToggleButton[7];
+        var daysRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var dayNames = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat;
+        for (var day = 0; day < 7; day++)
         {
-            var label = new TextBlock { Text = ScheduleHourLabel(hour), VerticalAlignment = VerticalAlignment.Center };
-            Grid.SetRow(label, hour + 1); grid.Children.Add(label);
-            for (var day = 0; day < 7; day++)
-            {
-                var index = day * 24 + hour;
-                var cell = new CheckBox { IsChecked = scheduleSlots[index]?.GetValue<bool>() == true, MinWidth = 40 };
-                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(cell, $"{dayFormat.DayNames[day]} {ScheduleHourLabel(hour)}: queue active");
-                cell.KeyDown += (_, args) => NavigateSchedule(cells, index, args);
-                Grid.SetColumn(cell, day + 1); Grid.SetRow(cell, hour + 1);
-                grid.Children.Add(cell); cells[index] = cell;
-            }
+            var button = new ToggleButton { Content = dayNames.AbbreviatedDayNames[day], IsChecked = selectedDays[day] };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, dayNames.DayNames[day]);
+            daysRow.Children.Add(button);
+            dayButtons[day] = button;
         }
+        var startTime = new ComboBox { Header = "Start", MinWidth = 100 };
+        var stopTime = new ComboBox { Header = "Stop", MinWidth = 100 };
+        for (var hour = 0; hour < 24; hour++) startTime.Items.Add($"{hour:00}:00");
+        for (var hour = 1; hour <= 24; hour++) stopTime.Items.Add($"{hour:00}:00");
+        startTime.SelectedIndex = first;
+        stopTime.SelectedIndex = last - 1;
+        var times = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        times.Children.Add(startTime); times.Children.Add(stopTime);
+        var replaceSchedule = new CheckBox { Content = "Replace the existing custom schedule", Visibility = representable ? Visibility.Collapsed : Visibility.Visible };
+        var scheduleNote = new TextBlock { Text = representable ? "Runs during the selected hours in local time." : "The existing schedule has multiple time ranges and will be preserved unless replaced.", FontSize = 11, TextWrapping = TextWrapping.Wrap };
+        void UpdateScheduleControls()
+        {
+            var editable = schedule.IsOn && (representable || replaceSchedule.IsChecked == true);
+            daysRow.IsEnabled = editable; times.IsEnabled = editable;
+            replaceSchedule.IsEnabled = schedule.IsOn;
+        }
+        schedule.Toggled += (_, _) => UpdateScheduleControls();
+        replaceSchedule.Checked += (_, _) => UpdateScheduleControls();
+        replaceSchedule.Unchecked += (_, _) => UpdateScheduleControls();
+        UpdateScheduleControls();
         var oldAction = queue["finish_action"]?.GetValue<string>() ?? "none";
         var finishAction = new ComboBox { Header = "When every download in this queue completes", HorizontalAlignment = HorizontalAlignment.Stretch };
         finishAction.Items.Add(new ComboBoxItem { Content = "Do nothing", Tag = "none" });
@@ -1609,16 +1623,10 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(queueName);
         panel.Children.Add(count);
         panel.Children.Add(schedule);
-        panel.Children.Add(new TextBlock { Text = "Checked hours allow this queue to run. Use arrow keys to move between hours. " + ScheduleTimeExplanation(), TextWrapping = TextWrapping.Wrap });
-        var rangeEditor = CreateScheduleRangeEditor(cells, "Allow queue", "Stop queue");
-        var preview = CreateSchedulePreview(cells, () => schedule.IsOn, "queue allowed", "queue stopped", "Schedule disabled; the queue is not restricted by time.");
-        foreach (var cell in cells) { cell.Checked += (_, _) => preview.Refresh(); cell.Unchecked += (_, _) => preview.Refresh(); }
-        void UpdateEnabled() { rangeEditor.IsEnabled = schedule.IsOn; foreach (var cell in cells) cell.IsEnabled = schedule.IsOn; preview.Refresh(); }
-        schedule.Toggled += (_, _) => UpdateEnabled();
-        UpdateEnabled();
-        panel.Children.Add(rangeEditor);
-        panel.Children.Add(preview.Text);
-        panel.Children.Add(grid);
+        panel.Children.Add(scheduleNote);
+        panel.Children.Add(replaceSchedule);
+        panel.Children.Add(daysRow);
+        panel.Children.Add(times);
         panel.Children.Add(finishAction);
         panel.Children.Add(userCommand);
         panel.Children.Add(powerOffConsent);
@@ -1644,6 +1652,9 @@ public sealed partial class MainWindow : Window
                 { formError.Message = "Enter a command of at most 4096 UTF-8 bytes."; formError.IsOpen = true; userCommand.Focus(FocusState.Programmatic); return; }
                 if (finishAction.IsEnabled && selectedAction == "power_off" && powerOffConsent.IsChecked != true)
                 { formError.Message = "Confirm that Windows should shut down when this queue completes."; formError.IsOpen = true; powerOffConsent.Focus(FocusState.Programmatic); return; }
+                var editSchedule = representable || replaceSchedule.IsChecked == true;
+                if (editSchedule && startTime.SelectedIndex >= stopTime.SelectedIndex + 1)
+                { formError.Message = "Stop must be later than start. Choose whole hours within the same day."; formError.IsOpen = true; return; }
                 var saved = await SaveSettingsAsync(settings =>
                 {
                     if (settings["queues"] is not JsonArray list) throw new InvalidOperationException("Queue settings are unavailable.");
@@ -1654,7 +1665,10 @@ public sealed partial class MainWindow : Window
                     target["name"] = name;
                     target["max_active"] = (int)count.Value;
                     target["schedule_enabled"] = schedule.IsOn;
-                    target["schedule_slots"] = new JsonArray(cells.Select(cell => (JsonNode?)JsonValue.Create(cell.IsChecked == true)).ToArray());
+                    if (editSchedule)
+                        target["schedule_slots"] = new JsonArray(Enumerable.Range(0, 168)
+                            .Select(index => (JsonNode?)JsonValue.Create(dayButtons[index / 24].IsChecked == true &&
+                                index % 24 >= startTime.SelectedIndex && index % 24 < stopTime.SelectedIndex + 1)).ToArray());
                     if (finishAction.IsEnabled && ((selectedAction is "none" or "user_command") ||
                         (windowsActions && (selectedAction is "quit_app" or "power_off"))))
                     {
@@ -1671,7 +1685,7 @@ public sealed partial class MainWindow : Window
             finally { dialog.IsPrimaryButtonEnabled = true; deferral.Complete(); }
         };
         try { await dialog.ShowAsync(); }
-        finally { preview.Timer.Stop(); if (sender is Control control) control.Focus(FocusState.Programmatic); }
+        finally { if (sender is Control control) control.Focus(FocusState.Programmatic); }
     }
 
     private async void OnJobAction(object sender, RoutedEventArgs e)
@@ -1951,8 +1965,9 @@ public sealed partial class MainWindow : Window
             SpeedLimitBox.IsEnabled = false;
             AggregateSpeed.Text = "Rate unavailable";
             EffectiveLimit.Text = "Effective cap unavailable";
-            EngineIndicator.Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.DarkOrange);
+            EngineIndicator.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.DarkOrange);
             ConnectionStatus.Text = "Engine shutdown could not be confirmed";
+            EngineStatusItem.Content = ConnectionStatus.Text;
             ConnectionBar.IsOpen = true;
             ShowMessage(error.Message + " Automatic reconnection is paused. Reconnect manually; this will start the engine if it has stopped.", InfoBarSeverity.Warning);
         }
