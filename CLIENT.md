@@ -82,7 +82,7 @@ The shared checklist applies to **each** native client unless the platform secti
 
 | Capability | macOS | Windows | Linux |
 |---|---|---|---|
-| Native framework | SwiftUI; AppKit adapters only as needed | WinUI 3 / Windows App SDK | GTK 4 / GLib/GIO; optional libadwaita if support remains viable |
+| Native framework | SwiftUI; AppKit adapters only as needed | WinUI 3 / Windows App SDK | GTK 4 / GLib/GIO + libadwaita; validate support viability |
 | Main window and menus | One reusable main window, system menu bar, Settings scene, Dock/menu-bar integration | Fluent navigation, native window activation, taskbar/notification area | GTK application lifecycle, desktop menus/shortcuts, XDG integration |
 | Files and links | Native open/save panels, Finder reveal, `.torrent`/`magnet:` registration | Native picker, Explorer reveal, file/protocol activation | GTK native dialogs or portals, file-manager reveal, desktop-file/MIME registration |
 | Secret store | Keychain Services | Credential Manager / DPAPI-backed per-user store | Secret Service / compatible keyring; session-only or clear error when unavailable |
@@ -98,7 +98,7 @@ These points need explicit decisions before their acceptance checks can be made 
 
 1. Which languages, if any, ship beyond the source language, and in which release?
 2. Exact supported OS versions, desktop environments, architectures, and package formats for each release.
-3. Exact behavior and wording when closing the GUI with active work under each background preference, including the stop-engine confirmation threshold. The Windows default and explicit quit/stop behavior are resolved in [Windows client UI specification](windows/WINDOWS_CLIENT.md#activation-background-operation-and-notifications--p0-lifecycle-p1-integration); other platforms remain open.
+3. Exact behavior and wording when closing the GUI with active work under each background preference, including the stop-engine confirmation threshold. The Windows default and explicit quit/stop behavior are resolved in [Windows client UI specification](windows/WINDOWS_CLIENT.md#activation-background-operation-and-notifications--p0-lifecycle-p1-integration); the Linux default keeps transfers running after window close, with explicit stop-engine consequences, as specified in [Linux client UI specification](linux/Linux_CLIENT.md#lifecycle-integration-and-failure-states). macOS remains open.
 4. Whether per-job/per-protocol bandwidth caps and one-time scheduling expose the same controls on all protocols from the first complete release.
 5. The supported media-site matrix, format/merge capabilities, and playlist limits for P2 media review.
 6. The supported browser/version matrix and whether optional authenticated-header handoff will ever ship.

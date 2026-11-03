@@ -7,7 +7,7 @@
 A free, open-source download manager with a Zig engine and native desktop clients.
 Speed Download is in active development, with macOS as the current focus.
 
-![Speed Download on macOS](Resources/macos-client.png)
+![Speed Download on macOS](Resources/macos-client.png)![Speed Download on Windows](Resources/windows-client.jpg)
 
 ## Features
 

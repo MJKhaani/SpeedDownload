@@ -51,7 +51,7 @@ Build a fast, resilient, privacy-respecting download manager that feels native o
 |---|---|---|---|
 | macOS | SwiftUI; AppKit only where a native capability is missing | Swift | App lifecycle, macOS menus, settings, Finder integration, panels, notifications and accessibility |
 | Windows | WinUI 3 + Windows App SDK (XAML); platform APIs as necessary | C# / .NET | Fluent UI, app activation, taskbar/tray, file picker, notifications and accessibility |
-| Linux | GTK 4 + GLib/GIO; optional libadwaita when appropriate | C | GTK application lifecycle, file dialogs/portals, desktop notifications, XDG integration and accessibility |
+| Linux | GTK 4 + GLib/GIO + libadwaita (GNOME-first UI; validate runtime availability) | C | GTK application lifecycle, file dialogs/portals, desktop notifications, XDG integration and accessibility |
 | All | Headless engine/service + CLI | Zig | Transfer protocols, state, persistence, scheduler, bandwidth, download integrity, RPC server and OS IPC transports |
 
 **Hard architecture rules:**
@@ -212,7 +212,7 @@ Use a shared **token-bucket limiter** with monotonic clocks and aggregate accoun
 
 The **multipart segment map** is a small platform-native custom drawing control (SwiftUI `Canvas`/accessibility equivalent, WinUI 3 `Canvas`/Composition/custom control as validated, GTK 4 `GtkDrawingArea` or snapshot custom widget). It consumes identical segment data but is implemented and accessible separately on each OS. Shared business logic must remain in Zig, not copied into three view models.
 
-**Linux caveat:** notification-area/tray support varies by GNOME/KDE/Xfce and Wayland; where unavailable, background jobs must be recoverable through the launcher, notification, and CLI. `libadwaita` may be adopted for GNOME style but cannot be a silent hard dependency if it prevents other supported desktops or CPU architectures from working.
+**Linux caveat:** notification-area/tray support varies by GNOME/KDE/Xfce and Wayland; where unavailable, background jobs must be recoverable through the launcher, notification, and CLI. The approved [Linux UI specification](linux/Linux_CLIENT.md) adopts `libadwaita` explicitly for a GNOME-first interface. Validate its runtime/package availability for every supported desktop and CPU architecture; adoption must not silently remove supported configurations.
 
 ### 4.7 Browser extensions and integration
 
