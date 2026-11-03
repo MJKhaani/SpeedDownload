@@ -289,6 +289,7 @@ def main():
                         raise RuntimeError("Concurrent client saw inconsistent job state")
                 status_stream = simultaneous[0]
                 original_settings = rpc(status_stream, "settings.get", {})
+                original_settings["debug_log_enabled"] = True
                 settings = dict(original_settings)
                 settings["bandwidth_limit_bytes_per_second"] = 1_234_567
                 settings["bandwidth_schedule_enabled"] = False

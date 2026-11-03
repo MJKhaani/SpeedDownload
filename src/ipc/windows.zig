@@ -270,6 +270,7 @@ fn handleClientThread(allocator: Allocator, pipe: windows.HANDLE, server: unix_s
 }
 
 fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_service.ServerIdentity, engine: *unix_service.EngineContext) !void {
+    const trace_id = @intFromPtr(pipe);
     var session = protocol.Session{ .dispatch = unix_service.dispatchMethod, .context = @ptrCast(engine) };
     var active_subscription: ?subscription.Started = null;
     defer if (active_subscription) |item| item.deinit(allocator);
@@ -308,12 +309,16 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
         if (length == 0 or length > frame.max_payload_bytes) return;
         try readExact(pipe, request_frame[frame.header_bytes .. frame.header_bytes + length], engine);
         @memcpy(request_frame[0..frame.header_bytes], &header);
+        const before_dispatch = std.fmt.allocPrint(allocator, "client={x} dispatching", .{trace_id}) catch null;
+        if (before_dispatch) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
         const result = try protocol.handleFrame(
             allocator,
             &session,
             request_frame[0 .. frame.header_bytes + length],
             server_info,
         );
+        const after_dispatch = std.fmt.allocPrint(allocator, "client={x} dispatched", .{trace_id}) catch null;
+        if (after_dispatch) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
         const started = subscription.started(allocator, request_frame[frame.header_bytes .. frame.header_bytes + length], result.response_frame) catch |err| {
             if (result.response_frame) |response| allocator.free(response);
             return err;
