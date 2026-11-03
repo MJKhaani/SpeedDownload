@@ -106,6 +106,7 @@ jobs:
             zig build-exe src/main.zig -target x86_64-windows -mcpu baseline -O ReleaseSafe -femit-bin=zig-out/bin/speed-download.exe
           fi
           python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
+          python tests/integration/https_handshake_retry.py zig-out/bin/speed-download.exe
 
       - name: Build and check Windows app, then create ZIP
         if: runner.os == 'Windows'

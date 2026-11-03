@@ -715,6 +715,8 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             return;
         }
         if (retryableDownloadError(err)) {
+            if (err == error.TlsInitializationFailed)
+                logTransfer(engine, task.id, "tls.handshake", "failed; TLS library did not expose the underlying handshake error; certificate validation remains enabled");
             logTransfer(engine, task.id, "transfer.retry", @errorName(err));
             if (engine.jobs.scheduleTransientRetry(task.id, @errorName(err), retry_hint.load(.acquire), if (err == error.ServerBusy or err == error.ParallelRangeRejected) task.connections else null) catch false) {
                 logTransfer(engine, task.id, "transfer.retry", "scheduled");
@@ -731,6 +733,8 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             "Proxy credentials could not be read from the system credential store. Save them again in Proxy settings."
         else if (err == error.AuthenticatedHttpsProxyUnsupported)
             "Authenticated proxies cannot yet download HTTPS links because the HTTP transport cannot authorize CONNECT requests."
+        else if (err == error.TlsInitializationFailed)
+            "TLS handshake failed. The server may have closed the connection, rejected the protocol, or presented an untrusted certificate. Check the network, system clock, and certificate trust. The TLS library did not expose a more specific cause."
         else if (err == error.FtpJournalUpgradeRequired)
             "This FTP partial uses an older journal format and cannot be resumed safely. Remove the partial and add the download again."
         else if (err == error.HttpJournalUpgradeRequired)
@@ -905,9 +909,29 @@ fn checkHttpControl(context: *anyopaque) anyerror!void {
 
 fn updateTorrentStats(context: *anyopaque, peers: u32, counts: @import("../protocols/torrent/metadata.zig").TrackerCounts) void {
     const progress: *DownloadProgressContext = @ptrCast(@alignCast(context));
+    if (counts.diagnostic_stage) |stage| {
+        const detail = std.fmt.allocPrint(progress.engine.allocator, "stage={s} error={s} discovered_peers={d}", .{ stage, counts.diagnostic_error orelse "none", peers }) catch null;
+        if (detail) |text| {
+            logTransfer(progress.engine, progress.job_id, "torrent.discovery", text);
+            progress.engine.allocator.free(text);
+        }
+        if (counts.retry_delay_seconds) |seconds| {
+            if (progress.retry_hint) |hint| {
+                const current = hint.load(.acquire);
+                if (seconds > current) hint.store(seconds, .release);
+            }
+        }
+        return;
+    }
     if (counts.peer_event) {
+        logTransfer(progress.engine, progress.job_id, "torrent.peer", if (counts.active_peer != null) "connected" else "disconnected");
         progress.engine.jobs.updateTorrentPeer(progress.job_id, counts.active_peer);
         return;
+    }
+    const detail = std.fmt.allocPrint(progress.engine.allocator, "discovered_peers={d} seeders={d} seeders_known={} leechers={d} leechers_known={}", .{ peers, counts.seeders orelse 0, counts.seeders != null, counts.leechers orelse 0, counts.leechers != null }) catch null;
+    if (detail) |text| {
+        logTransfer(progress.engine, progress.job_id, "torrent.swarm", text);
+        progress.engine.allocator.free(text);
     }
     if (counts.retry_delay_seconds) |seconds| {
         const hint = progress.retry_hint orelse unreachable;
@@ -920,6 +944,7 @@ fn updateTorrentStats(context: *anyopaque, peers: u32, counts: @import("../proto
 fn retryableDownloadError(err: anyerror) bool {
     return switch (err) {
         error.ConnectionResetByPeer,
+        error.TlsInitializationFailed,
         error.ConnectionTimedOut,
         error.Timeout,
         error.ConnectionRefused,
@@ -1071,7 +1096,7 @@ fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64, dura
     progress.single_reported = completed;
     progress.progress_mutex.unlock(progress.engine.io);
     if (should_log) {
-        const message = std.fmt.allocPrint(progress.engine.allocator, "received={d} total={d} total_known={} durable={}", .{ completed, total orelse 0, total != null, durable }) catch null;
+        const message = std.fmt.allocPrint(progress.engine.allocator, "{s}={d} total={d} total_known={}", .{ if (durable) "checkpoint_bytes" else "received_bytes", completed, total orelse 0, total != null }) catch null;
         if (message) |text| {
             logTransfer(progress.engine, progress.job_id, "transfer.progress", text);
             progress.engine.allocator.free(text);

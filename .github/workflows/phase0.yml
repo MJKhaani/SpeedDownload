@@ -57,8 +57,10 @@ jobs:
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             python tests/integration/ipc_engine.py zig-out/bin/speed-download.exe
+            python tests/integration/https_handshake_retry.py zig-out/bin/speed-download.exe
           else
             python tests/integration/ipc_engine.py zig-out/bin/speed-download
+            python tests/integration/https_handshake_retry.py zig-out/bin/speed-download
           fi
 
       - name: Exercise exact multipart checkpoint boundary

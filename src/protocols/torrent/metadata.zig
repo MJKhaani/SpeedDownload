@@ -117,6 +117,9 @@ pub const Fetched = struct {
 };
 
 pub const TrackerCounts = struct {
+    /// Non-sensitive diagnostic category; no tracker URLs or peer addresses.
+    diagnostic_stage: ?[]const u8 = null,
+    diagnostic_error: ?[]const u8 = null,
     /// Transient connected peer event; the callback must copy the address.
     peer_event: bool = false,
     active_peer: ?[]const u8 = null,
@@ -163,9 +166,12 @@ pub fn fetchWithSourceSession(allocator: Allocator, io: Io, link: *const magnet.
         try checkpoint(control, control_context);
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
+        if (stats) |report| if (stats_context) |ctx| report(ctx, 0, .{ .diagnostic_stage = "tracker-start" });
         const peers = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, 0, 1, session, &counts, control, control_context) catch |err| {
             if (isCheckpointError(err) or err == error.OutOfMemory) return err;
-            if (counts.retry_delay_seconds != null) if (stats) |report| if (stats_context) |ctx| report(ctx, 0, counts);
+            counts.diagnostic_stage = "tracker";
+            counts.diagnostic_error = @errorName(err);
+            if (stats) |report| if (stats_context) |ctx| report(ctx, 0, counts);
             if (err == error.TrackerRetryRequested or last_error != error.TrackerRetryRequested) last_error = err;
             continue;
         };
@@ -257,9 +263,12 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
         if (peers.items.len == max_peers) break;
         const parsed = std.Uri.parse(tracker) catch continue;
         var counts: TrackerCounts = .{};
+        if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), .{ .diagnostic_stage = "tracker-start" });
         const discovered = discoverTrackerPeers(allocator, io, tracker, parsed, link.info_hash, downloaded, total_bytes - downloaded, session, &counts, control, control_context) catch |err| {
             if (isCheckpointError(err) or err == error.OutOfMemory) return err;
-            if (counts.retry_delay_seconds != null) if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
+            counts.diagnostic_stage = "tracker";
+            counts.diagnostic_error = @errorName(err);
+            if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), counts);
             if (err == error.TrackerRetryRequested or last_tracker_error == null or last_tracker_error.? != error.TrackerRetryRequested) last_tracker_error = err;
             continue;
         };
@@ -284,9 +293,11 @@ pub fn collectPeersWithStats(allocator: Allocator, io: Io, link: *const magnet.R
     if (link.allow_dht and !session.dht_attempted and peers.items.len == 0) {
         try checkpoint(control, control_context);
         session.dht_attempted = true;
+        if (stats) |report| if (stats_context) |ctx| report(ctx, 0, .{ .diagnostic_stage = "dht-start" });
         const discovered = @import("dht.zig").discover(allocator, io, link.info_hash, control, control_context) catch |err| blk: {
             if (isCheckpointError(err)) return err;
             if (err == error.OutOfMemory) return err;
+            if (stats) |report| if (stats_context) |ctx| report(ctx, @intCast(peers.items.len), .{ .diagnostic_stage = "dht", .diagnostic_error = @errorName(err) });
             break :blk null;
         };
         if (discovered) |found| {

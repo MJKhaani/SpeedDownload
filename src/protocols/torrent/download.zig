@@ -126,8 +126,7 @@ fn runPeerAddresses(addresses: anytype, transfer: *PeerTransfer, session: *const
         var threads: [max_parallel_peers]std.Thread = undefined;
         var launched: usize = 0;
         while (launched < batch_size) : (launched += 1) {
-            workers[launched] = .{ .transfer = transfer, .address = addresses[offset + launched], .slot = launched,
-                .session = session, .control = control, .control_context = control_context };
+            workers[launched] = .{ .transfer = transfer, .address = addresses[offset + launched], .slot = launched, .session = session, .control = control, .control_context = control_context };
             threads[launched] = std.Thread.spawn(.{}, runPeerWorker, .{&workers[launched]}) catch {
                 for (threads[0..launched]) |thread| thread.join();
                 return error.PeerWorkerSpawnFailed;
@@ -455,9 +454,7 @@ fn transferValidated(
         const claimed = try allocator.alloc(bool, count);
         defer allocator.free(claimed);
         @memset(claimed, false);
-        var shared: PeerTransfer = .{ .io = io, .info = info, .file = file, .verified = verified,
-            .needed = needed, .claimed = claimed, .remaining = remaining, .verified_bytes = verified_bytes,
-            .needed_bytes = needed_bytes, .callback = callback, .context = context };
+        var shared: PeerTransfer = .{ .io = io, .info = info, .file = file, .verified = verified, .needed = needed, .claimed = claimed, .remaining = remaining, .verified_bytes = verified_bytes, .needed_bytes = needed_bytes, .callback = callback, .context = context };
         var last_error: anyerror = error.NoPeerHasPieces;
         // Tracker `left` describes the full torrent, even when the user
         // selected only some files. Progress still uses needed_bytes.
@@ -487,8 +484,10 @@ fn transferValidated(
             // reachable. Try public DHT before entering tracker retry wait.
             try checkControl(control, control_context);
             session.dht_attempted = true;
+            if (stats) |report| if (stats_context) |ctx| report(ctx, 0, .{ .diagnostic_stage = "dht-start" });
             const discovered = @import("dht.zig").discover(allocator, io, info.info_hash, control, control_context) catch |err| blk: {
                 if (!canTryAnotherPeer(err) and err != error.DhtBootstrapUnavailable) return err;
+                if (stats) |report| if (stats_context) |ctx| report(ctx, 0, .{ .diagnostic_stage = "dht", .diagnostic_error = @errorName(err) });
                 break :blk null;
             };
             if (discovered) |dht_peers| {
@@ -827,8 +826,14 @@ fn readPeerFrame(io: Io, stream: Io.net.Stream, buffer: []u8, writer: *Io.Writer
     while (true) {
         try checkControl(control, control_context);
         const frame = try readFrame(io, stream, buffer, transfer);
-        if (frame.len == 1 and frame[0] == 2) { peer_interested.* = true; continue; }
-        if (frame.len == 1 and frame[0] == 3) { peer_interested.* = false; continue; }
+        if (frame.len == 1 and frame[0] == 2) {
+            peer_interested.* = true;
+            continue;
+        }
+        if (frame.len == 1 and frame[0] == 3) {
+            peer_interested.* = false;
+            continue;
+        }
         if (frame.len != 13 or frame[0] != 6) return frame;
         if (!peer_interested.*) continue;
         const index = std.mem.readInt(u32, frame[1..5], .big);

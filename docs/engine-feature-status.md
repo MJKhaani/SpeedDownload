@@ -9,6 +9,15 @@ This is the implementation inventory for the Zig engine at `src/`. “Implemente
 | Process and IPC | Headless `engine` mode; one engine per user profile; per-user Unix sockets on macOS/Linux and named pipes on Windows; framed JSON-RPC 2.0 handshake; bounded client sessions; request validation; CLI RPC client. Windows has a negotiated shutdown operation that rejects active workers. | Windows shutdown requires native validation; Unix shutdown and the optional MCP server are not implemented. GUI startup and UI support differ by platform. |
 | Jobs | Persisted jobs with stable IDs, revisions, idempotent add, priority/order, search/filter/pagination, per-job bandwidth, optional SHA-256, reference page, and replacement source. Start, pause, resume, retry, cancel, delete, move queue, reorder, and resume queue are exposed over IPC. | Replacement source is a user-confirmed operation; the engine cannot automatically recapture an authenticated browser link. |
 | State and recovery | Persistent state machine; partial data and metadata journals; restart recovery; bounded retry for temporary failures and HTTP `Retry-After`; no-replace final publication. | Recovery cannot make weak remote validators strong. Older unsupported journal formats can require a fresh download. |
+
+TLS handshake initialization failures now receive the same bounded retry policy
+as other transient network failures, without bypassing certificate validation.
+The current Zig HTTP client collapses several handshake causes into
+`TlsInitializationFailed`, so diagnostics cannot determine whether an
+individual failure was a disconnect, a certificate problem, or a protocol
+incompatibility. Torrent debug records include tracker/DHT stages, error names,
+peer counts, and peer connection events without URLs or peer addresses. Actual
+public-swarm behavior and the reported Windows endpoints still need validation.
 | Progress | Aggregate received/total bytes, HTTP worker ranges, torrent peer counts where known, change cursor, bounded subscriptions and `jobs.wait`. | Client rendering varies; Windows/Linux clients currently poll. |
 | Named queues | Required `main` queue, user queues with IDs/names, per-queue active limit and 168-hour schedule, job movement, queue completion action, and settings migration. | Completion actions can affect the OS; they require careful client review and platform validation. |
 | Settings and diagnostics | Per-user schema-versioned `settings.json`, validation, atomic updates, proxy and bandwidth policy, default folder/connections, browser extension list, language, and opt-in bounded redacted debug log. | `stop_seeding_after_minutes` is stored but has no effect until seeding exists. `language` and browser extension list are settings for clients/extensions. |
