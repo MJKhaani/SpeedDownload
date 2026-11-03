@@ -198,15 +198,8 @@ pub fn serve(allocator: Allocator, config: Config) !void {
         };
         thread.detach();
     }
-    engine.jobs.logAction("engine.shutdown", "joining scheduler");
     if (scheduler_thread) |thread| thread.join();
-    engine.jobs.logAction("engine.shutdown", "draining workers and clients");
-    if (std.fmt.allocPrint(allocator, "clients={d} workers={d}", .{ engine.active_clients.load(.acquire), engine.active_workers.load(.acquire) })) |counts| {
-        engine.jobs.logAction("engine.shutdown", counts);
-        allocator.free(counts);
-    } else |_| {}
     while (engine.active_clients.load(.acquire) != 0 or engine.active_workers.load(.acquire) != 0) Sleep(10);
-    engine.jobs.logAction("engine.shutdown", "server stopped");
 }
 
 fn currentIdentity(allocator: Allocator) !struct { sid: []u8, session_id: u32 } {
@@ -256,13 +249,6 @@ fn reserveClient(engine: *unix_service.EngineContext) bool {
 }
 
 fn handleClientThread(allocator: Allocator, pipe: windows.HANDLE, server: unix_service.ServerIdentity, engine: *unix_service.EngineContext) void {
-    const client_id = @intFromPtr(pipe);
-    const started = std.fmt.allocPrint(allocator, "client={x} started", .{client_id}) catch null;
-    if (started) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
-    defer {
-        const finished = std.fmt.allocPrint(allocator, "client={x} finished", .{client_id}) catch null;
-        if (finished) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
-    }
     defer _ = engine.active_clients.fetchSub(1, .release);
     defer _ = DisconnectNamedPipe(pipe);
     defer _ = CloseHandle(pipe);
@@ -270,7 +256,6 @@ fn handleClientThread(allocator: Allocator, pipe: windows.HANDLE, server: unix_s
 }
 
 fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_service.ServerIdentity, engine: *unix_service.EngineContext) !void {
-    const trace_id = @intFromPtr(pipe);
     var session = protocol.Session{ .dispatch = unix_service.dispatchMethod, .context = @ptrCast(engine) };
     var active_subscription: ?subscription.Started = null;
     defer if (active_subscription) |item| item.deinit(allocator);
@@ -299,7 +284,7 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
                 event_sequence += 1;
                 const notice = try subscription.eventFrame(allocator, engine.jobs, item, server.engine_instance_id, event_sequence);
                 defer allocator.free(notice);
-                try writeAll(pipe, notice);
+                try writeAll(pipe, notice, engine);
                 item.cursor = cursor;
                 continue;
             }
@@ -309,22 +294,18 @@ fn serveConnection(allocator: Allocator, pipe: windows.HANDLE, server: unix_serv
         if (length == 0 or length > frame.max_payload_bytes) return;
         try readExact(pipe, request_frame[frame.header_bytes .. frame.header_bytes + length], engine);
         @memcpy(request_frame[0..frame.header_bytes], &header);
-        const before_dispatch = std.fmt.allocPrint(allocator, "client={x} dispatching", .{trace_id}) catch null;
-        if (before_dispatch) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
         const result = try protocol.handleFrame(
             allocator,
             &session,
             request_frame[0 .. frame.header_bytes + length],
             server_info,
         );
-        const after_dispatch = std.fmt.allocPrint(allocator, "client={x} dispatched", .{trace_id}) catch null;
-        if (after_dispatch) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
         const started = subscription.started(allocator, request_frame[frame.header_bytes .. frame.header_bytes + length], result.response_frame) catch |err| {
             if (result.response_frame) |response| allocator.free(response);
             return err;
         };
         if (result.response_frame) |response| {
-            writeAll(pipe, response) catch |err| {
+            writeAll(pipe, response, engine) catch |err| {
                 allocator.free(response);
                 if (started) |item| item.deinit(allocator);
                 return err;
@@ -368,7 +349,7 @@ fn readExact(pipe: windows.HANDLE, buffer: []u8, engine: *unix_service.EngineCon
     }
 }
 
-fn writeAll(pipe: windows.HANDLE, buffer: []const u8) Error!void {
+fn writeAll(pipe: windows.HANDLE, buffer: []const u8, engine: *unix_service.EngineContext) Error!void {
     var offset: usize = 0;
     const start = GetTickCount64();
     while (offset < buffer.len) {
@@ -376,8 +357,10 @@ fn writeAll(pipe: windows.HANDLE, buffer: []const u8) Error!void {
         const amount: u32 = @intCast(@min(buffer.len - offset, std.math.maxInt(u32)));
         if (WriteFile(pipe, buffer[offset..].ptr, amount, &count, null) != 0 and count > 0) {
             offset += count;
+            if (offset < buffer.len and engine.stopping.load(.acquire)) return error.ServerStopping;
             continue;
         }
+        if (engine.stopping.load(.acquire)) return error.ServerStopping;
         const last_error = GetLastError();
         if (last_error != error_no_data and last_error != 0) return Error.PipeWriteFailed;
         if (GetTickCount64() - start >= io_timeout_ms) return Error.PipeTimeout;
