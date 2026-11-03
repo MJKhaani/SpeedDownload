@@ -256,6 +256,13 @@ fn reserveClient(engine: *unix_service.EngineContext) bool {
 }
 
 fn handleClientThread(allocator: Allocator, pipe: windows.HANDLE, server: unix_service.ServerIdentity, engine: *unix_service.EngineContext) void {
+    const client_id = @intFromPtr(pipe);
+    const started = std.fmt.allocPrint(allocator, "client={x} started", .{client_id}) catch null;
+    if (started) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
+    defer {
+        const finished = std.fmt.allocPrint(allocator, "client={x} finished", .{client_id}) catch null;
+        if (finished) |message| { engine.jobs.logAction("ipc.client", message); allocator.free(message); }
+    }
     defer _ = engine.active_clients.fetchSub(1, .release);
     defer _ = DisconnectNamedPipe(pipe);
     defer _ = CloseHandle(pipe);
@@ -336,8 +343,15 @@ fn readExact(pipe: windows.HANDLE, buffer: []u8, engine: *unix_service.EngineCon
     const start = GetTickCount64();
     while (offset < buffer.len) {
         if (engine.stopping.load(.acquire)) return error.ServerStopping;
+        var available: u32 = 0;
+        if (PeekNamedPipe(pipe, null, 0, null, &available, null) == 0) return Error.PipeReadFailed;
+        if (available == 0) {
+            if (GetTickCount64() - start >= io_timeout_ms) return Error.PipeTimeout;
+            Sleep(10);
+            continue;
+        }
         var count: u32 = 0;
-        const amount: u32 = @intCast(@min(buffer.len - offset, std.math.maxInt(u32)));
+        const amount: u32 = @intCast(@min(buffer.len - offset, available));
         if (ReadFile(pipe, buffer[offset..].ptr, amount, &count, null) != 0 and count > 0) {
             offset += count;
             continue;
