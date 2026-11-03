@@ -577,7 +577,7 @@ public sealed partial class MainWindow : Window
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) return;
         try
         {
-            var rows = _allJobs.Select(job => $"{job.JobId}\t{job.State}\t{job.Completed}");
+            var rows = _allJobs.Select(job => $"{job.JobId}\t{job.State}\t{(job.State == "downloading" ? job.Received : job.Completed)}");
             File.WriteAllLines(path, [ConnectionStatus.Text, .. rows]);
         }
         catch (IOException) { }
