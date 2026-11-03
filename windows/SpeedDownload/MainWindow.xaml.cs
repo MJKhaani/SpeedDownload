@@ -1584,7 +1584,8 @@ public sealed partial class MainWindow : Window
         void UpdateScheduleControls()
         {
             var editable = schedule.IsOn && (representable || replaceSchedule.IsChecked == true);
-            daysRow.IsEnabled = editable; times.IsEnabled = editable;
+            foreach (var dayButton in dayButtons) dayButton.IsEnabled = editable;
+            startTime.IsEnabled = editable; stopTime.IsEnabled = editable;
             replaceSchedule.IsEnabled = schedule.IsOn;
         }
         schedule.Toggled += (_, _) => UpdateScheduleControls();
