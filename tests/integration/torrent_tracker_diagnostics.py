@@ -62,7 +62,7 @@ def main():
                 log_file = state / "engine-debug.log"
                 while time.monotonic() < deadline:
                     text = log_file.read_text() if log_file.exists() else ""
-                    if "stage=tracker error=" in text and "error=none" not in text.split("stage=tracker error=")[-1].splitlines()[0]:
+                    if "stage=tracker error=" in text and not text.split("stage=tracker error=")[-1].splitlines()[0].startswith("none"):
                         assert f"job={job['job_id']}" in text
                         assert "token=secret" not in text
                         print("PASS: tracker failure is logged without its URL or token")
