@@ -347,6 +347,7 @@ def main():
                     if "queue.finish-user-command-v1" not in hello.get("features", []):
                         raise RuntimeError("Windows engine did not advertise queue completion commands")
                     settings = rpc(add_stream, "settings.get", {})
+                    settings["debug_log_enabled"] = True
                     main_queue = next(q for q in settings["queues"] if q["id"] == "main")
                     main_queue["finish_action"] = "user_command"
                     main_queue["user_command"] = f'echo queue-finished>"{root / "queue-finished.txt"}"'
@@ -414,10 +415,13 @@ def main():
                 outcome = completed_job.get("queue_action_outcome")
                 marker_text = marker.read_text().strip() if marker.exists() else None
                 if outcome != "succeeded" or marker_text != "queue-finished":
+                    debug_log = state / "engine-debug.log"
+                    action_log = [line for line in debug_log.read_text().splitlines()
+                                  if "queue.finish-action" in line] if debug_log.exists() else []
                     raise RuntimeError(
                         "Windows queue completion command did not run successfully: "
                         f"action={completed_job.get('queue_finish_action')!r}, outcome={outcome!r}, "
-                        f"marker_exists={marker.exists()}, marker_contents={marker_text!r}"
+                        f"marker_exists={marker.exists()}, marker_contents={marker_text!r}, action_log={action_log!r}"
                     )
 
                 failure_stream = new_connection(endpoint)

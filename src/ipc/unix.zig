@@ -782,8 +782,8 @@ fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompl
             &.{ shell, "/s", "/t", "0", "/c", "Speed Download queue completed" }
         else
             &.{ shell, "/D", "/S", "/C", completion.user_command orelse return };
-        var child = std.process.spawn(engine.io, .{ .argv = args, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch {
-            engine.jobs.logAction("queue.finish-action", "could not start completion action");
+        var child = std.process.spawn(engine.io, .{ .argv = args, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch |err| {
+            engine.jobs.logAction("queue.finish-action.spawn", @errorName(err));
             return;
         };
         const term = child.wait(engine.io) catch {
