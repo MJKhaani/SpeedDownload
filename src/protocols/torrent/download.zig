@@ -134,6 +134,8 @@ fn runPeerAddresses(addresses: anytype, transfer: *PeerTransfer, session: *const
         }
         for (threads[0..launched]) |thread| thread.join();
         for (workers[0..launched]) |worker| if (worker.result) |err| {
+            if (session.peer_observer) |report| if (session.peer_observer_context) |ctx|
+                report(ctx, @intCast(addresses.len), .{ .diagnostic_stage = "peer", .diagnostic_error = @errorName(err) });
             if (!canTryAnotherPeer(err)) return err;
             last_error.* = err;
         };
@@ -442,6 +444,7 @@ fn transferValidated(
             };
             transfer.run(url) catch |err| {
                 if (err == error.TransferPauseRequested or err == error.TransferCancelRequested or err == error.TransferSchedulePaused or err == error.OutOfMemory) return err;
+                if (stats) |report| if (stats_context) |ctx| report(ctx, 0, .{ .diagnostic_stage = "web-seed", .diagnostic_error = @errorName(err) });
                 // Network/protocol failures can use another seed or peers;
                 // local I/O errors must not be hidden by discovery failures.
                 if (!canTryAnotherPeer(err) and err != error.InvalidWebSeedResponse and err != error.ResponseLengthMismatch and err != error.ReadFailed and err != error.InvalidResponseStatus and err != error.ConnectionClosed and err != error.TlsInitializationFailed) return err;
