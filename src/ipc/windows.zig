@@ -198,8 +198,11 @@ pub fn serve(allocator: Allocator, config: Config) !void {
         };
         thread.detach();
     }
+    engine.jobs.logAction("engine.shutdown", "joining scheduler");
     if (scheduler_thread) |thread| thread.join();
+    engine.jobs.logAction("engine.shutdown", "draining workers and clients");
     while (engine.active_clients.load(.acquire) != 0 or engine.active_workers.load(.acquire) != 0) Sleep(10);
+    engine.jobs.logAction("engine.shutdown", "server stopped");
 }
 
 fn currentIdentity(allocator: Allocator) !struct { sid: []u8, session_id: u32 } {

@@ -524,7 +524,13 @@ def main():
                 control.close()
 
             if os.name != "nt": process.terminate()
-            process.wait(timeout=15)
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired as error:
+                debug_log = state / "engine-debug.log"
+                shutdown_log = [line for line in debug_log.read_text().splitlines()
+                                if "engine.shutdown" in line] if debug_log.exists() else []
+                raise TimeoutError(f"Engine shutdown did not finish; shutdown_log={shutdown_log!r}") from error
             if os.name == "nt" and process.returncode != 0:
                 raise RuntimeError("Engine did not exit cleanly after shutdown")
             start_engine()
