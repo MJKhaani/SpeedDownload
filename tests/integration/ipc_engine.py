@@ -205,6 +205,8 @@ def main():
         destination = root / "downloads"
         state.mkdir()
         destination.mkdir()
+        if os.name == "nt":
+            (root / "queue action").mkdir()
         env = os.environ.copy()
         env["SPEED_DOWNLOAD_STATE_DIR"] = str(state)
         if os.name == "nt":
@@ -289,7 +291,6 @@ def main():
                         raise RuntimeError("Concurrent client saw inconsistent job state")
                 status_stream = simultaneous[0]
                 original_settings = rpc(status_stream, "settings.get", {})
-                original_settings["debug_log_enabled"] = True
                 settings = dict(original_settings)
                 settings["bandwidth_limit_bytes_per_second"] = 1_234_567
                 settings["bandwidth_schedule_enabled"] = False
@@ -351,7 +352,7 @@ def main():
                     settings["debug_log_enabled"] = True
                     main_queue = next(q for q in settings["queues"] if q["id"] == "main")
                     main_queue["finish_action"] = "user_command"
-                    main_queue["user_command"] = f'echo queue-finished>"{root / "queue-finished.txt"}"'
+                    main_queue["user_command"] = f'echo queue-finished>"{root / "queue action" / "queue-finished.txt"}"'
                     rpc(add_stream, "settings.update", {"settings": settings})
                 rpc(add_stream, "jobs.add", {
                     "url": f"http://127.0.0.1:{fixture.server_port}/phase0.bin",
@@ -406,7 +407,7 @@ def main():
             if not output.is_file() or output.read_bytes() != PAYLOAD:
                 raise RuntimeError("Fixture download did not produce the expected bytes")
             if os.name == "nt":
-                marker = root / "queue-finished.txt"
+                marker = root / "queue action" / "queue-finished.txt"
                 deadline = time.monotonic() + 10
                 completed_job = job
                 while time.monotonic() < deadline:
@@ -530,7 +531,7 @@ def main():
             except subprocess.TimeoutExpired as error:
                 debug_log = state / "engine-debug.log"
                 shutdown_log = [line for line in debug_log.read_text().splitlines()
-                                if "engine.shutdown" in line or "ipc.client" in line] if debug_log.exists() else []
+                                if "engine.shutdown" in line] if debug_log.exists() else []
                 raise TimeoutError(f"Engine shutdown did not finish; shutdown_log={shutdown_log!r}") from error
             if os.name == "nt" and process.returncode != 0:
                 raise RuntimeError("Engine did not exit cleanly after shutdown")
