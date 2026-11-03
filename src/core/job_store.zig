@@ -276,7 +276,15 @@ pub const Store = struct {
             length = 0;
         }
         const seconds = @divTrunc(std.Io.Clock.now(.real, self.io).nanoseconds, std.time.ns_per_s);
-        const line = std.fmt.allocPrint(self.allocator, "{d} {s} {s}\n", .{ seconds, event, outcome }) catch return;
+        const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(@max(0, seconds)) };
+        const year_day = epoch.getEpochDay().calculateYearDay();
+        const month_day = year_day.calculateMonthDay();
+        const clock = epoch.getDaySeconds();
+        const line = std.fmt.allocPrint(self.allocator, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z {s} {s}\n", .{
+            year_day.year,           month_day.month.numeric(),  @as(u8, month_day.day_index) + 1,
+            clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute(),
+            event,                   outcome,
+        }) catch return;
         defer self.allocator.free(line);
         file.writePositionalAll(self.io, line, length) catch {};
     }

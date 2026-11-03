@@ -22,6 +22,11 @@ PAYLOAD = bytes(index % 251 for index in range(4 * 1024 * 1024))
 
 class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/diagnostic-failure"):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Length", str(len(PAYLOAD)))
         self.send_header("ETag", '"phase0-fixture"')
@@ -425,6 +430,27 @@ def main():
                         f"action={completed_job.get('queue_finish_action')!r}, outcome={outcome!r}, "
                         f"marker_exists={marker.exists()}, marker_contents={marker_text!r}, action_log={action_log!r}"
                     )
+
+                diagnostic = new_connection(endpoint)
+                try:
+                    rpc(diagnostic, "engine.hello", {"protocol": {"major": 1, "minor": 0},
+                        "client": {"kind": "diagnostic-test", "version": "1"}, "features": []})
+                    failure = rpc(diagnostic, "jobs.add", {"url": f"http://127.0.0.1:{fixture.server_port}/diagnostic-failure?private-token=secret",
+                        "name": "diagnostic-failure.bin", "destination": str(destination), "idempotency_key": str(uuid.uuid4()), "priority": 0})
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        failed = next(j for j in rpc(diagnostic, "jobs.list", {"offset": 0, "limit": 50})["jobs"] if j["job_id"] == failure["job_id"])
+                        if failed["state"] == "failed": break
+                        time.sleep(0.05)
+                    else: raise TimeoutError("Diagnostic failure fixture did not fail")
+                    debug_log = (state / "engine-debug.log").read_text()
+                    if f"job={failure['job_id']}" not in debug_log or "transfer.failed" not in debug_log or "error=" not in debug_log:
+                        raise RuntimeError("Engine diagnostic log did not identify the failed download and error")
+                    if "private-token" in debug_log or "jobs.list received" in debug_log or "engine.status received" in debug_log:
+                        raise RuntimeError("Engine diagnostic log contains a secret or routine polling noise")
+                    rpc(diagnostic, "jobs.delete", {"job_id": failed["job_id"], "expected_revision": failed["revision"], "delete_partial": False})
+                finally:
+                    diagnostic.close()
 
                 failure_stream = new_connection(endpoint)
                 try:

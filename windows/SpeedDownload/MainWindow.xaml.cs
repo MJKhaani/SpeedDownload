@@ -530,14 +530,7 @@ public sealed partial class MainWindow : Window
             _aggregateRate = aggregate;
             RecordNotificationTransitions(jobs);
             _allJobs = jobs;
-            try
-            {
-                var (limit, scheduled) = await _engine.GetEffectiveBandwidthAsync();
-                EffectiveLimit.Text = limit is null ? "" :
-                    (limit == 0 ? "Effective: Unlimited" : $"Effective: {limit.Value / 1_000_000d:0.##} MB/s") + (scheduled == true ? " (scheduled)" : "");
-            }
-            catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException)
-            { EffectiveLimit.Text = ""; }
+            EffectiveLimit.Text = "";
             if (_settings is null || !_connected)
             {
                 await LoadSettingsAsync();
@@ -637,6 +630,8 @@ public sealed partial class MainWindow : Window
         {
             if (tag == "new-queue") { _ = CreateQueueAsync(); return; }
             _category = tag;
+            QueueSettingsButton.Visibility = tag.StartsWith("queue:", StringComparison.Ordinal) ? Visibility.Visible : Visibility.Collapsed;
+            DeleteQueueButton.Visibility = tag.StartsWith("queue:", StringComparison.Ordinal) && tag != "queue:main" ? Visibility.Visible : Visibility.Collapsed;
             StartAllButton.Label = tag.StartsWith("queue:", StringComparison.Ordinal) ? "Resume this queue" : "Resume paused downloads";
             PauseAllButton.Label = tag.StartsWith("queue:", StringComparison.Ordinal) ? "Pause this queue" : "Pause all downloads";
             ToolTipService.SetToolTip(StartAllButton, StartAllButton.Label);
@@ -685,6 +680,11 @@ public sealed partial class MainWindow : Window
 
     private void ApplyFilter()
     {
+        if (QueueSettingsButton is not null && DeleteQueueButton is not null)
+        {
+            QueueSettingsButton.Visibility = _category.StartsWith("queue:", StringComparison.Ordinal) ? Visibility.Visible : Visibility.Collapsed;
+            DeleteQueueButton.Visibility = _category.StartsWith("queue:", StringComparison.Ordinal) && _category != "queue:main" ? Visibility.Visible : Visibility.Collapsed;
+        }
         IEnumerable<DownloadJob> jobs = _category switch
         {
             "In progress" => _allJobs.Where(job => job.State is not ("completed" or "failed" or "canceled")),
@@ -792,7 +792,8 @@ public sealed partial class MainWindow : Window
     {
         if (JobsList is null || DetailTitle is null || SelectionSummary is null || ResumeSelectedButton is null || PauseSelectedButton is null || RemoveSelectedButton is null || SelectedActionsButton is null) return;
         var selected = JobsList.SelectedItems.OfType<DownloadJob>().ToArray();
-        SelectionSummary.Text = _batchInFlight ? "Applying download actions…" : selected.Length == 0 ? "" : $"{selected.Length} selected in this view";
+        SelectionSummary.Text = _batchInFlight ? "Applying download actions…" : selected.Length <= 1 ? "" : $"{selected.Length} selected in this view";
+        SelectionSummary.Visibility = string.IsNullOrEmpty(SelectionSummary.Text) ? Visibility.Collapsed : Visibility.Visible;
         ResumeSelectedButton.IsEnabled = _connected && !_batchInFlight && selected.Any(job => job.CanControl && (job.State is "paused" or "retry_wait"));
         PauseSelectedButton.IsEnabled = _connected && !_batchInFlight && selected.Any(job => job.CanControl && (job.State is "queued" or "scheduled" or "retry_wait" or "downloading"));
         RemoveSelectedButton.IsEnabled = _connected && !_batchInFlight && selected.Any(job => job.CanControl &&
@@ -915,7 +916,8 @@ public sealed partial class MainWindow : Window
     private void UpdateSummary()
     {
         QueueSummary.Text = $"{_allJobs.Count(job => job.State == "downloading")} active · {_allJobs.Count(job => job.State is "queued" or "scheduled")} queued";
-        AggregateSpeed.Text = _aggregateRate > 0 ? $"↓ {_aggregateRate / 1_000_000d:0.##} MB/s" : "";
+        AggregateSpeed.Text = _allJobs.Any(job => job.State == "downloading")
+            ? (_aggregateRate >= 1_000_000 ? $"↓: {_aggregateRate / 1_000_000d:0.##} MBps" : $"↓: {_aggregateRate / 1_000d:0.#} KBps") : "";
     }
 
     private void RecordNotificationTransitions(IReadOnlyList<DownloadJob> jobs)
@@ -1656,9 +1658,6 @@ public sealed partial class MainWindow : Window
         finishAction.IsEnabled = _engine.SupportsFeature("queue.finish-user-command-v1");
         finishAction.SelectionChanged += (_, _) => UpdateCommandEnabled();
         UpdateCommandEnabled();
-        var completionNote = new TextBlock { Text = finishAction.IsEnabled
-            ? "The action runs once as the engine's Windows user when every job in this queue completes. A user command can execute arbitrary programs. Quitting the client leaves the engine running. Windows shutdown can interrupt other queues and close other apps; unsaved work could be lost. Failed or canceled jobs prevent the action."
-            : "This engine does not support Windows queue completion commands. Existing actions are preserved.", TextWrapping = TextWrapping.Wrap };
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(queueName);
         panel.Children.Add(count);
@@ -1670,10 +1669,9 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(finishAction);
         panel.Children.Add(userCommand);
         panel.Children.Add(powerOffConsent);
-        panel.Children.Add(completionNote);
         var formError = new InfoBar { IsOpen = false, Severity = InfoBarSeverity.Error };
         panel.Children.Insert(0, formError);
-        var dialog = new ContentDialog { XamlRoot = Content.XamlRoot, Title = $"Queue settings · {queue["name"]?.GetValue<string>() ?? id}", Content = new ScrollViewer { Content = panel, MaxHeight = 500 }, PrimaryButtonText = "Save", CloseButtonText = "Cancel" };
+        var dialog = new ContentDialog { XamlRoot = Content.XamlRoot, RequestedTheme = (Content as FrameworkElement)?.RequestedTheme ?? ElementTheme.Default, Title = $"Queue settings · {queue["name"]?.GetValue<string>() ?? id}", Content = new ScrollViewer { Content = panel, MaxHeight = 500 }, PrimaryButtonText = "Save", CloseButtonText = "Cancel" };
         dialog.PrimaryButtonClick += async (_, args) =>
         {
             args.Cancel = true;
@@ -2003,8 +2001,8 @@ public sealed partial class MainWindow : Window
             foreach (var worker in _workerRows) worker.MarkDisconnected();
             DownloadCommands.IsEnabled = false;
             SpeedLimitBox.IsEnabled = false;
-            AggregateSpeed.Text = "Rate unavailable";
-            EffectiveLimit.Text = "Effective cap unavailable";
+            AggregateSpeed.Text = "";
+            EffectiveLimit.Text = "";
             EngineIndicator.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.DarkOrange);
             ConnectionStatus.Text = "Engine shutdown could not be confirmed";
             EngineStatusItem.Content = ConnectionStatus.Text;

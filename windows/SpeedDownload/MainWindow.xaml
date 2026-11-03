@@ -34,7 +34,7 @@
             </NavigationViewItem>
         </NavigationView.FooterMenuItems>
         <Grid x:Name="AppRoot">
-        <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="12" AllowDrop="True" DragOver="OnDownloadDragOver" Drop="OnDownloadDrop">
+        <Grid x:Name="Workspace" Padding="16,12,20,16" RowSpacing="4" AllowDrop="True" DragOver="OnDownloadDragOver" Drop="OnDownloadDrop">
             <Grid.KeyboardAccelerators>
                 <KeyboardAccelerator Key="N" Modifiers="Control" Invoked="OnAddShortcut" />
                 <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="OnSearchShortcut" />
@@ -50,22 +50,23 @@
                     <AppBarButton Label="Add download" Icon="Add" Click="OnAddDownload" ToolTipService.ToolTip="Add download" />
                     <AppBarButton x:Name="StartAllButton" Label="Resume paused downloads" Icon="Play" Click="OnStartAll" ToolTipService.ToolTip="Resume paused downloads" />
                     <AppBarButton x:Name="PauseAllButton" Label="Pause all downloads" Icon="Pause" Click="OnPauseAll" ToolTipService.ToolTip="Pause all downloads" />
-                    <CommandBar.Content><AutoSuggestBox x:Name="SearchBox" Width="260" PlaceholderText="Search downloads" QueryIcon="Find" TextChanged="OnSearchTextChanged" /></CommandBar.Content>
+                    <CommandBar.Content><StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center"><AutoSuggestBox x:Name="SearchBox" Width="260" PlaceholderText="Search downloads" QueryIcon="Find" TextChanged="OnSearchTextChanged" />
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="4">
+                    <FontIcon Glyph="&#xE8CB;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
+                    <ComboBox x:Name="SortBox" SelectedIndex="0" SelectionChanged="OnSortChanged" MinWidth="90" AutomationProperties.Name="Sort downloads">
+                        <ComboBoxItem Content="Order" Tag="order" /><ComboBoxItem Content="Status" Tag="state-asc" /><ComboBoxItem Content="Size" Tag="size-asc" />
+                    </ComboBox>
+                </StackPanel>
+                    </StackPanel></CommandBar.Content>
                     <CommandBar.SecondaryCommands>
                         <AppBarButton Label="Details" Icon="View" Click="OnSelectedDetails" />
                         <AppBarButton x:Name="ResumeSelectedButton" Label="Resume selected" Icon="Play" Click="OnResumeSelected" IsEnabled="False" />
                         <AppBarButton x:Name="PauseSelectedButton" Label="Pause selected" Icon="Pause" Click="OnPauseSelected" IsEnabled="False" />
                         <AppBarButton x:Name="RemoveSelectedButton" Label="Cancel or remove selected" Icon="Delete" Click="OnCancelOrRemoveSelected" IsEnabled="False" />
                         <AppBarButton x:Name="SelectedActionsButton" Label="More actions" Click="OnSelectedActions" IsEnabled="False" />
-                        <AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /><AppBarButton Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" />
+                        <AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton x:Name="QueueSettingsButton" Label="Queue settings" Icon="Setting" Click="OnQueueSettings" Visibility="Collapsed" /><AppBarButton x:Name="DeleteQueueButton" Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" Visibility="Collapsed" />
                     </CommandBar.SecondaryCommands>
                 </CommandBar>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="4">
-                    <FontIcon Glyph="&#xE8CB;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
-                    <ComboBox x:Name="SortBox" SelectedIndex="0" SelectionChanged="OnSortChanged" MinWidth="90" AutomationProperties.Name="Sort downloads">
-                        <ComboBoxItem Content="Order" Tag="order" /><ComboBoxItem Content="Status" Tag="state-asc" /><ComboBoxItem Content="Size" Tag="size-asc" />
-                    </ComboBox>
-                </StackPanel>
                 </Grid>
                 <TextBlock x:Name="SelectionSummary" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" AutomationProperties.LiveSetting="Polite" />

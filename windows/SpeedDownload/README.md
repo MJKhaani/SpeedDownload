@@ -76,6 +76,10 @@ the engine normally writes `%LOCALAPPDATA%\Speed Download\engine-debug.log`.
 `SPEED_DOWNLOAD_STATE_DIR` can override that directory for an engine process;
 the Settings page shows the expected location and can open its folder. The file
 is created on the first logged action after logging is enabled.
+The engine log records UTC timestamps, per-job protocol and connection count,
+periodic byte progress, retries, and failure names and explanations. Routine
+client polling is omitted. URLs, paths, headers, and credentials are not logged;
+individual HTTP response status codes are not currently recorded.
 
 The download workspace also accepts a dropped HTTP/HTTPS, FTP/FTPS, or magnet link, a
 newline-separated set of up to 100 such links, or one local `.torrent` file.

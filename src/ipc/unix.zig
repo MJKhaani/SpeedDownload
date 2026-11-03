@@ -269,8 +269,11 @@ pub fn dispatchMethod(
 ) anyerror!?[]u8 {
     const engine: *EngineContext = @ptrCast(@alignCast(context orelse return error.MissingDispatcherContext));
     const jobs = engine.jobs;
-    jobs.logAction(loggedMethod(method), "received");
-    defer jobs.logAction(loggedMethod(method), "finished");
+    const log_request = !std.mem.eql(u8, method, "jobs.list") and !std.mem.eql(u8, method, "jobs.get") and
+        !std.mem.eql(u8, method, "jobs.wait") and !std.mem.eql(u8, method, "engine.status") and
+        !std.mem.eql(u8, method, "settings.get");
+    if (log_request) jobs.logAction(loggedMethod(method), "received");
+    defer if (log_request) jobs.logAction(loggedMethod(method), "finished");
     if (comptime builtin.os.tag == .windows) {
         if (std.mem.eql(u8, method, "engine.shutdown")) {
             const id = request_id orelse return null;
@@ -669,14 +672,19 @@ fn startDownload(allocator: std.mem.Allocator, request_id: std.json.Value, contr
 }
 
 fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask) void {
-    engine.jobs.logAction("transfer", "started");
+    const protocol_name: []const u8 = if (isTorrentFileUrl(task.url) or isMagnetUrl(task.url)) "torrent" else if (isFtpUrl(task.url)) "ftp" else "http";
+    const started = std.fmt.allocPrint(engine.allocator, "job={s} protocol={s} connections={d}", .{ task.id, protocol_name, task.connections }) catch null;
+    if (started) |message| {
+        engine.jobs.logAction("transfer.started", message);
+        engine.allocator.free(message);
+    }
     defer task.deinit(engine.allocator);
     defer {
         releaseWorker(engine);
         scheduleQueued(engine);
     }
     const destination = buildDestination(engine.allocator, task) catch {
-        engine.jobs.logAction("transfer", "invalid-destination");
+        logTransfer(engine, task.id, "transfer.failed", "invalid-destination");
         engine.jobs.finishDownload(task.id, false, "Could not create a safe destination path") catch {};
         return;
     };
@@ -697,19 +705,19 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
     } else @import("../protocols/http/download.zig").downloadWithPolicyAndBudget(engine.allocator, engine.io, task.url, destination, task.expected_sha256, updateDownloadProgress, @ptrCast(&progress), updateWorkerProgress, task.connections, .{ .mode = task.proxy_mode, .url = task.proxy_url, .authentication_required = task.proxy_authentication_required }, &retry_hint, &engine.http_connections, checkHttpControl, engine.jobs.directory_path);
     transfer catch |err| {
         if (engine.jobs.requestedControl(task.id)) |control| {
-            engine.jobs.logAction("transfer", if (control == .pause) "paused" else "canceled");
+            logTransfer(engine, task.id, "transfer.stopped", if (control == .pause) "paused" else "canceled");
             engine.jobs.finishStoppedDownload(task.id, if (control == .pause) .paused else .canceled) catch {};
             return;
         }
         if (err == error.TransferSchedulePaused) {
-            engine.jobs.logAction("transfer", "scheduled");
+            logTransfer(engine, task.id, "transfer.stopped", "outside-queue-schedule");
             engine.jobs.finishScheduledDownload(task.id) catch {};
             return;
         }
         if (retryableDownloadError(err)) {
-            engine.jobs.logAction("transfer.retry", @errorName(err));
+            logTransfer(engine, task.id, "transfer.retry", @errorName(err));
             if (engine.jobs.scheduleTransientRetry(task.id, @errorName(err), retry_hint.load(.acquire), if (err == error.ServerBusy or err == error.ParallelRangeRejected) task.connections else null) catch false) {
-                engine.jobs.logAction("transfer", "retry-scheduled");
+                logTransfer(engine, task.id, "transfer.retry", "scheduled");
                 return;
             }
         }
@@ -739,13 +747,17 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             "The source redirected to a URL with credentials. The download was stopped."
         else
             std.fmt.allocPrint(engine.allocator, "Download failed: {s}", .{@errorName(err)}) catch "Download failed";
-        engine.jobs.logAction("transfer", @errorName(err));
+        const detail = std.fmt.allocPrint(engine.allocator, "error={s} reason={s}", .{ @errorName(err), error_message }) catch null;
+        if (detail) |message| {
+            logTransfer(engine, task.id, "transfer.failed", message);
+            engine.allocator.free(message);
+        }
         defer if (err != error.ExpectedChecksumMismatch and err != error.ProxyAuthenticationUnavailable and err != error.ProxyCredentialsUnavailable and err != error.AuthenticatedHttpsProxyUnsupported and err != error.FtpJournalUpgradeRequired and err != error.HttpJournalUpgradeRequired and err != error.JournalUpgradeRequired and err != error.PartialFileLengthMismatch and err != error.RepresentationChanged and err != error.InsecureHttpRedirect and err != error.HttpRedirectCredentials and !std.mem.eql(u8, error_message, "Download failed")) engine.allocator.free(error_message);
         engine.jobs.finishDownload(task.id, false, error_message) catch {};
         return;
     };
     engine.jobs.finishDownload(task.id, true, null) catch {};
-    engine.jobs.logAction("transfer", "completed");
+    logTransfer(engine, task.id, "transfer.completed", "success");
     if (engine.jobs.completedQueueAction(task.id) catch null) |completion| {
         defer completion.deinit(engine.allocator);
         var succeeded = false;
@@ -754,6 +766,12 @@ fn runDownloadWorker(engine: *EngineContext, task: job_store.Store.DownloadTask)
             engine.jobs.recordQueueActionOutcome(task.id, completion.action, if (succeeded) .succeeded else .failed) catch
                 engine.jobs.logAction("queue.finish-action", "could not persist action outcome");
     }
+}
+
+fn logTransfer(engine: *EngineContext, job_id: []const u8, event: []const u8, detail: []const u8) void {
+    const message = std.fmt.allocPrint(engine.allocator, "job={s} {s}", .{ job_id, detail }) catch return;
+    defer engine.allocator.free(message);
+    engine.jobs.logAction(event, message);
 }
 
 fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompletion, succeeded: *bool) void {
@@ -1029,6 +1047,7 @@ const DownloadProgressContext = struct {
     worker_end: [32]u64 = @splat(0),
     worker_known: [32]bool = @splat(false),
     single_reported: ?u64 = null,
+    last_diagnostic_ns: i96 = 0,
     bandwidth_current_limit: u64 = 0,
     bandwidth_next_ns: i96 = 0,
 };
@@ -1044,10 +1063,20 @@ fn updateDownloadProgress(context: *anyopaque, completed: u64, total: ?u64, dura
         return error.TransferSchedulePaused;
     }
     progress.progress_mutex.lockUncancelable(progress.engine.io);
+    const now = std.Io.Clock.now(.awake, progress.engine.io).nanoseconds;
+    const should_log = progress.last_diagnostic_ns == 0 or now - progress.last_diagnostic_ns >= 5 * std.time.ns_per_s;
+    if (should_log) progress.last_diagnostic_ns = now;
     const single_stream = !progress.worker_updates_seen;
     const delta = if (!single_stream) @as(u64, 0) else if (progress.single_reported) |previous| completed -| previous else @as(u64, 0);
     progress.single_reported = completed;
     progress.progress_mutex.unlock(progress.engine.io);
+    if (should_log) {
+        const message = std.fmt.allocPrint(progress.engine.allocator, "received={d} total={d} total_known={} durable={}", .{ completed, total orelse 0, total != null, durable }) catch null;
+        if (message) |text| {
+            logTransfer(progress.engine, progress.job_id, "transfer.progress", text);
+            progress.engine.allocator.free(text);
+        }
+    }
     try throttleBytes(progress, delta);
     try progress.engine.jobs.updateProgress(progress.job_id, completed, total, durable);
     if (single_stream) if (total) |known_total| {
