@@ -781,11 +781,31 @@ fn runQueueFinishAction(engine: *EngineContext, completion: job_store.QueueCompl
         const args: []const []const u8 = if (completion.action == .power_off)
             &.{ shell, "/s", "/t", "0", "/c", "Speed Download queue completed" }
         else
-            &.{ shell, "/D", "/S", "/C", completion.user_command orelse return };
-        var child = std.process.spawn(engine.io, .{ .argv = args, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch |err| {
+            &.{ shell, "/D", "/Q" };
+        var child = std.process.spawn(engine.io, .{ .argv = args, .stdin = if (completion.action == .user_command) .pipe else .ignore, .stdout = .ignore, .stderr = .ignore }) catch |err| {
             engine.jobs.logAction("queue.finish-action.spawn", @errorName(err));
             return;
         };
+        if (completion.action == .user_command) {
+            const input = child.stdin orelse return;
+            const command = completion.user_command orelse return;
+            input.writeStreamingAll(engine.io, command) catch |err| {
+                engine.jobs.logAction("queue.finish-action.stdin", @errorName(err));
+                input.close(engine.io);
+                child.stdin = null;
+                _ = child.wait(engine.io) catch {};
+                return;
+            };
+            input.writeStreamingAll(engine.io, "\r\nexit /b %errorlevel%\r\n") catch |err| {
+                engine.jobs.logAction("queue.finish-action.stdin", @errorName(err));
+                input.close(engine.io);
+                child.stdin = null;
+                _ = child.wait(engine.io) catch {};
+                return;
+            };
+            input.close(engine.io);
+            child.stdin = null;
+        }
         const term = child.wait(engine.io) catch {
             engine.jobs.logAction("queue.finish-action", "user command failed");
             return;
