@@ -406,15 +406,19 @@ def main():
             if os.name == "nt":
                 marker = root / "queue-finished.txt"
                 deadline = time.monotonic() + 10
-                while not marker.exists() and time.monotonic() < deadline: time.sleep(0.05)
-                if not marker.exists() or marker.read_text().strip() != "queue-finished":
-                    raise RuntimeError("Windows queue completion command did not run successfully")
-                deadline = time.monotonic() + 10
+                completed_job = job
                 while time.monotonic() < deadline:
                     completed_job = next(j for j in one_connection(endpoint)["jobs"] if j["job_id"] == job["job_id"])
-                    if completed_job.get("queue_action_outcome") == "succeeded": break
+                    if completed_job.get("queue_action_outcome") in ("succeeded", "failed"): break
                     time.sleep(0.05)
-                else: raise TimeoutError("Successful queue action was not recorded")
+                outcome = completed_job.get("queue_action_outcome")
+                marker_text = marker.read_text().strip() if marker.exists() else None
+                if outcome != "succeeded" or marker_text != "queue-finished":
+                    raise RuntimeError(
+                        "Windows queue completion command did not run successfully: "
+                        f"action={completed_job.get('queue_finish_action')!r}, outcome={outcome!r}, "
+                        f"marker_exists={marker.exists()}, marker_contents={marker_text!r}"
+                    )
 
                 failure_stream = new_connection(endpoint)
                 try:
