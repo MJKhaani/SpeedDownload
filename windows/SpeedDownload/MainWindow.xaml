@@ -3,7 +3,6 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:SpeedDownload"
-    xmlns:tv="using:WinUI.TableView"
     Title="Speed Download">
     <Window.SystemBackdrop><MicaBackdrop /></Window.SystemBackdrop>
     <Grid>
@@ -73,51 +72,35 @@
             </StackPanel>
             <Grid Grid.Row="1" ColumnSpacing="14" SizeChanged="OnWorkspaceSizeChanged">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="DetailsColumn" Width="0"/></Grid.ColumnDefinitions>
-                <tv:TableView x:Name="JobsList" KeyDown="OnJobsKeyDown" RightTapped="OnJobsRightTapped"
-                    SelectionMode="Extended" SelectionUnit="Row" SelectionChanged="OnJobSelectionChanged"
-                    Sorting="OnTableSorting" AutoGenerateColumns="False" IsReadOnly="True" AllowLiveShaping="False"
-                    CanFilterColumns="False" CanGroupColumns="False" CanSortColumns="True" ShowSortableColumnIcon="True"
-                    GridLinesVisibility="None" HeaderGridLinesVisibility="None" HeadersVisibility="Columns"
-                    CornerButtonMode="None" AutomationProperties.Name="Downloads">
-                    <tv:TableView.Columns>
-                        <tv:TableViewTemplateColumn Header="Name" Tag="name" Width="*" MinWidth="140" SortMemberPath="Title" OperationContentBinding="{Binding Title}" CanSort="True">
-                            <tv:TableViewTemplateColumn.CellTemplate><DataTemplate x:DataType="local:DownloadJob">
-                                <Grid ColumnSpacing="8" VerticalAlignment="Center" Margin="0,6">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="24" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <ListView x:Name="JobsList" SelectionMode="Extended" KeyDown="OnJobsKeyDown" RightTapped="OnJobsRightTapped" AutomationProperties.Name="Downloads" SelectionChanged="OnJobSelectionChanged" IsItemClickEnabled="False">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="local:DownloadJob">
+                            <Grid Padding="12" ColumnSpacing="12" MinHeight="72">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="160"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Grid VerticalAlignment="Center">
                                     <FontIcon Glyph="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="20" Visibility="{Binding FallbackIconVisibility}" AutomationProperties.AccessibilityView="Raw" />
                                     <Image Source="{Binding FileIcon}" Width="20" Height="20" AutomationProperties.AccessibilityView="Raw" />
-                                    <StackPanel Grid.Column="1" Spacing="2">
-                                        <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{Binding Host}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
                                 </Grid>
-                            </DataTemplate></tv:TableViewTemplateColumn.CellTemplate>
-                        </tv:TableViewTemplateColumn>
-                        <tv:TableViewTemplateColumn Header="Status / progress" Tag="state" Width="190" SortMemberPath="StateText" OperationContentBinding="{Binding AccessibleStatus}" CanSort="True">
-                            <tv:TableViewTemplateColumn.CellTemplate><DataTemplate x:DataType="local:DownloadJob">
-                                <StackPanel Spacing="3" VerticalAlignment="Center" Margin="0,6">
-                                    <TextBlock Text="{Binding StateText}" TextTrimming="CharacterEllipsis" />
-                                    <ProgressBar Value="{Binding Progress}" Maximum="100" Visibility="{Binding ProgressVisibility}" AutomationProperties.Name="{Binding ProgressText}" />
-                                    <TextBlock Text="{Binding ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Text="{Binding CompactMetrics}" Visibility="{Binding CompactMetricsVisibility}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                                <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Title}" Style="{ThemeResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Host}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" FontSize="12" />
                                 </StackPanel>
-                            </DataTemplate></tv:TableViewTemplateColumn.CellTemplate>
-                        </tv:TableViewTemplateColumn>
-                        <tv:TableViewTextColumn Header="Size" Tag="size" Width="100" Binding="{Binding SizeText}" SortMemberPath="Total" />
-                        <tv:TableViewTextColumn Header="Speed" Tag="speed" Width="100" Binding="{Binding SpeedText}" SortMemberPath="BytesPerSecond" />
-                        <tv:TableViewTextColumn Header="ETA" Tag="eta" Width="140" Binding="{Binding EtaText}" SortMemberPath="EtaSeconds" />
-                        <tv:TableViewTemplateColumn Header="Actions" Width="168" CanSort="False">
-                            <tv:TableViewTemplateColumn.CellTemplate><DataTemplate x:DataType="local:DownloadJob">
-                                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                    <Button Content="{Binding PrimaryActionGlyph}" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="{Binding PrimaryActionText}" IsEnabled="{Binding CanControl}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" ToolTipService.ToolTip="{Binding PrimaryActionText}" />
-                                    <Button Content="&#xE946;" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="Show transfer details" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
-                                    <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="{Binding RemoveActionText}" IsEnabled="{Binding CanControl}" Click="OnCancelOrRemove" ToolTipService.ToolTip="{Binding RemoveActionText}" />
-                                    <Button Content="&#xE712;" FontFamily="Segoe MDL2 Assets" Tag="{Binding JobId}" AutomationProperties.Name="More transfer actions" IsEnabled="{Binding CanControl}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
+                                <StackPanel Grid.Column="2" Spacing="4" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding StateText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <ProgressBar AutomationProperties.Name="{Binding ProgressText}" Value="{Binding Progress}" Maximum="100" Visibility="{Binding ProgressVisibility}" />
+                                    <TextBlock Text="{Binding ProgressText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" />
+                                    <TextBlock Text="{Binding CompactMetrics}" Visibility="{Binding CompactMetricsVisibility}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" TextWrapping="Wrap" />
                                 </StackPanel>
-                            </DataTemplate></tv:TableViewTemplateColumn.CellTemplate>
-                        </tv:TableViewTemplateColumn>
-                    </tv:TableView.Columns>
-                </tv:TableView>
+                                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <Button Content="{Binding PrimaryActionGlyph}" FontFamily="Segoe MDL2 Assets" AutomationProperties.Name="{Binding PrimaryActionText}" IsEnabled="{Binding CanControl}" Tag="{Binding JobId}" Visibility="{Binding PrimaryActionVisibility}" Click="OnJobAction" ToolTipService.ToolTip="Start, pause, resume, or retry" />
+                                    <Button Content="ⓘ" AutomationProperties.Name="Show transfer details" Tag="{Binding JobId}" Click="OnShowDetails" ToolTipService.ToolTip="Show transfer details" />
+                                    <Button Content="✕" AutomationProperties.Name="{Binding RemoveActionText}" IsEnabled="{Binding CanControl}" Tag="{Binding JobId}" Click="OnCancelOrRemove" ToolTipService.ToolTip="{Binding RemoveActionText}" />
+                                    <Button Content="⋯" AutomationProperties.Name="More transfer actions" IsEnabled="{Binding CanControl}" Tag="{Binding JobId}" Click="OnMoreActions" ToolTipService.ToolTip="More actions" />
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
                 <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Visibility="Collapsed">
                     <TextBlock x:Name="EmptyStateText" Text="No downloads yet" Style="{ThemeResource SubtitleTextBlockStyle}" HorizontalAlignment="Center" />
                     <Button x:Name="EmptyStateAction" Content="Add download" Click="OnEmptyStateAction" HorizontalAlignment="Center" />

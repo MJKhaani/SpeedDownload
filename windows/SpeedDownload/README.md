@@ -7,13 +7,10 @@ The in-progress client also includes torrent review, named queues, weekly queue
 and bandwidth schedules, close-to-background behavior, and optional per-user
 sign-in and start-minimized preferences.
 
-The desktop collection uses [WinUI.TableView 1.5.1](https://www.nuget.org/packages/WinUI.TableView/1.5.1)
-for row-based selection, column headers, sorting indicators, and UI Automation. Its
-.NET 10 Windows target requires `Microsoft.WindowsAppSDK.WinUI` 1.8.260528001 or
-newer; this project pins `Microsoft.WindowsAppSDK` 2.5.1, which requires WinUI
-2.3.9 or newer. Dependency resolution and the actual control behavior still need
-to be validated by a Windows build and accessibility testing. The list falls
-back to labeled row metadata when columns are hidden at narrow widths.
+The desktop collection uses a native WinUI list with the card-style transfer
+rows used in alpha.11. It supports multiple selection, row actions and sorting;
+its accessibility and narrow-window behavior require Windows testing. The
+project pins `Microsoft.WindowsAppSDK` 2.5.1.
 
 The current development changes have not yet been built or interactively tested
 on Windows. They do not yet fulfill the complete Windows client specification:

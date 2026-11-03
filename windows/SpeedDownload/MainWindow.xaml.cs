@@ -628,24 +628,9 @@ public sealed partial class MainWindow : Window
     private void OnSortChanged(object sender, SelectionChangedEventArgs e)
     {
         if (JobsList is null || DetailTitle is null) return;
-        var selected = (SortBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "order";
-        foreach (var column in JobsList.Columns)
-        {
-            var prefix = column.Tag?.ToString();
-            column.SortDirection = !string.IsNullOrEmpty(prefix) && selected == prefix + "-asc" ? WinUI.TableView.SortDirection.Ascending :
-                !string.IsNullOrEmpty(prefix) && selected == prefix + "-desc" ? WinUI.TableView.SortDirection.Descending : null;
-        }
         _forceResort = true;
         try { ApplyFilter(); }
         finally { _forceResort = false; }
-    }
-
-    private void OnTableSorting(object? sender, WinUI.TableView.TableViewSortingEventArgs e)
-    {
-        e.Handled = true;
-        if (e.Column.Tag is not string column) return;
-        var current = (SortBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
-        SelectChoice(SortBox, column + (current == column + "-asc" ? "-desc" : "-asc"));
     }
 
     private void OnSelectedDetails(object sender, RoutedEventArgs e)
@@ -2161,15 +2146,10 @@ public sealed partial class MainWindow : Window
         JobsList.Visibility = show && !wide ? Visibility.Collapsed : Visibility.Visible;
         EmptyState.Visibility = !show && _visibleJobs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         CloseDetailsButton.Visibility = Visibility.Visible;
-        if (JobsList.Columns.Count < 6) return;
         var available = Math.Max(0, grid.ActualWidth - (show && wide ? 314 : 0));
         _compactEta = available < 1050;
         _compactSpeed = available < 900;
         _compactSize = available < 790;
-        JobsList.Columns[4].Visibility = _compactEta ? Visibility.Collapsed : Visibility.Visible;
-        JobsList.Columns[3].Visibility = _compactSpeed ? Visibility.Collapsed : Visibility.Visible;
-        JobsList.Columns[2].Visibility = _compactSize ? Visibility.Collapsed : Visibility.Visible;
-        JobsList.Columns[5].Visibility = available < 570 ? Visibility.Collapsed : Visibility.Visible;
         foreach (var job in _visibleJobs) job.SetCompactMetrics(_compactSize, _compactSpeed, _compactEta);
     }
 
