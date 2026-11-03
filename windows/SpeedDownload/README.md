@@ -69,6 +69,14 @@ Install the matching browser extension separately; the host forwards reviewed
 requests to the client and never connects to the engine. Browser handoff is
 implemented but has not yet been tested on Windows.
 
+The client registers itself as an available torrent and magnet handler for the
+current Windows user when it starts. Windows still controls the user's default
+app, which can be chosen in Windows Settings. When diagnostic logging is enabled,
+the engine normally writes `%LOCALAPPDATA%\Speed Download\engine-debug.log`.
+`SPEED_DOWNLOAD_STATE_DIR` can override that directory for an engine process;
+the Settings page shows the expected location and can open its folder. The file
+is created on the first logged action after logging is enabled.
+
 The download workspace also accepts a dropped HTTP/HTTPS, FTP/FTPS, or magnet link, a
 newline-separated set of up to 100 such links, or one local `.torrent` file.
 Each drop opens a review flow before adding work. Drag-and-drop interoperability

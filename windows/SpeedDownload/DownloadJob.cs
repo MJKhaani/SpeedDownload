@@ -228,7 +228,7 @@ public sealed class DownloadWorker : INotifyPropertyChanged
     private long _sampleTicks;
     private ulong _sampleDownloaded;
     private double? _bytesPerSecond;
-    [JsonIgnore] public string RateText => _bytesPerSecond is double rate ? $"{rate / 1_000_000d:0.##} MB/s" : "Rate unavailable";
+    [JsonIgnore] public string RateText => _bytesPerSecond is double rate ? $"{rate / 1_000_000d:0.##} MB/s" : "";
     [JsonIgnore] public double Percent => End <= Start ? 0 : Math.Min(100d, Downloaded * 100d / (End - Start));
     [JsonIgnore] public string Caption => $"Connection {WorkerId} · {Downloaded / 1_000_000d:0.#} / {(End >= Start ? End - Start : 0) / 1_000_000d:0.#} MB";
     [JsonIgnore] public string RangeText => $"Byte range {Start:N0}–{(End > Start ? End - 1 : Start):N0}";

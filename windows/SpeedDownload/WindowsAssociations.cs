@@ -13,6 +13,19 @@ internal static class WindowsAssociations
     [DllImport("shell32.dll")]
     private static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
 
+    public static bool IsRegisteredForCurrentExecutable()
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe)) return false;
+        var command = $"\"{exe}\" \"%1\"";
+        using var torrent = Registry.CurrentUser.OpenSubKey(@"Software\Classes\" + TorrentProgId + @"\shell\open\command");
+        using var magnet = Registry.CurrentUser.OpenSubKey(@"Software\Classes\" + MagnetProgId + @"\shell\open\command");
+        using var registered = Registry.CurrentUser.OpenSubKey(@"Software\RegisteredApplications");
+        return string.Equals(torrent?.GetValue("") as string, command, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(magnet?.GetValue("") as string, command, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(registered?.GetValue("Speed Download") as string, ApplicationKey, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static void Register()
     {
         var exe = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot find the Speed Download executable.");

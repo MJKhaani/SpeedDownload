@@ -76,6 +76,10 @@ public sealed partial class MainWindow : Window
         }
         LoadAppearance();
         LoadClientPreferences();
+        var stateOverride = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_STATE_DIR");
+        var logDirectory = !string.IsNullOrWhiteSpace(stateOverride) && Path.IsPathFullyQualified(stateOverride)
+            ? stateOverride : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Speed Download");
+        DebugLogLocation.Text = $"Engine log: {Path.Combine(logDirectory, "engine-debug.log")} (an already-running engine may use a different state directory).";
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(920, 620));
@@ -122,6 +126,40 @@ public sealed partial class MainWindow : Window
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _refreshTimer.Start();
         _ = RefreshAsync();
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_PHASE0_REPORT")))
+            DispatcherQueue.TryEnqueue(EnsureAssociationsRegistered);
+    }
+
+    private void EnsureAssociationsRegistered()
+    {
+        try
+        {
+            if (WindowsAssociations.IsRegisteredForCurrentExecutable()) return;
+            WindowsAssociations.Register();
+            AssociationBar.IsOpen = true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException or InvalidOperationException)
+        {
+            ShowMessage("Could not register torrent and magnet handlers: " + error.Message, InfoBarSeverity.Warning);
+        }
+    }
+
+    private void OnOpenLogFolder(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var stateOverride = Environment.GetEnvironmentVariable("SPEED_DOWNLOAD_STATE_DIR");
+            var directory = !string.IsNullOrWhiteSpace(stateOverride) && Path.IsPathFullyQualified(stateOverride)
+                ? stateOverride : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Speed Download");
+            Directory.CreateDirectory(directory);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", directory) { UseShellExecute = true });
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            SettingsMessage.Severity = InfoBarSeverity.Error;
+            SettingsMessage.Message = "Could not open the log folder: " + error.Message;
+            SettingsMessage.IsOpen = true;
+        }
     }
 
 
@@ -1299,6 +1337,7 @@ public sealed partial class MainWindow : Window
             SettingsMessage.Severity = InfoBarSeverity.Error;
             SettingsMessage.Message = "Could not open Windows default app settings.";
             SettingsMessage.IsOpen = true;
+            ShowMessage("Could not open Windows default app settings.", InfoBarSeverity.Error);
         }
     }
 

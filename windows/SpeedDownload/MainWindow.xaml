@@ -60,7 +60,7 @@
                         <AppBarButton Label="Paste download link" Icon="Paste" Click="OnPasteDownload" /><AppBarButton Label="Add torrent…" Icon="Add" Click="OnAddTorrent" /><AppBarButton Label="Refresh" Icon="Refresh" Click="OnRefresh" /><AppBarButton Label="Queue settings" Icon="Setting" Click="OnQueueSettings" /><AppBarButton Label="Delete user queue…" Icon="Delete" Click="OnDeleteQueue" />
                     </CommandBar.SecondaryCommands>
                 </CommandBar>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="4">
                     <FontIcon Glyph="&#xE8CB;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
                     <ComboBox x:Name="SortBox" SelectedIndex="0" SelectionChanged="OnSortChanged" MinWidth="90" AutomationProperties.Name="Sort downloads">
                         <ComboBoxItem Content="Order" Tag="order" /><ComboBoxItem Content="Status" Tag="state-asc" /><ComboBoxItem Content="Size" Tag="size-asc" />
@@ -69,6 +69,7 @@
                 </Grid>
                 <TextBlock x:Name="SelectionSummary" Text="" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <InfoBar x:Name="MessageBar" IsOpen="False" Severity="Informational" AutomationProperties.LiveSetting="Polite" />
+                <InfoBar x:Name="AssociationBar" IsOpen="False" Severity="Informational" Title="Torrent and magnet links" Message="Speed Download is registered as an available handler. Choose it in Windows Default apps to open these links and files here."><InfoBar.ActionButton><Button Content="Open Default apps" Click="OnOpenDefaultApps" /></InfoBar.ActionButton></InfoBar>
                 <InfoBar x:Name="ConnectionBar" IsOpen="False" Severity="Warning" IsClosable="False" Title="Engine disconnected" Message="Displayed downloads may be out of date. Reconnect to resume managing downloads." AutomationProperties.LiveSetting="Polite">
                     <InfoBar.ActionButton><Button Content="Reconnect" Click="OnRefresh" /></InfoBar.ActionButton>
                 </InfoBar>
@@ -136,11 +137,12 @@
                             <ItemsControl x:Name="WorkerList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="local:DownloadWorker">
-                                        <StackPanel Spacing="2" Margin="0,2,0,4">
-                                            <TextBlock Text="{Binding Caption}" />
-                                            <TextBlock Text="{Binding RangeText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                            <TextBlock Text="{Binding RateText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                            <ProgressBar Value="{Binding Percent}" Maximum="100" Height="4" AutomationProperties.Name="{Binding Caption}" />
+                                        <StackPanel Spacing="2" Margin="0,2,0,3">
+                                            <Grid ColumnSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Caption}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="1" Text="{Binding RateText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </Grid>
+                                            <ProgressBar Value="{Binding Percent}" Maximum="100" Height="3" AutomationProperties.Name="{Binding Caption}" />
                                         </StackPanel>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -188,7 +190,7 @@
                 <TextBlock x:Name="NotificationStatus" Text="Checking Windows notification availability…" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Button Content="Open Windows notification settings" Click="OnOpenNotificationSettings" HorizontalAlignment="Left" />
                 <TextBlock Text="Notifications omit file names, paths, and links. They are sent while Speed Download is running. Windows may suppress them when the app runs as administrator." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <StackPanel Spacing="8"><TextBlock Text="Diagnostic logging"/><ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled"/><TextBlock Text="Writes redacted engine activity to a bounded local log." Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
+                <StackPanel Spacing="8"><TextBlock Text="Diagnostic logging"/><ToggleSwitch x:Name="DebugLoggingSwitch" Toggled="OnSettingToggled"/><TextBlock Text="Writes redacted engine activity to a bounded local log." Foreground="{ThemeResource TextFillColorSecondaryBrush}"/><TextBlock x:Name="DebugLogLocation" TextWrapping="Wrap" IsTextSelectionEnabled="True" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/><Button Content="Open log folder" Click="OnOpenLogFolder" HorizontalAlignment="Left" /></StackPanel>
                 <TextBlock x:Name="DownloadsHeading" Text="Downloads" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
                 <TextBox x:Name="DownloadFolderBox" Header="Default download folder" FlowDirection="LeftToRight" LostFocus="OnSettingLostFocus" />
                 <Button Content="Choose default folder…" HorizontalAlignment="Left" Click="OnChooseDefaultFolder" />
